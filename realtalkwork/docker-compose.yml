@@ -1,0 +1,44 @@
+services:
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://root@cockroach:26257/realtalk?sslmode=disable
+      REALTALK_REGION: local-dev
+      JWT_SECRET: replace-with-a-long-random-secret
+      WECHAT_AUTH_DEV_MODE: "true"
+      PAYMENT_DEV_AUTO_CONFIRM: "true"
+      REQUIRE_PRO_FOR_AI: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      cockroach-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  cockroach:
+    image: cockroachdb/cockroach:latest
+    command: start-single-node --insecure --listen-addr=0.0.0.0:26257 --http-addr=0.0.0.0:8080
+    ports:
+      - "26257:26257"
+      - "8080:8080"
+    volumes:
+      - cockroach-data:/cockroach/cockroach-data
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=127.0.0.1:26257", "--execute=SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  cockroach-init:
+    image: cockroachdb/cockroach:latest
+    depends_on:
+      cockroach:
+        condition: service_healthy
+    entrypoint: ["/cockroach/cockroach", "sql", "--insecure", "--host=cockroach:26257", "--execute=CREATE DATABASE IF NOT EXISTS realtalk;"]
+
+volumes:
+  cockroach-data:

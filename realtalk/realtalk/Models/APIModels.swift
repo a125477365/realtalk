@@ -1,0 +1,253 @@
+import Foundation
+
+struct AppUser: Codable, Equatable {
+    let id: String
+    let loginIdentifier: String
+    let displayName: String?
+    let avatarUrl: String?
+    let plan: String
+    let balanceCents: Int
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case loginIdentifier = "login_identifier"
+        case displayName = "display_name"
+        case avatarUrl = "avatar_url"
+        case plan
+        case balanceCents = "balance_cents"
+        case createdAt = "created_at"
+    }
+}
+
+struct AuthResponse: Codable {
+    let token: String
+    let user: AppUser
+}
+
+struct ErrorResponse: Codable {
+    let detail: String
+}
+
+struct AuthRequest: Codable {
+    let email: String
+    let password: String
+}
+
+struct EmailCodeRequest: Codable {
+    let email: String
+}
+
+struct EmailCodeResponse: Codable {
+    let sent: Bool
+    let expiresInSeconds: Int
+    let devCode: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sent
+        case expiresInSeconds = "expires_in_seconds"
+        case devCode = "dev_code"
+    }
+}
+
+struct EmailRegisterRequest: Codable {
+    let email: String
+    let password: String
+    let code: String
+}
+
+struct WeChatLoginRequest: Codable {
+    let code: String
+    let nickname: String?
+    let avatarUrl: String?
+
+    enum CodingKeys: String, CodingKey {
+        case code
+        case nickname
+        case avatarUrl = "avatar_url"
+    }
+}
+
+struct AIChatWireMessage: Codable, Equatable {
+    let role: String
+    let content: String
+}
+
+struct AIChatRequest: Codable {
+    let message: String
+    let messages: [AIChatWireMessage]
+    let sceneId: String?
+    let sessionId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case message
+        case messages
+        case sceneId = "scene_id"
+        case sessionId = "session_id"
+    }
+}
+
+struct AIChatResponse: Codable, Equatable {
+    let reply: String
+}
+
+struct TranscriptUploadItem: Codable {
+    let id: UUID
+    let timestamp: Date
+    let text: String
+}
+
+struct TranscriptUploadRequest: Codable {
+    let items: [TranscriptUploadItem]
+}
+
+struct TranscriptUploadResponse: Codable {
+    let uploaded: Int
+    let retentionDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case uploaded
+        case retentionDays = "retention_days"
+    }
+}
+
+struct LearningGenerateRequest: Codable {
+    let start: Date
+    let end: Date
+    let items: [TranscriptUploadItem]
+}
+
+struct TrainingStartRequest: Codable {
+    let start: Date
+    let end: Date
+    let items: [TranscriptUploadItem]
+}
+
+struct ScenarioGenerateRequest: Codable {
+    let start: Date
+    let end: Date
+    let items: [TranscriptUploadItem]
+}
+
+struct RoleplayStartRequest: Codable {
+    let start: Date
+    let end: Date
+    let selectedRole: String
+    let sceneId: String?
+    let items: [TranscriptUploadItem]
+
+    enum CodingKeys: String, CodingKey {
+        case start
+        case end
+        case selectedRole = "selected_role"
+        case sceneId = "scene_id"
+        case items
+    }
+}
+
+struct RoleplayMessageRequest: Codable {
+    let sessionId: String
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case message
+    }
+}
+
+struct TrainingAnswerRequest: Codable {
+    let sessionId: String
+    let answer: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case answer
+    }
+}
+
+struct ApplePurchaseVerifyRequest: Codable {
+    let productId: String
+    let transactionId: String
+    let originalTransactionId: String
+    let jwsRepresentation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case productId = "product_id"
+        case transactionId = "transaction_id"
+        case originalTransactionId = "original_transaction_id"
+        case jwsRepresentation = "jws_representation"
+    }
+}
+
+struct BillingResponse: Codable {
+    let user: AppUser
+    let verified: Bool
+    let message: String
+}
+
+struct BillingLedgerItem: Identifiable, Codable, Equatable {
+    let id: String
+    let type: String
+    let title: String
+    let amountCents: Int
+    let balanceAfterCents: Int
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case title
+        case amountCents = "amount_cents"
+        case balanceAfterCents = "balance_after_cents"
+        case createdAt = "created_at"
+    }
+}
+
+struct BillingAccountResponse: Codable, Equatable {
+    let user: AppUser
+    let ledger: [BillingLedgerItem]
+}
+
+struct RechargeCreateRequest: Codable {
+    let amountCents: Int
+    let method: String
+
+    enum CodingKeys: String, CodingKey {
+        case amountCents = "amount_cents"
+        case method
+    }
+}
+
+struct RechargeOrderResponse: Codable, Equatable {
+    let orderId: String
+    let method: String
+    let amountCents: Int
+    let status: String
+    let paymentUrl: String?
+    let qrCodeText: String?
+    let receiverName: String?
+    let receiverAccount: String?
+    let message: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case orderId = "order_id"
+        case method
+        case amountCents = "amount_cents"
+        case status
+        case paymentUrl = "payment_url"
+        case qrCodeText = "qr_code_text"
+        case receiverName = "receiver_name"
+        case receiverAccount = "receiver_account"
+        case message
+        case createdAt = "created_at"
+    }
+}
+
+struct RechargeConfirmRequest: Codable {
+    let orderId: String
+
+    enum CodingKeys: String, CodingKey {
+        case orderId = "order_id"
+    }
+}
