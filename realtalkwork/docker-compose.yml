@@ -1,44 +1,40 @@
 services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: realtalk
+      POSTGRES_PASSWORD: realtalk
+      POSTGRES_DB: realtalk
+    volumes:
+      - realtalk-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realtalk"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://root@cockroach:26257/realtalk?sslmode=disable
-      REALTALK_REGION: local-dev
-      JWT_SECRET: replace-with-a-long-random-secret
+      DATABASE_URL: "postgresql+psycopg://realtalk:realtalk@postgres:5432/realtalk?sslmode=disable"
+      REALTALK_REGION: "local"
+      JWT_SECRET: "h1MydTVAXiVa7D4slmophlPejLKkaedtEJH66J2o9RhOww4x"
+      TOKEN_TTL_HOURS: "720"
       WECHAT_AUTH_DEV_MODE: "true"
       PAYMENT_DEV_AUTO_CONFIRM: "true"
-      REQUIRE_PRO_FOR_AI: "false"
+      REQUIRE_PRO_FOR_AI: "true"
+      WECHAT_APP_ID: "wxa89f1bbda1a1164e"
+      WECHAT_APP_SECRET: "75585f82c461b6fc4684dc6a1e9f467e"
+      AI_BASE_URL: "https://integrate.api.nvidia.com/v1"
+      AI_MODEL: "stepfun-ai/step-3.7-flash"
+      AI_API_KEY: "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"
     ports:
       - "8000:8000"
     depends_on:
-      cockroach-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
-      interval: 10s
-      timeout: 5s
-      retries: 6
-
-  cockroach:
-    image: cockroachdb/cockroach:latest
-    command: start-single-node --insecure --listen-addr=0.0.0.0:26257 --http-addr=0.0.0.0:8080
-    ports:
-      - "26257:26257"
-      - "8080:8080"
-    volumes:
-      - cockroach-data:/cockroach/cockroach-data
-    healthcheck:
-      test: ["CMD", "cockroach", "sql", "--insecure", "--host=127.0.0.1:26257", "--execute=SELECT 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-
-  cockroach-init:
-    image: cockroachdb/cockroach:latest
-    depends_on:
-      cockroach:
+      postgres:
         condition: service_healthy
-    entrypoint: ["/cockroach/cockroach", "sql", "--insecure", "--host=cockroach:26257", "--execute=CREATE DATABASE IF NOT EXISTS realtalk;"]
+    restart: unless-stopped
 
 volumes:
-  cockroach-data:
+  realtalk-db-data:
