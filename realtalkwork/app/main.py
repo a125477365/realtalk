@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import html
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import evaluate_roleplay_turn, generate_ai_chat_reply, generate_learning, generate_scenario
 from .auth import create_token, hash_password, make_email_code, normalize_email, send_email_code, verify_password, verify_token
 from .billing import apple_billing
+from .content_policy import is_political_sensitive
 from .schemas import (
+    AdminPriceUpdateRequest,
+    AdminUserUpdateRequest,
     ApplePurchaseVerifyRequest,
     AuthRequest,
     AuthResponse,
@@ -27,6 +33,7 @@ from .schemas import (
     LearningGenerateRequest,
     LearningResponse,
     PracticeHistoryResponse,
+    PriceResponse,
     RechargeConfirmRequest,
     RechargeCreateRequest,
     RechargeOrderResponse,
@@ -51,6 +58,7 @@ from .storage import DatabaseIntegrityError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
+admin_security = HTTPBasic(auto_error=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -74,7 +82,20 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
     user = db.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
+    db.touch_user_seen(user.id)
     return user
+
+
+async def current_admin(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
+    if credentials is None:
+        raise_admin_auth()
+    username_ok = hmac.compare_digest(credentials.username, settings.admin_username)
+    password_ok = hmac.compare_digest(credentials.password, settings.admin_password)
+    if not username_ok or not password_ok:
+        raise_admin_auth()
+    return credentials.username
 
 
 @app.get("/health")
@@ -92,6 +113,72 @@ async def health() -> dict[str, str | int]:
 async def ready() -> dict[str, str]:
     db.ping()
     return {"status": "ready", "database": db.backend, "region": settings.deployment_region}
+
+
+@app.get("/billing/prices", response_model=PriceResponse)
+async def billing_prices() -> PriceResponse:
+    monthly_price_cents = db.get_monthly_price_cents()
+    return PriceResponse(
+        monthly_price_cents=monthly_price_cents,
+        monthly_price_yuan=monthly_price_cents / 100,
+        product_id=settings.apple_product_id,
+    )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_console(_: str = Depends(current_admin)) -> HTMLResponse:
+    return HTMLResponse(admin_html())
+
+
+@app.get("/admin/api/overview")
+async def admin_overview(_: str = Depends(current_admin)) -> dict:
+    return db.admin_overview()
+
+
+@app.get("/admin/api/users")
+async def admin_users(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: str = Depends(current_admin),
+) -> dict:
+    return {"items": db.admin_list_users(limit=limit, query=q)}
+
+
+@app.get("/admin/api/users/{user_id}")
+async def admin_user_detail(user_id: str, _: str = Depends(current_admin)) -> dict:
+    detail = db.admin_get_user_detail(user_id)
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    return detail
+
+
+@app.patch("/admin/api/users/{user_id}")
+async def admin_update_user(
+    user_id: str,
+    request: AdminUserUpdateRequest,
+    _: str = Depends(current_admin),
+) -> dict:
+    detail = db.admin_update_user(
+        user_id,
+        display_name=request.display_name,
+        plan=request.plan,
+        balance_cents=request.balance_cents,
+        balance_delta_cents=request.balance_delta_cents,
+        is_banned=request.is_banned,
+        admin_notes=request.admin_notes,
+    )
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    return detail
+
+
+@app.post("/admin/api/settings/price")
+async def admin_update_price(
+    request: AdminPriceUpdateRequest,
+    _: str = Depends(current_admin),
+) -> PriceResponse:
+    db.set_app_setting("monthly_price_cents", str(request.monthly_price_cents))
+    return await billing_prices()
 
 
 @app.post("/auth/email/code", response_model=EmailCodeResponse)
@@ -123,6 +210,8 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
         )
     except DatabaseIntegrityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="微信账号已存在") from exc
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
     return AuthResponse(token=create_token(user.id), user=user)
 
 
@@ -134,6 +223,8 @@ async def me(user: UserOut = Depends(current_user)) -> UserOut:
 @app.post("/ai/chat", response_model=AIChatResponse)
 async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user)) -> AIChatResponse:
     require_ai_access(user)
+    if is_political_sensitive(request.message):
+        return AIChatResponse(reply="")
     scenario = db.get_scenario(user.id, request.scene_id) if request.scene_id else None
     reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario)
     return AIChatResponse(reply=reply)

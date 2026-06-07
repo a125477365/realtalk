@@ -20,8 +20,10 @@ from sqlalchemy import (
     create_engine,
     delete,
     event,
+    func,
     insert,
     inspect,
+    or_,
     select,
     text,
     update,
@@ -44,6 +46,7 @@ from .schemas import (
     TranscriptItem,
     UserOut,
 )
+from .content_policy import filter_sensitive_transcripts
 from .settings import settings
 
 
@@ -64,6 +67,9 @@ users = Table(
     Column("wechat_openid", Text),
     Column("display_name", Text),
     Column("avatar_url", Text),
+    Column("is_banned", Integer, nullable=False, default=0),
+    Column("admin_notes", Text),
+    Column("last_seen_at", Text),
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -200,6 +206,14 @@ payment_orders = Table(
 )
 Index("idx_payment_orders_user_created", payment_orders.c.user_id, payment_orders.c.created_at)
 
+app_settings = Table(
+    "app_settings",
+    metadata,
+    Column("key", Text, primary_key=True),
+    Column("value_text", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+
 
 class Database:
     def __init__(self, database_url: str | None = None, path: Path | None = None):
@@ -215,6 +229,9 @@ class Database:
             self._ensure_column(conn, "users", "wechat_openid", "TEXT")
             self._ensure_column(conn, "users", "display_name", "TEXT")
             self._ensure_column(conn, "users", "avatar_url", "TEXT")
+            self._ensure_column(conn, "users", "is_banned", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "users", "admin_notes", "TEXT")
+            self._ensure_column(conn, "users", "last_seen_at", "TEXT")
             self._ensure_index(
                 conn,
                 "idx_users_login_identifier",
@@ -325,6 +342,46 @@ class Database:
     def get_user(self, user_id: str) -> UserOut | None:
         row = self.get_user_row(user_id)
         return _user_from_row(row) if row else None
+
+    def touch_user_seen(self, user_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(last_seen_at=_iso(_now()))
+            )
+
+    def get_monthly_price_cents(self) -> int:
+        return self.get_app_setting_int("monthly_price_cents", settings.monthly_price_cents)
+
+    def get_app_setting_int(self, key: str, default: int) -> int:
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(app_settings.c.value_text).where(app_settings.c.key == key)
+            ).scalar_one_or_none()
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    def set_app_setting(self, key: str, value: str) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            existing = conn.execute(
+                select(app_settings.c.key).where(app_settings.c.key == key)
+            ).scalar_one_or_none()
+            if existing:
+                conn.execute(
+                    update(app_settings)
+                    .where(app_settings.c.key == key)
+                    .values(value_text=value, updated_at=now)
+                )
+            else:
+                conn.execute(
+                    insert(app_settings).values(key=key, value_text=value, updated_at=now)
+                )
 
     def update_subscription(
         self,
@@ -859,6 +916,185 @@ class Database:
             )
         return items
 
+    def admin_overview(self) -> dict[str, Any]:
+        online_since = _iso(_now() - timedelta(minutes=settings.online_window_minutes))
+        with self.engine.connect() as conn:
+            total_users = int(conn.execute(select(func.count()).select_from(users)).scalar_one() or 0)
+            banned_users = int(
+                conn.execute(select(func.count()).select_from(users).where(users.c.is_banned == 1)).scalar_one() or 0
+            )
+            online_users = int(
+                conn.execute(
+                    select(func.count())
+                    .select_from(users)
+                    .where(users.c.is_banned == 0, users.c.last_seen_at >= online_since)
+                ).scalar_one() or 0
+            )
+            total_balance_cents = int(
+                conn.execute(select(func.coalesce(func.sum(users.c.balance_cents), 0))).scalar_one() or 0
+            )
+            paid_recharge_cents = int(
+                conn.execute(
+                    select(func.coalesce(func.sum(payment_orders.c.amount_cents), 0))
+                    .where(payment_orders.c.status == "paid")
+                ).scalar_one() or 0
+            )
+            pending_recharge_cents = int(
+                conn.execute(
+                    select(func.coalesce(func.sum(payment_orders.c.amount_cents), 0))
+                    .where(payment_orders.c.status == "pending")
+                ).scalar_one() or 0
+            )
+            paid_orders = int(
+                conn.execute(
+                    select(func.count()).select_from(payment_orders).where(payment_orders.c.status == "paid")
+                ).scalar_one() or 0
+            )
+            roleplay_session_count = int(
+                conn.execute(select(func.count()).select_from(roleplay_sessions)).scalar_one() or 0
+            )
+            practice_result_count = int(
+                conn.execute(select(func.count()).select_from(practice_results)).scalar_one() or 0
+            )
+            transcript_count = int(conn.execute(select(func.count()).select_from(transcripts)).scalar_one() or 0)
+        return {
+            "total_users": total_users,
+            "banned_users": banned_users,
+            "online_users": online_users,
+            "online_window_minutes": settings.online_window_minutes,
+            "total_balance_cents": total_balance_cents,
+            "paid_recharge_cents": paid_recharge_cents,
+            "pending_recharge_cents": pending_recharge_cents,
+            "paid_orders": paid_orders,
+            "roleplay_session_count": roleplay_session_count,
+            "practice_result_count": practice_result_count,
+            "transcript_count": transcript_count,
+            "monthly_price_cents": self.get_monthly_price_cents(),
+        }
+
+    def admin_list_users(self, limit: int = 100, query: str | None = None) -> list[dict[str, Any]]:
+        stmt = select(users).order_by(users.c.created_at.desc()).limit(limit)
+        if query:
+            pattern = f"%{query.strip()}%"
+            stmt = stmt.where(
+                or_(
+                    users.c.id.like(pattern),
+                    users.c.login_identifier.like(pattern),
+                    users.c.display_name.like(pattern),
+                    users.c.wechat_openid.like(pattern),
+                )
+            )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().fetchall()
+        return [_admin_user_from_row(row) for row in rows]
+
+    def admin_get_user_detail(self, user_id: str) -> dict[str, Any] | None:
+        row = self.get_user_row(user_id)
+        if row is None:
+            return None
+        with self.engine.connect() as conn:
+            transcript_count = int(
+                conn.execute(select(func.count()).select_from(transcripts).where(transcripts.c.user_id == user_id))
+                .scalar_one() or 0
+            )
+            scenario_count = int(
+                conn.execute(select(func.count()).select_from(scenarios).where(scenarios.c.user_id == user_id))
+                .scalar_one() or 0
+            )
+            roleplay_count = int(
+                conn.execute(
+                    select(func.count()).select_from(roleplay_sessions).where(roleplay_sessions.c.user_id == user_id)
+                ).scalar_one() or 0
+            )
+            practice_count = int(
+                conn.execute(
+                    select(func.count()).select_from(practice_results).where(practice_results.c.user_id == user_id)
+                ).scalar_one() or 0
+            )
+            paid_recharge_cents = int(
+                conn.execute(
+                    select(func.coalesce(func.sum(payment_orders.c.amount_cents), 0)).where(
+                        payment_orders.c.user_id == user_id,
+                        payment_orders.c.status == "paid",
+                    )
+                ).scalar_one() or 0
+            )
+            payment_rows = (
+                conn.execute(
+                    select(payment_orders)
+                    .where(payment_orders.c.user_id == user_id)
+                    .order_by(payment_orders.c.created_at.desc())
+                    .limit(50)
+                )
+                .mappings()
+                .fetchall()
+            )
+        return {
+            "user": _admin_user_from_row(row),
+            "usage": {
+                "transcript_count": transcript_count,
+                "scenario_count": scenario_count,
+                "roleplay_session_count": roleplay_count,
+                "practice_result_count": practice_count,
+                "paid_recharge_cents": paid_recharge_cents,
+            },
+            "ledger": [item.model_dump() for item in self.list_billing_ledger(user_id, limit=100)],
+            "payment_orders": [_payment_order_dict(row) for row in payment_rows],
+        }
+
+    def admin_update_user(
+        self,
+        user_id: str,
+        *,
+        display_name: str | None = None,
+        plan: str | None = None,
+        balance_cents: int | None = None,
+        balance_delta_cents: int | None = None,
+        is_banned: bool | None = None,
+        admin_notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        now = _now()
+        with self.engine.begin() as conn:
+            row = conn.execute(select(users).where(users.c.id == user_id)).mappings().fetchone()
+            if row is None:
+                return None
+            values: dict[str, Any] = {}
+            if display_name is not None:
+                values["display_name"] = display_name.strip() or None
+            if plan is not None:
+                values["plan"] = plan
+            if is_banned is not None:
+                values["is_banned"] = 1 if is_banned else 0
+            if admin_notes is not None:
+                values["admin_notes"] = admin_notes.strip() or None
+
+            old_balance = int(row["balance_cents"] or 0)
+            new_balance = old_balance
+            if balance_delta_cents is not None:
+                new_balance = max(0, old_balance + int(balance_delta_cents))
+                values["balance_cents"] = new_balance
+            elif balance_cents is not None:
+                new_balance = int(balance_cents)
+                values["balance_cents"] = new_balance
+
+            if values:
+                conn.execute(update(users).where(users.c.id == user_id).values(**values))
+
+            if new_balance != old_balance:
+                amount = new_balance - old_balance
+                conn.execute(
+                    insert(billing_ledger).values(
+                        id=str(uuid.uuid4()),
+                        user_id=user_id,
+                        type="admin_adjustment",
+                        title="后台余额调整",
+                        amount_cents=amount,
+                        balance_after_cents=new_balance,
+                        created_at=_iso(now),
+                    )
+                )
+        return self.admin_get_user_detail(user_id)
+
     def cleanup_expired(self) -> None:
         now = _iso(_now())
         cutoff = _iso(_now() - timedelta(days=settings.retention_days))
@@ -913,7 +1149,7 @@ def _database_url(database_url: str | None, path: Path) -> str:
 def clean_transcript_items(items: list[TranscriptItem]) -> list[TranscriptItem]:
     cleaned: list[TranscriptItem] = []
     seen_ids: set[str] = set()
-    for item in items:
+    for item in filter_sensitive_transcripts(items):
         if item.id in seen_ids:
             continue
         seen_ids.add(item.id)
@@ -972,8 +1208,27 @@ def _user_from_row(row: Mapping[str, Any]) -> UserOut:
         avatar_url=row.get("avatar_url"),
         plan=row["plan"],
         balance_cents=int(row.get("balance_cents") or 0),
+        is_banned=bool(row.get("is_banned") or 0),
+        admin_notes=row.get("admin_notes"),
+        last_seen_at=_parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,
         created_at=_parse_dt(row["created_at"]),
     )
+
+
+def _admin_user_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "login_identifier": row["login_identifier"],
+        "wechat_openid": row.get("wechat_openid"),
+        "display_name": row.get("display_name"),
+        "avatar_url": row.get("avatar_url"),
+        "plan": row["plan"],
+        "balance_cents": int(row.get("balance_cents") or 0),
+        "is_banned": bool(row.get("is_banned") or 0),
+        "admin_notes": row.get("admin_notes"),
+        "last_seen_at": _parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,
+        "created_at": _parse_dt(row["created_at"]),
+    }
 
 
 def _session_from_row(row: Mapping[str, Any]) -> SessionRecord:
@@ -1052,6 +1307,22 @@ def _payment_order_from_row(row: Mapping[str, Any], message: str) -> RechargeOrd
         message=message,
         created_at=_parse_dt(row["created_at"]),
     )
+
+
+def _payment_order_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "order_id": row["order_id"],
+        "user_id": row["user_id"],
+        "method": row["method"],
+        "amount_cents": int(row["amount_cents"]),
+        "status": row["status"],
+        "payment_url": row["payment_url"],
+        "qr_code_text": row["qr_code_text"],
+        "receiver_name": row["receiver_name"],
+        "receiver_account": row["receiver_account"],
+        "created_at": _parse_dt(row["created_at"]),
+        "paid_at": _parse_dt(row["paid_at"]) if row.get("paid_at") else None,
+    }
 
 
 def _payment_method_title(method: str) -> str:

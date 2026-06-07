@@ -13,6 +13,9 @@ class UserOut(BaseModel):
     avatar_url: str | None = None
     plan: str
     balance_cents: int = 0
+    is_banned: bool = False
+    admin_notes: str | None = None
+    last_seen_at: datetime | None = None
     created_at: datetime
 
 
@@ -273,6 +276,26 @@ class RechargeOrderResponse(BaseModel):
 
 class RechargeConfirmRequest(BaseModel):
     order_id: str
+
+
+class PriceResponse(BaseModel):
+    monthly_price_cents: int
+    monthly_price_yuan: float
+    currency: str = "CNY"
+    product_id: str
+
+
+class AdminUserUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=80)
+    plan: Literal["free", "pro"] | None = None
+    balance_cents: int | None = Field(default=None, ge=0, le=100000000)
+    balance_delta_cents: int | None = Field(default=None, ge=-100000000, le=100000000)
+    is_banned: bool | None = None
+    admin_notes: str | None = Field(default=None, max_length=1000)
+
+
+class AdminPriceUpdateRequest(BaseModel):
+    monthly_price_cents: int = Field(ge=100, le=1000000)
 
 
 class SessionRecord(BaseModel):
