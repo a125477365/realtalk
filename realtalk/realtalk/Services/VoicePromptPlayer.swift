@@ -7,7 +7,7 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
 
     private let synthesizer = AVSpeechSynthesizer()
-    private var queue: [String] = []
+    private var queue: [SpokenPrompt] = []
     private var completion: (() -> Void)?
 
     override init() {
@@ -29,7 +29,7 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
         }
 
         stop()
-        queue = trimmed
+        queue = trimmed.map { SpokenPrompt(text: $0, language: Self.language(for: $0)) }
         self.completion = completion
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
@@ -52,12 +52,22 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
             return
         }
 
-        let utterance = AVSpeechUtterance(string: queue.removeFirst())
-        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        let prompt = queue.removeFirst()
+        let utterance = AVSpeechUtterance(string: prompt.text)
+        utterance.voice = AVSpeechSynthesisVoice(language: prompt.language)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.88
         utterance.pitchMultiplier = 1.02
         synthesizer.speak(utterance)
     }
+
+    private static func language(for text: String) -> String {
+        text.range(of: "\\p{Han}", options: .regularExpression) == nil ? "en-US" : "zh-CN"
+    }
+}
+
+private struct SpokenPrompt {
+    let text: String
+    let language: String
 }
 
 extension VoicePromptPlayer: AVSpeechSynthesizerDelegate {

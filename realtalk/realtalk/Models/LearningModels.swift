@@ -170,6 +170,7 @@ struct RoleplayStateResponse: Codable, Equatable {
     let completed: Bool
     let messages: [RoleplayMessage]
     let latestFeedback: String?
+    let latestAccepted: Bool?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -183,6 +184,7 @@ struct RoleplayStateResponse: Codable, Equatable {
         case completed
         case messages
         case latestFeedback = "latest_feedback"
+        case latestAccepted = "latest_accepted"
     }
 }
 

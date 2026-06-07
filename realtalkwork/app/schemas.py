@@ -206,6 +206,7 @@ class RoleplayStateResponse(BaseModel):
     completed: bool
     messages: list[RoleplayMessageOut]
     latest_feedback: str | None = None
+    latest_accepted: bool | None = None
 
 
 class PracticeHistoryItem(BaseModel):

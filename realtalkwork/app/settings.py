@@ -40,6 +40,7 @@ class Settings:
     token_ttl_hours: int = int(os.getenv("TOKEN_TTL_HOURS", "720"))
     retention_days: int = int(os.getenv("RETENTION_DAYS", "3"))
     history_retention_days: int = int(os.getenv("HISTORY_RETENTION_DAYS", "90"))
+    roleplay_accept_score: float = float(os.getenv("ROLEPLAY_ACCEPT_SCORE", "0.72"))
     require_pro_for_ai: bool = _bool_env("REQUIRE_PRO_FOR_AI", False)
     email_code_ttl_minutes: int = int(os.getenv("EMAIL_CODE_TTL_MINUTES", "10"))
     email_dev_mode: bool = _bool_env("EMAIL_DEV_MODE", True)

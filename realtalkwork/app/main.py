@@ -47,7 +47,7 @@ from .schemas import (
     WeChatLoginRequest,
 )
 from .settings import settings
-from .storage import DatabaseIntegrityError, db
+from .storage import DatabaseIntegrityError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
@@ -290,7 +290,20 @@ async def roleplay_message(
         db.list_roleplay_messages(user.id, session.session_id),
     )
     score = evaluation.score
-    feedback = format_roleplay_feedback(evaluation.feedback, evaluation.correction)
+    accepted = evaluation.accepted and score >= settings.roleplay_accept_score
+    had_rejected_attempt = db.has_rejected_practice_attempt(
+        user.id,
+        session.session_id,
+        target_line.index,
+        settings.roleplay_accept_score,
+    )
+    feedback = format_roleplay_feedback(
+        evaluation.feedback,
+        evaluation.correction,
+        accepted,
+        had_rejected_attempt,
+    )
+    stored_feedback = feedback or evaluation.feedback.strip() or "回答正确，已继续下一句。"
     db.add_roleplay_message(
         user.id,
         session.session_id,
@@ -298,7 +311,7 @@ async def roleplay_message(
         role=session.selected_role,
         content=request.message.strip(),
         translation=target_line.source_text,
-        feedback=feedback,
+        feedback=feedback or None,
     )
     db.add_practice_result(
         user.id,
@@ -308,17 +321,24 @@ async def roleplay_message(
         evaluation.correction,
         request.message.strip(),
         score,
-        feedback,
+        stored_feedback,
     )
 
-    session.turns += 1
-    session.score_total += score
-    session.target_index = target_line.index + 1
-    session = push_ai_lines_until_user_turn(user.id, session, scenario)
-    if next_user_line(session, scenario) is None:
-        session.status = "completed"
+    if accepted:
+        session.turns += 1
+        session.score_total += score
+        session.target_index = target_line.index + 1
+        session = push_ai_lines_until_user_turn(user.id, session, scenario)
+        if next_user_line(session, scenario) is None:
+            session.status = "completed"
     db.update_roleplay_session(session)
-    return roleplay_state_response(user.id, session, scenario, latest_feedback=feedback)
+    return roleplay_state_response(
+        user.id,
+        session,
+        scenario,
+        latest_feedback=feedback or None,
+        latest_accepted=accepted,
+    )
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)
@@ -464,11 +484,11 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
 
 def materialize_items(user_id: str, start: datetime, end: datetime, request_items: list) -> list:
     if request_items:
-        db.insert_transcripts(user_id, request_items)
-        items = request_items
+        items = clean_transcript_items(request_items)
+        db.insert_transcripts(user_id, items)
     else:
         items = db.query_transcripts(user_id, start, end)
-    return sorted([item for item in items if item.text.strip()], key=lambda item: item.timestamp)
+    return sorted(clean_transcript_items(items), key=lambda item: item.timestamp)
 
 
 def state_response(session, feedback: str | None = None, correction: str | None = None) -> TrainingStateResponse:
@@ -538,6 +558,7 @@ def roleplay_state_response(
     session: RoleplaySessionRecord,
     scenario: ScenarioResponse,
     latest_feedback: str | None = None,
+    latest_accepted: bool | None = None,
 ) -> RoleplayStateResponse:
     total = sum(1 for line in scenario.lines if line.target_role == session.selected_role)
     completed = session.status == "completed"
@@ -554,6 +575,7 @@ def roleplay_state_response(
         completed=completed,
         messages=db.list_roleplay_messages(user_id, session.session_id),
         latest_feedback=latest_feedback,
+        latest_accepted=latest_accepted,
     )
 
 
@@ -565,9 +587,18 @@ def feedback_for_score(score: float, expected: str) -> str:
     return f"先按参考句练熟：{expected}"
 
 
-def format_roleplay_feedback(feedback: str, correction: str) -> str:
+def format_roleplay_feedback(
+    feedback: str,
+    correction: str,
+    accepted: bool,
+    had_rejected_attempt: bool = False,
+) -> str:
     feedback = feedback.strip()
     correction = correction.strip()
+    if accepted:
+        return "正确，那我们继续下一句开始交流吧。" if had_rejected_attempt else ""
+    prefix = "先别急，我们把这一句说准。"
+    feedback = f"{prefix}{feedback}"
     if correction and correction not in feedback:
         return f"{feedback}\n更自然：{correction}"
     return feedback

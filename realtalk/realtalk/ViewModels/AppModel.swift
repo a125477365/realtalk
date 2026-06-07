@@ -469,10 +469,15 @@ final class AppModel: ObservableObject {
                 message: answer,
                 token: token
             )
-            handleRoleplayState(state)
-            let feedback = state.latestFeedback ?? "已识别你的英语"
-            statusMessage = feedback
-            appendChat(.assistant, feedback)
+            let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let feedback, feedback.isEmpty == false {
+                statusMessage = feedback
+                appendChat(.assistant, feedback)
+                handleRoleplayState(state, spokenPreface: feedback)
+            } else {
+                statusMessage = "继续对话"
+                handleRoleplayState(state)
+            }
             await loadPracticeHistory()
         } catch {
             isVoiceConversationActive = false
@@ -542,7 +547,7 @@ final class AppModel: ObservableObject {
         voice.speak(message.content)
     }
 
-    private func handleRoleplayState(_ state: RoleplayStateResponse) {
+    private func handleRoleplayState(_ state: RoleplayStateResponse, spokenPreface: String? = nil) {
         roleplay = state
         scenario = state.scenario
         selectedRoleID = state.selectedRole
@@ -570,13 +575,22 @@ final class AppModel: ObservableObject {
         }
 
         guard autoSpeakAI, newAIMessages.isEmpty == false else {
-            Task { @MainActor in
-                await listenForNextRoleplayTurn()
+            if let spokenPreface {
+                voice.speak(spokenPreface) { [weak self] in
+                    Task { @MainActor in
+                        await self?.listenForNextRoleplayTurn()
+                    }
+                }
+            } else {
+                Task { @MainActor in
+                    await listenForNextRoleplayTurn()
+                }
             }
             return
         }
 
-        voice.speak(newAIMessages.map(\.content)) { [weak self] in
+        let spoken = [spokenPreface].compactMap { $0 } + newAIMessages.map(\.content)
+        voice.speak(spoken) { [weak self] in
             Task { @MainActor in
                 await self?.listenForNextRoleplayTurn()
             }

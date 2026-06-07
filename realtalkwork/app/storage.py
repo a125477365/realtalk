@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -503,7 +504,7 @@ class Database:
     def insert_transcripts(self, user_id: str, items: list[TranscriptItem]) -> int:
         now = _now()
         rows = []
-        for item in items:
+        for item in clean_transcript_items(items):
             timestamp = _utc(item.timestamp)
             if timestamp < now - timedelta(days=settings.retention_days):
                 continue
@@ -787,6 +788,30 @@ class Database:
                 )
             )
 
+    def has_rejected_practice_attempt(
+        self,
+        user_id: str,
+        session_id: str,
+        line_index: int,
+        accept_score: float,
+    ) -> bool:
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(practice_results.c.id)
+                    .where(
+                        practice_results.c.user_id == user_id,
+                        practice_results.c.session_id == session_id,
+                        practice_results.c.line_index == line_index,
+                        practice_results.c.score < accept_score,
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .fetchone()
+            )
+        return row is not None
+
     def list_practice_history(self, user_id: str, limit: int = 20) -> list[PracticeHistoryItem]:
         with self.engine.connect() as conn:
             rows = (
@@ -883,6 +908,52 @@ def _database_url(database_url: str | None, path: Path) -> str:
     if resolved.parent:
         resolved.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{resolved}"
+
+
+def clean_transcript_items(items: list[TranscriptItem]) -> list[TranscriptItem]:
+    cleaned: list[TranscriptItem] = []
+    seen_ids: set[str] = set()
+    for item in items:
+        if item.id in seen_ids:
+            continue
+        seen_ids.add(item.id)
+        text = _clean_transcript_text(item.text)
+        if text is None:
+            continue
+        cleaned.append(item.model_copy(update={"text": text}))
+    return cleaned
+
+
+_TEXT_SIGNAL_RE = re.compile(r"[0-9A-Za-z\u4e00-\u9fff]")
+_NOISE_TEXTS = {
+    "开始录音",
+    "停止录音",
+    "正在录音",
+    "识别中",
+    "采集中",
+    "未检测到语音",
+    "麦克风已开启",
+    "麦克风已关闭",
+    "字幕由ai生成",
+    "字幕由 ai 生成",
+    "谢谢观看",
+    "感谢观看",
+    "请点赞",
+    "请订阅",
+}
+_NOISE_KEYS = {re.sub(r"\s+", "", value.lower()) for value in _NOISE_TEXTS}
+
+
+def _clean_transcript_text(text: str) -> str | None:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return None
+    compact = re.sub(r"\s+", "", normalized.lower())
+    if compact in _NOISE_KEYS:
+        return None
+    if _TEXT_SIGNAL_RE.search(normalized) is None:
+        return None
+    return normalized
 
 
 def _backend_name(database_url: str) -> str:

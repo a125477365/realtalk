@@ -20,9 +20,9 @@ iOS 默认访问 `http://127.0.0.1:8000`。真机调试时，把 `RealTalk/AppCo
 - 本地开发默认 SQLite 文件：`E:\code\realtalk\realtalkwork\realtalk.sqlite3`
 - 生产环境设置 `DATABASE_URL` 后使用 PostgreSQL 协议数据库；可连接 CockroachDB、YugabyteDB 或托管 PostgreSQL
 - `users`：`login_identifier`、微信 openid、密码哈希、套餐、余额、Apple 原始交易号
-- `transcripts`：只保存文本，不保存音频；`expires_at = timestamp + 3 天`
+- `transcripts`：只保存文本，不保存音频；按识别片段逐条保存，上传入口会过滤空白、纯标点、系统提示词和常见字幕噪声；`expires_at = timestamp + 3 天`
 - `sessions`：训练题目、当前状态和得分；同样按 3 天清理
-- `scenarios`：从用户选择的当天或某个时间段真实转写逐句生成英语场景
+- `scenarios`：从用户选择的当天或某个时间段真实转写逐句生成英语场景，并把整套 A/B 角色、中文原句、英文还原句保存为一个可复练场景
 - `roleplay_sessions` / `roleplay_messages` / `practice_results`：保存角色扮演过程、每句口语识别结果、纠错反馈和练习得分
 
 ## 语音还原练习
