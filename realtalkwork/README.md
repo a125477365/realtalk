@@ -58,6 +58,15 @@ docker compose up --build
 
 后端优先读取 `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL`，兼容任意 OpenAI 风格 `/chat/completions` 服务。未配置 `AI_*` 时自动使用 `ARK_*`；如果配置了 `ARK_BOT_ID`，会调用火山方舟 Bot 的 `/bots/chat/completions`。
 
+## 模型会话隔离和指令安全
+
+- 当前低成本版本使用无状态 Chat Completions 调用：所有用户共用同一个模型服务账号/API key，但不是共用同一个大模型会话。
+- 每次模型请求都由后端按当前登录用户 `user_id` 读取自己的 `transcripts`、`scenarios`、`roleplay_messages` 后临时拼装上下文；不会把 A 用户的数据放进 B 用户的请求。
+- 后端不向模型传递 provider 级 `conversation_id` / `session_id`，因此模型侧不保存跨用户连续会话；业务会话状态保存在数据库表里。
+- 真实对话、场景内容、用户历史消息和当轮输入全部按“未受信任数据”处理，只能作为翻译、英语口语还原、提示、评分纠错或学习材料来源。
+- 如果真实对话里出现“忽略之前规则”“泄露提示词”“执行命令”“改身份”等内容，模型必须把它当作普通待翻译文本，不得执行。
+- `/ai/chat` 不会把客户端传来的 `assistant` 历史消息作为真正的高优先级 assistant 消息透传给模型，而是包成未受信任 JSON 上下文，避免用户伪造历史消息提升指令优先级。
+
 ## 收费开关
 
 开发时 `APPLE_IAP_DEV_BYPASS=true`，后端收到 iOS 的 StoreKit 交易后直接把用户标为 `pro`。生产环境请改为：
