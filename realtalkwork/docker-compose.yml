@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: realtalk
       POSTGRES_DB: realtalk
     volumes:
-      - realtalk-db-data:/var/lib/postgresql/data
+      - /mnt/data_md0/DB/realtalk:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U realtalk"]
       interval: 2s
@@ -35,6 +35,3 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  realtalk-db-data:
