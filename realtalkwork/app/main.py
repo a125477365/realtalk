@@ -9,12 +9,12 @@ from difflib import SequenceMatcher
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import evaluate_roleplay_turn, generate_ai_chat_reply, generate_learning, generate_scenario
-from .auth import create_token, hash_password, make_email_code, normalize_email, send_email_code, verify_password, verify_token
+from .auth import create_admin_session, create_token, destroy_admin_session, hash_password, make_email_code, normalize_email, send_email_code, verify_password, verify_admin_session, verify_token
 from .billing import apple_billing
 from .content_policy import is_political_sensitive
 from .schemas import (
@@ -54,6 +54,7 @@ from .schemas import (
     WeChatLoginRequest,
 )
 from .settings import settings
+import secrets as _secrets
 from .storage import DatabaseIntegrityError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
@@ -88,26 +89,113 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
     return user
 
 
-async def current_admin(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
+async def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
+    session_token = request.cookies.get("admin_session")
+    if session_token:
+        username = verify_admin_session(session_token)
+        if username:
+            return username
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        payload_b64, signature = token.split(".", 1)
+        if hmac.compare_digest(_sign(payload_b64), signature):
+            payload = json.loads(_unb64(payload_b64))
+            if int(payload.get("exp", 0)) >= int(time.time()):
+                if payload.get("role") == "admin":
+                    return payload.get("sub", "admin")
     if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="需要管理员登录",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
     username_ok = hmac.compare_digest(credentials.username, settings.admin_username)
     password_ok = hmac.compare_digest(credentials.password, settings.admin_password)
     if not username_ok or not password_ok:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="管理员账号或密码错误",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="管理员账号或密码错误")
     return credentials.username
 
 
-def admin_html() -> str:
-    return """<!doctype html><html><head><meta charset="utf-8"/><title>RealTalk 管理台</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}.container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}.card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}a{color:#0071e3}</style></head><body><div class="container"><header><h1>RealTalk 管理台</h1><span class="badge">local</span></header><div class="card"><h2>数据概览</h2><p>请从上方 API 接口获取实时数据：</p><ul><li><a href="/admin/api/overview" target="_blank">/admin/api/overview</a></li><li><a href="/admin/api/users" target="_blank">/admin/api/users</a></li></ul></div><div class="card"><h2>健康检查</h2><ul><li><a href="/health" target="_blank">/health</a></li><li><a href="/ready" target="_blank">/ready</a></li></ul></div></div></body></html>"""
+def _admin_login_page(bad_session: bool = False) -> str:
+    err = "<p style='color:#ff3b30'>Session 已过期，请重新登录</p>" if bad_session else ""
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台 - 登录</title>"
+        "<style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
+        ".container{max-width:420px;margin:80px auto;background:#fff;border-radius:18px;padding:32px;box-shadow:0 1px 2px rgba(0,0,0,0.06)}"
+        "h1{font-size:20px;margin:0 0 18px}input{display:block;width:100%;padding:10px;margin:8px 0;border:1px solid #d1d1d6;border-radius:12px;font:inherit}"
+        "button{width:100%;padding:11px;border:0;border-radius:12px;background:#0071e3;color:#fff;font-weight:600;cursor:pointer}"
+        "a{color:#0071e3;text-decoration:none}small{color:#86868b}"
+        "</style></head><body><div class='container'><h1>RealTalk 管理台</h1>"
+        + err +
+        "<form method='post' action='/admin/login' autocomplete='off'>"
+        "<input name='username' placeholder='用户名' autofocus/>"
+        "<input name='password' type='password' placeholder='密码'/>"
+        "<button type='submit'>登 录</button></form>"
+        "<p style='text-align:center;margin-top:18px'><small>默认账号：admin / admin123456</small></p>"
+        "<p style='text-align:center;margin-top:8px'><a href='/'>返回首页</a></p>"
+        "</div></body></html>"
+    )
+
+
+    def _admin_logged_in_page() -> str:
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台</title>"
+            "<style>"
+            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
+            ".container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}"
+            "h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}"
+            ".card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}"
+            "a{color:#0071e3}button{padding:7px 12px;border:0;border-radius:10px;background:#ff3b30;color:#fff;cursor:pointer}"
+            "</style></head><body><div class='container'><header><h1>RealTalk 管理台</h1><span class='badge'>已登录</span></header>"
+            "<form method='post' action='/admin/logout' style='display:inline'><button type='submit'>退出登录</button></form>"
+            "<div class='card'><h2>数据概览</h2><p>请从下方接口获取实时数据：</p><ul>"
+            "<li><a href='/admin/api/overview' target='_blank'>/admin/api/overview</a></li>"
+            "<li><a href='/admin/api/users' target='_blank'>/admin/api/users</a></li>"
+            "</ul></div>"
+            "<div class='card'><h2>健康检查</h2><ul>"
+            "<li><a href='/health' target='_blank'>/health</a></li>"
+            "<li><a href='/ready' target='_blank'>/ready</a></li>"
+            "</ul></div></div></body></html>"
+        )
+
+
+    def admin_html(*, bad_session: bool = False) -> str:
+        return _admin_login_page(bad_session=bad_session)
+
+
+    def admin_logged_in_html() -> str:
+        return _admin_logged_in_page()
+    <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}.container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}.card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}a{color:#0071e3}</style></head><body><div class="container"><header><h1>RealTalk 管理台</h1><span class="badge">local</span></header><div class="card"><h2>数据概览</h2><p>请从上方 API 接口获取实时数据：</p><ul><li><a href="/admin/api/overview" target="_blank">/admin/api/overview</a></li><li><a href="/admin/api/users" target="_blank">/admin/api/users</a></li></ul></div><div class="card"><h2>健康检查</h2><ul><li><a href="/health" target="_blank">/health</a></li><li><a href="/ready" target="_blank">/ready</a></li></ul></div></div></body></html>"""
+
+@app.post("/admin/login")
+async def admin_login(request: Request, response: Response) -> Response:
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+    username_ok = hmac.compare_digest(username, settings.admin_username)
+    password_ok = hmac.compare_digest(password, settings.admin_password)
+    if not username_ok or not password_ok:
+        return HTMLResponse(
+            "<h1>管理员登录</h1><p style='color:#ff3b30'>账号或密码错误</p><a href='/admin'>返回</a>",
+            status_code=401,
+        )
+    token = create_admin_session(username)
+    response = RedirectResponse("/admin", status_code=303)
+    secure = ";" if request.url.scheme != "https" else "; Secure"
+    response.set_cookie(
+        key="admin_session",
+        value=token,
+        httponly=True,
+        max_age=60 * 60 * 24 * 7,
+        path="/admin",
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/admin/logout")
+async def admin_logout(response: Response) -> Response:
+    response.delete_cookie(key="admin_session", path="/admin")
+    return RedirectResponse("/admin", status_code=303)
+
 @app.get("/health")
 async def health() -> dict[str, str | int]:
     return {
@@ -136,8 +224,14 @@ async def billing_prices() -> PriceResponse:
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_console(_: str = Depends(current_admin)) -> HTMLResponse:
-    return HTMLResponse(admin_html())
+async def admin_console(request: Request) -> HTMLResponse:
+    try:
+        _ = await current_admin(request)
+        return HTMLResponse(admin_logged_in_html())
+    except HTTPException:
+        if request.cookies.get("admin_session"):
+            return HTMLResponse(admin_html(bad_session=True))
+        return HTMLResponse(admin_html())
 
 
 @app.get("/admin/api/overview")
@@ -709,3 +803,17 @@ async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(60 * 60)
         db.cleanup_expired()
+
+def _sign(payload_b64: str) -> str:
+    import hashlib
+    import base64
+    digest = hashlib.new(
+        "sha256",
+        settings.jwt_secret.encode("utf-8") + payload_b64.encode("utf-8"),
+    ).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+def _unb64(data: str) -> bytes:
+    import base64
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)

@@ -110,3 +110,23 @@ def _unb64(data: str) -> bytes:
 
 def _unauthorized(detail: str = "认证失败") -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+
+
+active_admin_sessions: set[str] = set()
+
+
+def create_admin_session(username: str) -> str:
+    token = os.urandom(24).hex()
+    active_admin_sessions.add(token)
+    return token
+
+
+def verify_admin_session(token: str) -> str | None:
+    if token in active_admin_sessions:
+        return "admin"
+    return None
+
+
+def destroy_admin_session(token: str) -> None:
+    active_admin_sessions.discard(token)
