@@ -90,11 +90,19 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
 
 async def current_admin(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="需要管理员登录",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     username_ok = hmac.compare_digest(credentials.username, settings.admin_username)
     password_ok = hmac.compare_digest(credentials.password, settings.admin_password)
     if not username_ok or not password_ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="管理员账号或密码错误")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="管理员账号或密码错误",
+            headers={"WWW-Authenticate": "Basic"},
+        )
     return credentials.username
 
 
