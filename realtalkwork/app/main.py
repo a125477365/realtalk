@@ -3,26 +3,42 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import html
+import json as _json
+import secrets
+import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import RedirectResponse, Response
+from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import evaluate_roleplay_turn, generate_ai_chat_reply, generate_learning, generate_scenario
-from .auth import create_admin_session, create_token, destroy_admin_session, hash_password, make_email_code, normalize_email, send_email_code, verify_password, verify_admin_session, verify_token
-from .billing import apple_billing
+from .auth import (
+    create_admin_token, create_token, create_refresh_token,
+    destroy_admin_token, hash_password, hash_email_code,
+    make_email_code, normalize_email, send_email_code,
+    send_password_reset_email, verify_password, verify_admin_token,
+    verify_admin_password, verify_token, verify_refresh_token,
+    create_password_reset_token, seed_default_admin,
+)
+from .billing import apple_billing, wechat_pay, alipay
 from .content_policy import is_political_sensitive
 from .schemas import (
+    AdminCreateRequest,
+    AdminListResponse,
+    AdminOut,
     AdminPriceUpdateRequest,
+    AdminUpdateRequest,
     AdminUserUpdateRequest,
     ApplePurchaseVerifyRequest,
     AuthRequest,
     AuthResponse,
+    AuthTokenResponse,
     AIChatRequest,
     AIChatResponse,
     BillingAccountResponse,
@@ -32,10 +48,17 @@ from .schemas import (
     EmailRegisterRequest,
     LearningGenerateRequest,
     LearningResponse,
+    MessageResponse,
+    PasswordChangeRequest,
+    PasswordLoginRequest,
+    PasswordRegisterRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetSendRequest,
     PracticeHistoryResponse,
     PriceResponse,
     RechargeConfirmRequest,
     RechargeCreateRequest,
+    RechargeQueryRequest,
     RechargeOrderResponse,
     RoleplayMessageRequest,
     RoleplaySessionRecord,
@@ -44,6 +67,7 @@ from .schemas import (
     ScenarioGenerateRequest,
     ScenarioResponse,
     SceneLine,
+    TokenRefreshRequest,
     TrainingAnswerRequest,
     TrainingStartRequest,
     TrainingStateResponse,
@@ -54,26 +78,31 @@ from .schemas import (
     WeChatLoginRequest,
 )
 from .settings import settings
-import secrets as _secrets
 from .storage import DatabaseIntegrityError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
 admin_security = HTTPBasic(auto_error=False)
 
+_af_url = os.getenv("ADMIN_FRONTEND_URL", "http://localhost:8080")
+_allow_origins = [_af_url] if not _af_url.startswith("http://localhost") else [_af_url, "http://localhost:8080", "http://127.0.0.1:8080"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Set-Cookie"],
 )
 
 
 @app.on_event("startup")
 async def startup() -> None:
+    from .auth import seed_default_admin
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
+    seed_default_admin()
 
 
 async def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UserOut:
@@ -89,112 +118,89 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
     return user
 
 
-async def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
+async def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> dict:
+    """Authenticate admin via session cookie or HTTP Basic. Returns admin dict."""
     session_token = request.cookies.get("admin_session")
     if session_token:
-        username = verify_admin_session(session_token)
-        if username:
-            return username
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        token = auth.split(" ", 1)[1].strip()
-        payload_b64, signature = token.split(".", 1)
-        if hmac.compare_digest(_sign(payload_b64), signature):
-            payload = json.loads(_unb64(payload_b64))
-            if int(payload.get("exp", 0)) >= int(time.time()):
-                if payload.get("role") == "admin":
-                    return payload.get("sub", "admin")
+        admin = verify_admin_token(session_token)
+        if admin:
+            return admin
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
-    username_ok = hmac.compare_digest(credentials.username, settings.admin_username)
-    password_ok = hmac.compare_digest(credentials.password, settings.admin_password)
-    if not username_ok or not password_ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="管理员账号或密码错误")
-    return credentials.username
-
-
-def _admin_login_page(bad_session: bool = False) -> str:
-    err = "<p style='color:#ff3b30'>Session 已过期，请重新登录</p>" if bad_session else ""
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台 - 登录</title>"
-        "<style>"
-        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
-        ".container{max-width:420px;margin:80px auto;background:#fff;border-radius:18px;padding:32px;box-shadow:0 1px 2px rgba(0,0,0,0.06)}"
-        "h1{font-size:20px;margin:0 0 18px}input{display:block;width:100%;padding:10px;margin:8px 0;border:1px solid #d1d1d6;border-radius:12px;font:inherit}"
-        "button{width:100%;padding:11px;border:0;border-radius:12px;background:#0071e3;color:#fff;font-weight:600;cursor:pointer}"
-        "a{color:#0071e3;text-decoration:none}small{color:#86868b}"
-        "</style></head><body><div class='container'><h1>RealTalk 管理台</h1>"
-        + err +
-        "<form method='post' action='/admin/login' autocomplete='off'>"
-        "<input name='username' placeholder='用户名' autofocus/>"
-        "<input name='password' type='password' placeholder='密码'/>"
-        "<button type='submit'>登 录</button></form>"
-        "<p style='text-align:center;margin-top:18px'><small>默认账号：admin / admin123456</small></p>"
-        "<p style='text-align:center;margin-top:8px'><a href='/'>返回首页</a></p>"
-        "</div></body></html>"
-    )
-
-
-    def _admin_logged_in_page() -> str:
-        return (
-            "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台</title>"
-            "<style>"
-            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
-            ".container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}"
-            "h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}"
-            ".card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}"
-            "a{color:#0071e3}button{padding:7px 12px;border:0;border-radius:10px;background:#ff3b30;color:#fff;cursor:pointer}"
-            "</style></head><body><div class='container'><header><h1>RealTalk 管理台</h1><span class='badge'>已登录</span></header>"
-            "<form method='post' action='/admin/logout' style='display:inline'><button type='submit'>退出登录</button></form>"
-            "<div class='card'><h2>数据概览</h2><p>请从下方接口获取实时数据：</p><ul>"
-            "<li><a href='/admin/api/overview' target='_blank'>/admin/api/overview</a></li>"
-            "<li><a href='/admin/api/users' target='_blank'>/admin/api/users</a></li>"
-            "</ul></div>"
-            "<div class='card'><h2>健康检查</h2><ul>"
-            "<li><a href='/health' target='_blank'>/health</a></li>"
-            "<li><a href='/ready' target='_blank'>/ready</a></li>"
-            "</ul></div></div></body></html>"
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="需要管理员登录",
+            headers={"WWW-Authenticate": "Basic"},
         )
+    admin = db.admin_get_by_username(credentials.username)
+    if admin is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="管理员账号或密码错误",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    if not admin["is_active"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="账号已被禁用",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    if not verify_admin_password(admin, credentials.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="管理员账号或密码错误",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return admin
 
 
-    def admin_html(*, bad_session: bool = False) -> str:
-        return _admin_login_page(bad_session=bad_session)
+_login_page_url = os.getenv("ADMIN_FRONTEND_URL", "http://localhost:8080").rstrip("/") + "/login"
 
 
-    def admin_logged_in_html() -> str:
-        return _admin_logged_in_page()
-    <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}.container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}.card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}a{color:#0071e3}</style></head><body><div class="container"><header><h1>RealTalk 管理台</h1><span class="badge">local</span></header><div class="card"><h2>数据概览</h2><p>请从上方 API 接口获取实时数据：</p><ul><li><a href="/admin/api/overview" target="_blank">/admin/api/overview</a></li><li><a href="/admin/api/users" target="_blank">/admin/api/users</a></li></ul></div><div class="card"><h2>健康检查</h2><ul><li><a href="/health" target="_blank">/health</a></li><li><a href="/ready" target="_blank">/ready</a></li></ul></div></div></body></html>"""
+@app.get("/admin/login-page")
+async def admin_login_page() -> RedirectResponse:
+    return RedirectResponse(_login_page_url, status_code=303)
+
 
 @app.post("/admin/login")
-async def admin_login(request: Request, response: Response) -> Response:
+async def admin_login(request: Request, response: Response) -> dict:
     form = await request.form()
-    username = form.get("username", "")
-    password = form.get("password", "")
-    username_ok = hmac.compare_digest(username, settings.admin_username)
-    password_ok = hmac.compare_digest(password, settings.admin_password)
-    if not username_ok or not password_ok:
-        return HTMLResponse(
-            "<h1>管理员登录</h1><p style='color:#ff3b30'>账号或密码错误</p><a href='/admin'>返回</a>",
-            status_code=401,
-        )
-    token = create_admin_session(username)
-    response = RedirectResponse("/admin", status_code=303)
-    secure = ";" if request.url.scheme != "https" else "; Secure"
+    username = (form.get("username") or "").strip()
+    password = form.get("password") or ""
+    
+    admin = db.admin_get_by_username(username)
+    if admin is None:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if not admin["is_active"]:
+        raise HTTPException(status_code=403, detail="账号已被禁用")
+    if not verify_admin_password(admin, password):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    token = create_admin_token(admin["id"], admin["username"], client_ip, user_agent)
+    
+    db.admin_touch_login(admin["id"], client_ip)
+    
     response.set_cookie(
         key="admin_session",
         value=token,
         httponly=True,
         max_age=60 * 60 * 24 * 7,
-        path="/admin",
-        samesite="lax",
+        path="/",
+        samesite="none",
+        secure=False,
     )
-    return response
+    return {"ok": True, "username": admin["username"], "role": admin["role"]}
 
 
 @app.post("/admin/logout")
-async def admin_logout(response: Response) -> Response:
-    response.delete_cookie(key="admin_session", path="/admin")
-    return RedirectResponse("/admin", status_code=303)
+async def admin_logout(request: Request, response: Response) -> dict:
+    token = request.cookies.get("admin_session")
+    if token:
+        destroy_admin_token(token)
+    response.delete_cookie(key="admin_session", path="/")
+    return {"ok": True}
+
 
 @app.get("/health")
 async def health() -> dict[str, str | int]:
@@ -223,19 +229,13 @@ async def billing_prices() -> PriceResponse:
     )
 
 
-@app.get("/admin", response_class=HTMLResponse)
-async def admin_console(request: Request) -> HTMLResponse:
-    try:
-        _ = await current_admin(request)
-        return HTMLResponse(admin_logged_in_html())
-    except HTTPException:
-        if request.cookies.get("admin_session"):
-            return HTMLResponse(admin_html(bad_session=True))
-        return HTMLResponse(admin_html())
+@app.get("/admin")
+async def admin_console() -> RedirectResponse:
+    return RedirectResponse("/admin/login", status_code=303)
 
 
 @app.get("/admin/api/overview")
-async def admin_overview(_: str = Depends(current_admin)) -> dict:
+async def admin_overview(admin: dict = Depends(current_admin)) -> dict:
     return db.admin_overview()
 
 
@@ -243,13 +243,13 @@ async def admin_overview(_: str = Depends(current_admin)) -> dict:
 async def admin_users(
     q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=100, ge=1, le=500),
-    _: str = Depends(current_admin),
+    admin: dict = Depends(current_admin),
 ) -> dict:
     return {"items": db.admin_list_users(limit=limit, query=q)}
 
 
 @app.get("/admin/api/users/{user_id}")
-async def admin_user_detail(user_id: str, _: str = Depends(current_admin)) -> dict:
+async def admin_user_detail(user_id: str, admin: dict = Depends(current_admin)) -> dict:
     detail = db.admin_get_user_detail(user_id)
     if detail is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
@@ -260,7 +260,7 @@ async def admin_user_detail(user_id: str, _: str = Depends(current_admin)) -> di
 async def admin_update_user(
     user_id: str,
     request: AdminUserUpdateRequest,
-    _: str = Depends(current_admin),
+    admin: dict = Depends(current_admin),
 ) -> dict:
     detail = db.admin_update_user(
         user_id,
@@ -279,10 +279,105 @@ async def admin_update_user(
 @app.post("/admin/api/settings/price")
 async def admin_update_price(
     request: AdminPriceUpdateRequest,
-    _: str = Depends(current_admin),
+    admin: dict = Depends(current_admin),
 ) -> PriceResponse:
     db.set_app_setting("monthly_price_cents", str(request.monthly_price_cents))
     return await billing_prices()
+
+
+# ---- Admin CRUD ----
+
+@app.get("/admin/api/admins", response_model=AdminListResponse)
+async def admin_list_admins(
+    q: str | None = Query(default=None, max_length=120),
+    role: str | None = None,
+    is_active: bool | None = None,
+    limit: int = Query(default=20, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _: dict = Depends(current_admin),
+) -> AdminListResponse:
+    result = db.admin_list_all(limit=limit, offset=offset, query=q, role=role, is_active=is_active)
+    return AdminListResponse(
+        items=[AdminOut(**item) for item in result["items"]],
+        total=result["total"],
+        limit=result["limit"],
+        offset=result["offset"],
+    )
+
+
+@app.post("/admin/api/admins", response_model=AdminOut)
+async def admin_create_admin(
+    request: AdminCreateRequest,
+    admin: dict = Depends(current_admin),
+) -> AdminOut:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    
+    existing = db.admin_get_by_username(request.username)
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已存在")
+    
+    salt, pw_hash = hash_password(request.password)
+    result = db.admin_create(
+        username=request.username,
+        password_salt=salt,
+        password_hash=pw_hash,
+        role=request.role,
+        display_name=request.display_name,
+        email=request.email,
+    )
+    return AdminOut(**result)
+
+
+@app.patch("/admin/api/admins/{target_id}", response_model=AdminOut)
+async def admin_update_target(
+    target_id: str,
+    request: AdminUpdateRequest,
+    admin: dict = Depends(current_admin),
+) -> AdminOut:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    
+    # Prevent self-deactivation
+    if target_id == admin["id"] and request.is_active is False:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能禁用自己的账号")
+    
+    update_kwargs: dict = {}
+    if request.password is not None:
+        salt, pw_hash = hash_password(request.password)
+        update_kwargs["password_salt"] = salt
+        update_kwargs["password_hash"] = pw_hash
+    if request.role is not None:
+        if admin["role"] != "superadmin" and request.role == "superadmin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+        update_kwargs["role"] = request.role
+    if request.display_name is not None:
+        update_kwargs["display_name"] = request.display_name
+    if request.email is not None:
+        update_kwargs["email"] = request.email
+    if request.is_active is not None:
+        update_kwargs["is_active"] = request.is_active
+    
+    result = db.admin_update(target_id, **update_kwargs)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="管理员不存在")
+    return AdminOut(**result)
+
+
+@app.delete("/admin/api/admins/{target_id}")
+async def admin_delete_target(
+    target_id: str,
+    admin: dict = Depends(current_admin),
+) -> MessageResponse:
+    if admin["role"] != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="仅超级管理员可删除账号")
+    if target_id == admin["id"]:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能删除自己的账号")
+    
+    success = db.admin_delete(target_id)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="管理员不存在")
+    return MessageResponse(message="管理员已删除")
 
 
 @app.post("/auth/email/code", response_model=EmailCodeResponse)
@@ -319,6 +414,152 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
     return AuthResponse(token=create_token(user.id), user=user)
 
 
+# ---- Email/Password Auth for App Users ----
+
+@app.post("/auth/password/register", response_model=AuthTokenResponse)
+async def register_password(
+    request: PasswordRegisterRequest,
+) -> AuthTokenResponse:
+    normalized = normalize_email(request.email)
+    existing = db.get_user_by_login_identifier(normalized)
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该邮箱已注册")
+    
+    if not db.consume_email_code(normalized, hash_email_code(request.code)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="验证码无效或已过期")
+    
+    salt, pw_hash = hash_password(request.password)
+    user = db.create_user(normalized, salt, pw_hash)
+    return AuthTokenResponse(
+        access_token=create_token(user.id),
+        refresh_token=create_refresh_token(user.id),
+        expires_in=int(settings.token_ttl_hours * 3600),
+    )
+
+
+@app.post("/auth/password/login", response_model=AuthTokenResponse)
+async def login_password(
+    request: PasswordLoginRequest,
+) -> AuthTokenResponse:
+    normalized = normalize_email(request.email)
+    row = db.get_user_by_login_identifier(normalized)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码错误")
+    if row.get("wechat_openid"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该账号使用微信登录，请使用微信授权")
+    
+    if not verify_password(request.password, row["password_salt"], row["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码错误")
+    
+    user = db.get_user(row["id"])
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
+    
+    db.touch_user_seen(user.id)
+    return AuthTokenResponse(
+        access_token=create_token(user.id),
+        refresh_token=create_refresh_token(user.id),
+        expires_in=int(settings.token_ttl_hours * 3600),
+    )
+
+
+@app.post("/auth/password/change", response_model=AuthTokenResponse)
+async def change_password(
+    request: PasswordChangeRequest,
+    user: UserOut = Depends(current_user),
+) -> AuthTokenResponse:
+    row = db.get_user_row(user.id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    if not verify_password(request.old_password, row["password_salt"], row["password_hash"]):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="原密码错误")
+    
+    salt, pw_hash = hash_password(request.new_password)
+    db.update_user_password(user.id, salt, pw_hash)
+    return AuthTokenResponse(
+        access_token=create_token(user.id),
+        refresh_token=create_refresh_token(user.id),
+        expires_in=int(settings.token_ttl_hours * 3600),
+    )
+
+
+@app.post("/auth/password/reset/send")
+async def send_password_reset(
+    request: PasswordResetSendRequest,
+) -> MessageResponse:
+    normalized = normalize_email(request.email)
+    user = db.get_user_by_login_identifier(normalized)
+    if user is not None:
+        raw_token, token_hash = create_password_reset_token()
+        ttl_minutes = settings.email_code_ttl_minutes
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes * 6)
+        db.create_email_reset_token(user.id, normalized, token_hash, expires_at)
+        send_password_reset_email(normalized, raw_token, settings.app_base_url)
+    
+    return MessageResponse(message="如果该邮箱已注册，重置邮件已发送")
+
+
+@app.post("/auth/password/reset/confirm", response_model=AuthTokenResponse)
+async def confirm_password_reset(
+    request: PasswordResetConfirmRequest,
+) -> AuthTokenResponse:
+    raw_hash = hashlib.sha256(request.token.encode()).hexdigest()
+    result = db.consume_email_reset_token(raw_hash)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="重置链接无效或已过期")
+    
+    salt, pw_hash = hash_password(request.new_password)
+    db.user_password_reset(result["user_id"], salt, pw_hash)
+    
+    return AuthTokenResponse(
+        access_token=create_token(result["user_id"]),
+        refresh_token=create_refresh_token(result["user_id"]),
+        expires_in=int(settings.token_ttl_hours * 3600),
+    )
+
+
+@app.post("/auth/token/refresh", response_model=AuthTokenResponse)
+async def refresh_token(
+    request: TokenRefreshRequest,
+) -> AuthTokenResponse:
+    user_id = verify_refresh_token(request.refresh_token)
+    user = db.get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    if user.is_banned:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
+    
+    db.touch_user_seen(user.id)
+    return AuthTokenResponse(
+        access_token=create_token(user.id),
+        refresh_token=create_refresh_token(user.id),
+        expires_in=int(settings.token_ttl_hours * 3600),
+    )
+
+
+@app.post("/auth/email/code")
+async def send_register_code(
+    request: EmailCodeRequest,
+) -> EmailCodeResponse:
+    email = normalize_email(request.email)
+    existing = db.get_user_by_login_identifier(email)
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该邮箱已注册，请直接登录或使用找回密码")
+    
+    code = make_email_code()
+    send_email_code(email, code)
+    
+    ttl_seconds = settings.email_code_ttl_minutes * 60
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.email_code_ttl_minutes)
+    db.store_email_code(email, hash_email_code(code), expires_at)
+    
+    if settings.email_dev_mode:
+        return EmailCodeResponse(sent=True, expires_in_seconds=ttl_seconds, dev_code=code)
+    return EmailCodeResponse(sent=True, expires_in_seconds=ttl_seconds)
+
+
 @app.get("/auth/me", response_model=UserOut)
 async def me(user: UserOut = Depends(current_user)) -> UserOut:
     return user
@@ -343,8 +584,89 @@ async def billing_account(user: UserOut = Depends(current_user)) -> BillingAccou
 @app.post("/billing/recharge", response_model=RechargeOrderResponse)
 async def create_recharge(
     request: RechargeCreateRequest,
+    http_request: Request,
     user: UserOut = Depends(current_user),
 ) -> RechargeOrderResponse:
+    if request.method == "admin":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效支付方式")
+    
+    if request.method == "wechat" and not settings.wechat_mchid:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付暂不可用")
+    if request.method == "alipay" and not settings.alipay_app_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="支付宝暂不可用")
+    
+    client_ip = http_request.client.host if http_request.client else "127.0.0.1"
+    
+    if request.method == "wechat" and settings.wechat_notify_url:
+        try:
+            result = await wechat_pay.create_unified_order(
+                out_trade_no=str(uuid.uuid4()),
+                total_fee=request.amount_cents,
+                description=f"RealTalk充值{request.amount_cents / 100:.0f}元",
+                notify_url=settings.wechat_notify_url,
+                client_ip=client_ip,
+            )
+            
+            order = db.create_recharge_order(
+                user.id,
+                request.method,
+                request.amount_cents,
+                payment_url=result.get("code_url"),
+                qr_code_text=result.get("code_url"),
+                receiver_name=settings.payment_receiver_name,
+                receiver_account=settings.wechat_receiver_account,
+            )
+            return RechargeOrderResponse(
+                order_id=order.order_id,
+                method=order.method,
+                amount_cents=order.amount_cents,
+                status=order.status,
+                qr_code_text=result.get("code_url"),
+                qr_code_url=f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={_json.dumps(result.get('code_url', ''))}",
+                message="请使用微信扫描二维码支付",
+                created_at=order.created_at,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"微信支付创建失败: {str(e)[:100]}")
+    
+    if request.method == "alipay" and settings.alipay_notify_url:
+        try:
+            result = await alipay.create_trade_precreate(
+                out_trade_no=str(uuid.uuid4()),
+                total_amount=request.amount_cents / 100.0,
+                subject=f"RealTalk充值{request.amount_cents / 100:.0f}元",
+                notify_url=settings.alipay_notify_url,
+            )
+            
+            order = db.create_recharge_order(
+                user.id,
+                request.method,
+                request.amount_cents,
+                payment_url=result.get("qr_code"),
+                qr_code_text=result.get("qr_code"),
+                receiver_name=settings.payment_receiver_name,
+                receiver_account=settings.alipay_receiver_account,
+            )
+            return RechargeOrderResponse(
+                order_id=order.order_id,
+                method=order.method,
+                amount_cents=order.amount_cents,
+                status=order.status,
+                qr_code_text=result.get("qr_code"),
+                qr_code_url=f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={_json.dumps(result.get('qr_code', ''))}",
+                message="请使用支付宝扫描二维码支付",
+                created_at=order.created_at,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"支付宝创建失败: {str(e)[:100]}")
+    
+    # Fallback: manual payment (fake QR for dev)
     method_settings = payment_method_settings(request.method)
     order = db.create_recharge_order(
         user.id,
@@ -355,7 +677,7 @@ async def create_recharge(
         receiver_name=settings.payment_receiver_name,
         receiver_account=method_settings["receiver_account"],
     )
-    order.message = f"请使用{method_settings['title']}向收款账号支付 {money_text(request.amount_cents)}，付款备注订单号。"
+    order.message = "请使用" + method_settings["title"] + "向收款账号支付 " + money_text(request.amount_cents) + "，付款备注订单号。"
     return order
 
 
@@ -364,12 +686,19 @@ async def confirm_recharge(
     request: RechargeConfirmRequest,
     user: UserOut = Depends(current_user),
 ) -> BillingAccountResponse:
+    # In production (real payment), this is only called via webhook
+    # For dev mode, allow manual confirmation
     if not settings.payment_dev_auto_confirm:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="生产环境请通过微信/支付宝支付回调确认到账")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="生产环境请通过微信/支付宝支付回调确认到账",
+        )
+    
     try:
         _, updated_user = db.mark_recharge_paid(user.id, request.order_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="充值订单不存在") from exc
+    
     return BillingAccountResponse(user=updated_user, ledger=db.list_billing_ledger(user.id))
 
 
@@ -381,6 +710,132 @@ async def verify_apple_purchase(
     verified, expires_at, message = await apple_billing.verify(request)
     updated_user = db.update_subscription(user.id, request.original_transaction_id, expires_at)
     return BillingResponse(user=updated_user, verified=verified, message=message)
+
+
+# ---- Payment Webhooks ----
+
+@app.post("/payment/wechat/webhook")
+async def wechat_payment_webhook(request: Request) -> dict:
+    """WeChat Pay v3 async notification handler."""
+    body = await request.body()
+    headers = dict(request.headers)
+    
+    if not settings.wechat_mchid:
+        return {"code": "FAIL", "message": "not configured"}
+    
+    try:
+        payload = _json.loads(body)
+    except Exception:
+        return {"code": "FAIL", "message": "invalid json"}
+    
+    event_type = payload.get("event_type", "")
+    resource = payload.get("resource", {})
+    out_trade_no = resource.get("out_trade_no", "")
+    
+    if not out_trade_no:
+        return {"code": "FAIL", "message": "no order id"}
+    
+    payload_json = _json.dumps(payload)
+    webhook_id = db.store_payment_webhook(out_trade_no, "wechat", event_type, payload_json)
+    
+    if event_type == "TRANSACTION.SUCCESS":
+        trade_state = resource.get("trade_state", "")
+        if trade_state == "SUCCESS":
+            trade_data = resource.get("amount", {})
+            paid_amount = int(trade_data.get("total", 0))
+            
+            if paid_amount > 0:
+                try:
+                    _, _ = db.mark_recharge_paid_by_order_id(out_trade_no, paid_amount)
+                    db.mark_webhook_processed(webhook_id)
+                except Exception as e:
+                    db.mark_webhook_failed(webhook_id, str(e)[:200])
+                    return {"code": "FAIL", "message": str(e)[:100]}
+    
+    db.mark_webhook_processed(webhook_id)
+    return {"code": "SUCCESS", "message": "OK"}
+
+
+@app.post("/payment/alipay/webhook")
+async def alipay_payment_webhook(request: Request) -> str:
+    """Alipay async notification handler. Returns 'success' plain text."""
+    form = await request.form()
+    
+    if not settings.alipay_app_id:
+        return "fail"
+    
+    try:
+        params = dict(form)
+        out_trade_no = params.get("out_trade_no", "")
+        trade_status = params.get("trade_status", "")
+        
+        if not out_trade_no:
+            return "fail"
+        
+        payload_json = _json.dumps(params)
+        webhook_id = db.store_payment_webhook(out_trade_no, "alipay", trade_status, payload_json)
+        
+        if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+            total_amount = float(params.get("total_amount", 0))
+            paid_cents = int(total_amount * 100)
+            
+            if paid_cents > 0:
+                try:
+                    _, _ = db.mark_recharge_paid_by_order_id(out_trade_no, paid_cents)
+                    db.mark_webhook_processed(webhook_id)
+                except Exception as e:
+                    db.mark_webhook_failed(webhook_id, str(e)[:200])
+                    return "fail"
+        
+        db.mark_webhook_processed(webhook_id)
+    except Exception as e:
+        return "fail"
+    
+    return "success"
+
+
+@app.post("/payment/query")
+async def query_payment_status(
+    order_id: str = Query(...),
+    user: UserOut = Depends(current_user),
+) -> dict:
+    """Query payment order status from provider."""
+    with db.engine.connect() as conn:
+        from sqlalchemy import select, text
+        row = conn.execute(
+            text("SELECT method, status, amount_cents FROM payment_orders WHERE order_id = :oid AND user_id = :uid"),
+            {"oid": order_id, "uid": user.id}
+        ).fetchone()
+    
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+    
+    method = row[0]
+    status = row[1]
+    
+    provider_status = "unknown"
+    if status == "pending" and method in ("wechat", "alipay"):
+        try:
+            if method == "wechat" and settings.wechat_mchid:
+                result = await wechat_pay.query_order(order_id)
+                provider_status = result.get("trade_state", "unknown")
+                if provider_status == "SUCCESS":
+                    amount = int(result.get("amount", {}).get("total", 0))
+                    if amount > 0:
+                        _, _ = db.mark_recharge_paid_by_order_id(order_id, amount)
+                        status = "paid"
+            elif method == "alipay" and settings.alipay_app_id:
+                result = await alipay.query_trade(order_id)
+                provider_status = result.get("trade_status", "unknown")
+                if provider_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
+                    total = float(result.get("total_amount", 0))
+                    if total > 0:
+                        _, _ = db.mark_recharge_paid_by_order_id(order_id, int(total * 100))
+                        status = "paid"
+        except HTTPException:
+            pass
+    
+    return {"order_id": order_id, "status": status, "provider_status": provider_status}
 
 
 @app.post("/transcript/upload", response_model=TranscriptUploadResponse)
@@ -586,11 +1041,11 @@ async def training_answer(
         correction = current.answer
     else:
         feedback = "还没有通过，请完成当前句后再进入下一句。"
-        correction = f"参考答案：{current.answer}"
+        correction = "参考答案：" + current.answer
 
     if session.index >= len(session.items):
         session.status = "completed"
-        feedback = f"训练完成，得分 {session.score}/{len(session.items)}。"
+        feedback = "训练完成，得分 " + str(session.score) + "/" + str(len(session.items)) + "。"
 
     db.update_session(session)
     return state_response(session, feedback=feedback, correction=correction)
@@ -599,11 +1054,6 @@ async def training_answer(
 def require_ai_access(user: UserOut) -> None:
     if settings.require_pro_for_ai and user.plan != "pro":
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="请订阅 RealTalk Pro 后使用 AI 学习和训练")
-
-
-def email_code_hash(email: str, code: str) -> str:
-    payload = f"{email}:{code}:{settings.jwt_secret}".encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def payment_method_settings(method: str) -> dict[str, str | None]:
@@ -625,14 +1075,14 @@ def payment_method_settings(method: str) -> dict[str, str | None]:
 
 
 def money_text(amount_cents: int) -> str:
-    return f"¥{amount_cents / 100:.2f}"
+    return "¥" + f"{amount_cents / 100:.2f}"
 
 
 async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str | None]:
     if settings.wechat_auth_dev_mode:
         digest = hashlib.sha256(request.code.encode("utf-8")).hexdigest()[:24]
         return {
-            "openid": f"dev-{digest}",
+            "openid": "dev-" + digest,
             "nickname": request.nickname or "微信用户",
             "avatar_url": request.avatar_url,
         }
@@ -779,7 +1229,7 @@ def feedback_for_score(score: float, expected: str) -> str:
         return "很自然，基本还原了这句真实对话。"
     if score >= 0.72:
         return "意思到位，可以继续；再注意语序和固定搭配。"
-    return f"先按参考句练熟：{expected}"
+    return "先按参考句练熟：" + expected
 
 
 def format_roleplay_feedback(
@@ -793,9 +1243,9 @@ def format_roleplay_feedback(
     if accepted:
         return "正确，那我们继续下一句开始交流吧。" if had_rejected_attempt else ""
     prefix = "先别急，我们把这一句说准。"
-    feedback = f"{prefix}{feedback}"
+    feedback = prefix + feedback
     if correction and correction not in feedback:
-        return f"{feedback}\n更自然：{correction}"
+        return feedback + "\n更自然：" + correction
     return feedback
 
 
@@ -803,17 +1253,3 @@ async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(60 * 60)
         db.cleanup_expired()
-
-def _sign(payload_b64: str) -> str:
-    import hashlib
-    import base64
-    digest = hashlib.new(
-        "sha256",
-        settings.jwt_secret.encode("utf-8") + payload_b64.encode("utf-8"),
-    ).digest()
-    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-
-def _unb64(data: str) -> bytes:
-    import base64
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
