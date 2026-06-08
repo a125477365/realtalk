@@ -10,6 +10,7 @@ RUN addgroup --system realtalk && adduser --system --ingroup realtalk realtalk
 
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install python-multipart
 
 COPY app ./app
 COPY docs ./docs

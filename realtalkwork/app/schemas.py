@@ -31,7 +31,7 @@ class EmailCodeRequest(BaseModel):
 class EmailCodeResponse(BaseModel):
     sent: bool
     expires_in_seconds: int
-    dev_code: str | None = None
+    dev_code: str | None = None  # Only set when email_dev_mode=True
 
 
 class EmailRegisterRequest(AuthRequest):
@@ -258,7 +258,7 @@ class BillingAccountResponse(BaseModel):
 
 class RechargeCreateRequest(BaseModel):
     amount_cents: int = Field(ge=100, le=1000000)
-    method: Literal["wechat", "alipay"]
+    method: Literal["wechat", "alipay", "admin"]  # Added "admin" for manual
 
 
 class RechargeOrderResponse(BaseModel):
@@ -268,10 +268,13 @@ class RechargeOrderResponse(BaseModel):
     status: str
     payment_url: str | None = None
     qr_code_text: str | None = None
+    qr_code_url: str | None = None  # NEW: base64 QR code data URL for display
     receiver_name: str | None = None
     receiver_account: str | None = None
     message: str
     created_at: datetime
+    paid_at: datetime | None = None  # NEW
+    expires_at: datetime | None = None  # NEW: when this order expires
 
 
 class RechargeConfirmRequest(BaseModel):
@@ -320,3 +323,99 @@ class RoleplaySessionRecord(BaseModel):
     score_total: float
     created_at: datetime
     updated_at: datetime
+
+
+# ============================================================
+# User Authentication & Password Reset
+# ============================================================
+
+class PasswordLoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=120)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class PasswordRegisterRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=6, max_length=128)
+    code: str = Field(min_length=4, max_length=12)
+
+
+class PasswordChangeRequest(BaseModel):
+    old_password: str = Field(min_length=6, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class PasswordResetSendRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=120)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+# ============================================================
+# Admin Management
+# ============================================================
+
+class AdminOut(BaseModel):
+    id: str
+    username: str
+    role: str  # superadmin | admin | operator
+    display_name: str | None = None
+    email: str | None = None
+    is_active: bool = True
+    last_login_at: datetime | None = None
+    last_login_ip: str | None = None
+    created_at: datetime
+
+
+class AdminCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    password: str = Field(min_length=8, max_length=128)
+    role: Literal["admin", "operator"] = "admin"
+    display_name: str | None = Field(default=None, max_length=80)
+    email: str | None = Field(default=None, max_length=120)
+
+
+class AdminUpdateRequest(BaseModel):
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+    role: Literal["superadmin", "admin", "operator"] | None = None
+    display_name: str | None = Field(default=None, max_length=80)
+    email: str | None = Field(default=None, max_length=120)
+    is_active: bool | None = None
+
+
+class AdminListResponse(BaseModel):
+    items: list[AdminOut]
+    total: int
+    limit: int
+    offset: int
+
+
+# ============================================================
+# Payment Webhooks
+# ============================================================
+
+class PaymentWebhookResponse(BaseModel):
+    code: str = "SUCCESS"
+    message: str = "OK"
+
+
+class RechargeQueryRequest(BaseModel):
+    order_id: str

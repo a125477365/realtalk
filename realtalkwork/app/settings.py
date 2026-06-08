@@ -84,5 +84,24 @@ class Settings:
     apple_use_sandbox: bool = _bool_env("APPLE_USE_SANDBOX", True)
     apple_iap_dev_bypass: bool = _bool_env("APPLE_IAP_DEV_BYPASS", True)
 
+    admin_frontend_url: str = os.getenv("ADMIN_FRONTEND_URL", "http://localhost:8080")
+
+    # WeChat Pay (native payment)
+    wechat_mchid: str | None = os.getenv("WECHAT_MCHID")
+    wechat_api_key: str | None = os.getenv("WECHAT_API_KEY")
+    wechat_ssl_cert_path: str | None = os.getenv("WECHAT_SSL_CERT_PATH")
+    wechat_ssl_key_path: str | None = os.getenv("WECHAT_SSL_KEY_PATH")
+    wechat_notify_url: str | None = os.getenv("WECHAT_NOTIFY_URL")
+
+    # Alipay (当面付)
+    alipay_app_id: str | None = os.getenv("ALIPAY_APP_ID")
+    alipay_private_key: str | None = os.getenv("ALIPAY_PRIVATE_KEY")
+    alipay_public_key: str | None = os.getenv("ALIPAY_PUBLIC_KEY")
+    alipay_sandbox: bool = _bool_env("ALIPAY_SANDBOX", False)
+    alipay_notify_url: str | None = os.getenv("ALIPAY_NOTIFY_URL")
+
+    # Base URL for email links
+    app_base_url: str = os.getenv("APP_BASE_URL", "https://realtalk.app")
+
 
 settings = Settings()

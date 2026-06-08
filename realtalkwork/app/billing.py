@@ -1,15 +1,333 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 
 from .schemas import ApplePurchaseVerifyRequest
 from .settings import settings
 
+
+# ============================================================
+# WeChat Pay
+# ============================================================
+
+class WeChatPayClient:
+    """WeChat Pay v3 API client for native payments."""
+
+    def __init__(self):
+        self.mchid = settings.wechat_mchid
+        self.appid = settings.wechat_app_id
+        self.api_key = settings.wechat_api_key
+        self.cert_path = settings.wechat_ssl_cert_path
+        self.key_path = settings.wechat_ssl_key_path
+        self.base_url = "https://api.mch.weixin.qq.com"
+
+    def _get_serial_no(self) -> str:
+        """Get certificate serial number from PEM file."""
+        if not self.cert_path:
+            return ""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["openssl", "x509", "-in", self.cert_path, "-serial", "-noout"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                # Output is like "serial=DEADBEEF1234"
+                hex_part = result.stdout.strip().split("=")[-1]
+                return hex_part.upper()
+        except Exception:
+            pass
+        return ""
+
+    def _sign_v3(self, sign_str: str) -> str:
+        """Create WeChat Pay v3 signature."""
+        import os
+        if not self.key_path or not os.path.exists(self.key_path):
+            # Fallback to API key signing for v2 compatibility
+            sign_str_with_key = sign_str + f"&key={self.api_key}"
+            return hashlib.md5(sign_str_with_key.encode("utf-8")).hexdigest().upper()
+        
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", self.key_path],
+                input=sign_str.encode("utf-8"),
+                capture_output=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                import base64
+                return base64.b64encode(result.stdout).decode("utf-8")
+        except Exception:
+            pass
+        
+        # Fallback
+        sign_str_with_key = sign_str + f"&key={self.api_key}"
+        return hashlib.md5(sign_str_with_key.encode("utf-8")).hexdigest().upper()
+
+    async def create_unified_order(
+        self,
+        out_trade_no: str,
+        total_fee: int,
+        description: str,
+        notify_url: str,
+        client_ip: str,
+    ) -> dict[str, Any]:
+        """
+        Create WeChat Pay unified order.
+        total_fee is in cents (integer).
+        Returns dict with code_url (QR code content) for native payments.
+        """
+        if not self.mchid or not self.appid:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付未配置")
+
+        now = datetime.now(timezone.utc)
+        timestamp = str(int(now.timestamp()))
+        nonce_str = uuid.uuid4().hex
+
+        # Build request body
+        body = {
+            "mchid": self.mchid,
+            "out_trade_no": out_trade_no,
+            "appid": self.appid,
+            "description": description,
+            "notify_url": notify_url,
+            "amount": {
+                "total": total_fee,
+                "currency": "CNY",
+            },
+            "payer": {
+                "client_ip": client_ip,
+            },
+            "trade_type": "NATIVE",
+        }
+
+        body_json = json.dumps(body, separators=(",", ":"))
+        
+        # Build signature
+        sign_str = f"POST\n/v3/transactions/native\n{timestamp}\n{nonce_str}\n{body_json}\n"
+        signature = self._sign_v3(sign_str)
+        serial_no = self._get_serial_no()
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f'WECHATPAY2-SHA256-RSA2048 mchid="{self.mchid}",nonce_str="{nonce_str}",signature="{signature}",timestamp="{timestamp}",serial_no="{serial_no}"',
+        }
+
+        url = f"{self.base_url}/v3/transactions/native"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, content=body_json)
+
+        if response.status_code != 200:
+            error_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"微信支付下单失败: {error_data.get('message', response.text[:200])}",
+            )
+
+        data = response.json()
+        return {
+            "code_url": data.get("code_url"),
+            "trade_type": data.get("trade_type", "NATIVE"),
+            "prepay_id": data.get("prepay_id"),
+            "out_trade_no": out_trade_no,
+        }
+
+    async def query_order(self, out_trade_no: str) -> dict[str, Any]:
+        """Query WeChat Pay order status."""
+        if not self.mchid or not self.appid:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付未配置")
+
+        timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+        nonce_str = uuid.uuid4().hex
+        path = f"/v3/transactions/out-trade-no/{out_trade_no}?mchid={self.mchid}"
+        sign_str = f"GET\n{path}\n{timestamp}\n{nonce_str}\n\n"
+        signature = self._sign_v3(sign_str)
+        serial_no = self._get_serial_no()
+
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f'WECHATPAY2-SHA256-RSA2048 mchid="{self.mchid}",nonce_str="{nonce_str}",signature="{signature}",timestamp="{timestamp}",serial_no="{serial_no}"',
+        }
+
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(url, headers=headers)
+
+        if response.status_code == 404:
+            return {"trade_state": "NOTFOUND", "out_trade_no": out_trade_no}
+        if response.status_code != 200:
+            return {"trade_state": "ERROR", "out_trade_no": out_trade_no, "error": response.text[:200]}
+
+        return response.json()
+
+    async def close_order(self, out_trade_no: str) -> bool:
+        """Close a pending order."""
+        if not self.mchid or not self.appid:
+            return False
+
+        timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+        nonce_str = uuid.uuid4().hex
+        path = f"/v3/transactions/out-trade-no/{out_trade_no}/close"
+        body = json.dumps({"mchid": self.mchid}, separators=(",", ":"))
+        sign_str = f"POST\n{path}\n{timestamp}\n{nonce_str}\n{body}\n"
+        signature = self._sign_v3(sign_str)
+        serial_no = self._get_serial_no()
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f'WECHATPAY2-SHA256-RSA2048 mchid="{self.mchid}",nonce_str="{nonce_str}",signature="{signature}",timestamp="{timestamp}",serial_no="{serial_no}"',
+        }
+
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, headers=headers, content=body)
+
+        return response.status_code in (200, 204)
+
+
+# ============================================================
+# Alipay
+# ============================================================
+
+class AlipayClient:
+    """Alipay Alipay+ /当面付 integration."""
+
+    def __init__(self):
+        self.app_id = settings.alipay_app_id
+        self.private_key = settings.alipay_private_key
+        self.alipay_public_key = settings.alipay_public_key
+        self.notify_url = None  # Set per-request
+        self.gateway = "https://openapi.alipaydev.com" if settings.alipay_sandbox else "https://openapi.alipay.com"
+
+    def _sign(self, params: dict) -> str:
+        """Sign parameters with RSA2."""
+        sorted_params = sorted(params.items())
+        sign_string = "&".join(f"{k}={v}" for k, v in sorted_params)
+        
+        if not self.private_key:
+            return ""
+        
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", self.private_key],
+                input=sign_string.encode("utf-8"),
+                capture_output=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                import base64
+                return base64.b64encode(result.stdout).decode("utf-8")
+        except Exception:
+            pass
+        return ""
+
+    async def create_trade_precreate(
+        self,
+        out_trade_no: str,
+        total_amount: float,
+        subject: str,
+        notify_url: str,
+    ) -> dict[str, Any]:
+        """
+        Create Alipay QR code payment (当面付).
+        Returns dict with qr_code for QR display.
+        """
+        if not self.app_id or not self.private_key:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="支付宝未配置")
+
+        now = datetime.now(timezone.utc)
+        params = {
+            "app_id": self.app_id,
+            "method": "alipay.trade.precreate",
+            "format": "JSON",
+            "charset": "utf-8",
+            "sign_type": "RSA2",
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "version": "1.0",
+            "biz_content": json.dumps({
+                "out_trade_no": out_trade_no,
+                "total_amount": f"{total_amount:.2f}",
+                "subject": subject,
+                "timeout_express": "30m",
+            }, separators=(",", ":")),
+            "notify_url": notify_url,
+        }
+
+        sign = self._sign(params)
+        params["sign"] = sign
+
+        url = f"{self.gateway}/gateway.do"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, data=params)
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"支付宝下单失败: {response.text[:200]}")
+
+        result = response.json()
+        resp = result.get("alipay_trade_precreate_response", {})
+        
+        if resp.get("code") != "10000":
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"支付宝下单失败: {resp.get('msg', '')} {resp.get('sub_msg', '')}",
+            )
+
+        return {
+            "qr_code": resp.get("qr_code"),
+            "out_trade_no": out_trade_no,
+        }
+
+    async def query_trade(self, out_trade_no: str) -> dict[str, Any]:
+        """Query Alipay trade status."""
+        if not self.app_id or not self.private_key:
+            return {"trade_status": "UNKNOWN"}
+
+        now = datetime.now(timezone.utc)
+        params = {
+            "app_id": self.app_id,
+            "method": "alipay.trade.query",
+            "format": "JSON",
+            "charset": "utf-8",
+            "sign_type": "RSA2",
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "version": "1.0",
+            "biz_content": json.dumps({"out_trade_no": out_trade_no}, separators=(",", ":")),
+        }
+        params["sign"] = self._sign(params)
+
+        url = f"{self.gateway}/gateway.do"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, data=params)
+
+        if response.status_code != 200:
+            return {"trade_status": "ERROR"}
+
+        result = response.json()
+        resp = result.get("alipay_trade_query_response", {})
+        
+        return {
+            "trade_status": resp.get("trade_status", "UNKNOWN"),
+            "out_trade_no": out_trade_no,
+        }
+
+
+# ============================================================
+# Apple IAP (existing, cleaned up)
+# ============================================================
 
 class AppleBillingVerifier:
     async def verify(self, request: ApplePurchaseVerifyRequest) -> tuple[bool, datetime | None, str]:
@@ -66,4 +384,10 @@ def _apple_millis_to_datetime(value: Any) -> datetime | None:
     return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
 
 
+# ============================================================
+# Singleton instances
+# ============================================================
+
+wechat_pay = WeChatPayClient()
+alipay = AlipayClient()
 apple_billing = AppleBillingVerifier()

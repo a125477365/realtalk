@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import uuid
 from collections.abc import Mapping
@@ -48,6 +50,10 @@ from .schemas import (
 )
 from .content_policy import filter_sensitive_transcripts
 from .settings import settings
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 metadata = MetaData()
@@ -176,6 +182,17 @@ email_verification_codes = Table(
     Column("created_at", Text, nullable=False),
 )
 
+email_reset_tokens = Table(
+    "email_reset_tokens",
+    metadata,
+    Column("token_hash", Text, primary_key=True),
+    Column("user_id", Text, nullable=False),
+    Column("email", Text, nullable=False),
+    Column("expires_at", Text, nullable=False),
+    Column("consumed_at", Text),
+    Column("created_at", Text, nullable=False),
+)
+
 billing_ledger = Table(
     "billing_ledger",
     metadata,
@@ -206,6 +223,22 @@ payment_orders = Table(
 )
 Index("idx_payment_orders_user_created", payment_orders.c.user_id, payment_orders.c.created_at)
 
+payment_webhooks = Table(
+    "payment_webhooks",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("order_id", Text, nullable=False),
+    Column("provider", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("payload_json", Text, nullable=False),
+    Column("signature", Text),
+    Column("status", Text, nullable=False, default="received"),
+    Column("processed_at", Text),
+    Column("error_message", Text),
+    Column("created_at", Text, nullable=False),
+)
+Index("idx_payment_webhooks_order", payment_webhooks.c.order_id, payment_webhooks.c.provider)
+
 app_settings = Table(
     "app_settings",
     metadata,
@@ -213,6 +246,38 @@ app_settings = Table(
     Column("value_text", Text, nullable=False),
     Column("updated_at", Text, nullable=False),
 )
+
+admins = Table(
+    "admins",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("username", Text, nullable=False),
+    Column("password_salt", Text, nullable=False),
+    Column("password_hash", Text, nullable=False),
+    Column("role", Text, nullable=False, default="admin"),
+    Column("display_name", Text),
+    Column("email", Text),
+    Column("is_active", Integer, nullable=False, default=1),
+    Column("last_login_at", Text),
+    Column("last_login_ip", Text),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+Index("idx_admins_username", admins.c.username, unique=True)
+
+admin_sessions = Table(
+    "admin_sessions",
+    metadata,
+    Column("token_hash", Text, primary_key=True),
+    Column("admin_id", Text, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False),
+    Column("username", Text, nullable=False),
+    Column("ip_address", Text),
+    Column("user_agent", Text),
+    Column("created_at", Text, nullable=False),
+    Column("expires_at", Text, nullable=False),
+)
+Index("idx_admin_sessions_admin", admin_sessions.c.admin_id)
+Index("idx_admin_sessions_expires", admin_sessions.c.expires_at)
 
 
 class Database:
@@ -241,6 +306,18 @@ class Database:
                 conn,
                 "idx_users_wechat_openid",
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wechat_openid ON users(wechat_openid)",
+            )
+            self._ensure_column(conn, "admins", "role", "TEXT NOT NULL DEFAULT 'admin'")
+            self._ensure_column(conn, "admins", "display_name", "TEXT")
+            self._ensure_column(conn, "admins", "email", "TEXT")
+            self._ensure_column(conn, "admins", "is_active", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "admins", "last_login_at", "TEXT")
+            self._ensure_column(conn, "admins", "last_login_ip", "TEXT")
+            self._ensure_column(conn, "admins", "updated_at", "TEXT")
+            self._ensure_index(
+                conn,
+                "idx_admins_username",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_admins_username ON admins(username)",
             )
 
     def ping(self) -> None:
@@ -404,6 +481,36 @@ class Database:
             raise ValueError("user not found")
         return user
 
+    def update_user_password(self, user_id: str, salt: str, password_hash: str) -> bool:
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(password_salt=salt, password_hash=password_hash)
+            )
+        return result.rowcount > 0
+
+    def update_user_email(self, user_id: str, new_email: str) -> bool:
+        normalized = normalize_email(new_email)
+        with self.engine.begin() as conn:
+            existing = conn.execute(
+                select(users.c.id).where(
+                    users.c.login_identifier == normalized,
+                    users.c.id != user_id,
+                )
+            ).scalar_one_or_none()
+            if existing:
+                return False
+            conn.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(login_identifier=normalized)
+            )
+        return True
+
+    def user_password_reset(self, user_id: str, salt: str, password_hash: str) -> bool:
+        return self.update_user_password(user_id, salt, password_hash)
+
     def store_email_code(self, email: str, code_hash: str, expires_at: datetime) -> None:
         now = _now()
         with self.engine.begin() as conn:
@@ -441,6 +548,51 @@ class Database:
                 .values(consumed_at=_iso(now))
             )
         return True
+
+    def create_email_reset_token(self, user_id: str, email: str, token_hash: str, expires_at: datetime) -> None:
+        now = _now()
+        with self.engine.begin() as conn:
+            conn.execute(delete(email_reset_tokens).where(email_reset_tokens.c.user_id == user_id))
+            conn.execute(
+                insert(email_reset_tokens).values(
+                    token_hash=token_hash,
+                    user_id=user_id,
+                    email=email,
+                    expires_at=_iso(expires_at),
+                    consumed_at=None,
+                    created_at=_iso(now),
+                )
+            )
+
+    def consume_email_reset_token(self, token_hash: str) -> dict[str, Any] | None:
+        now = _now()
+        with self.engine.begin() as conn:
+            row = (
+                conn.execute(
+                    select(email_reset_tokens).where(
+                        email_reset_tokens.c.token_hash == token_hash,
+                        email_reset_tokens.c.consumed_at.is_(None),
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+            if row is None:
+                return None
+            if _parse_dt(row["expires_at"]) < now:
+                return None
+            conn.execute(
+                update(email_reset_tokens)
+                .where(email_reset_tokens.c.token_hash == token_hash)
+                .values(consumed_at=_iso(now))
+            )
+            user = self.get_user(row["user_id"])
+            if user is None:
+                return None
+            return {
+                "user_id": user.id,
+                "email": user.login_identifier,
+            }
 
     def list_billing_ledger(self, user_id: str, limit: int = 30) -> list[BillingLedgerItem]:
         with self.engine.connect() as conn:
@@ -557,6 +709,110 @@ class Database:
         if user is None:
             raise ValueError("user not found")
         return _payment_order_from_row(order, "充值成功"), user
+
+    def mark_recharge_paid_by_order_id(self, order_id: str, paid_amount_cents: int) -> tuple[RechargeOrderResponse, UserOut]:
+        """Mark a recharge order as paid using only the order_id. Used by payment webhooks."""
+        now = _now()
+        with self.engine.begin() as conn:
+            order = (
+                conn.execute(
+                    select(payment_orders).where(
+                        payment_orders.c.order_id == order_id,
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+            if order is None:
+                raise ValueError("order not found")
+            if order["status"] == "paid":
+                user = self.get_user(order["user_id"])
+                return _payment_order_from_row(order, "已支付"), user
+
+            amount_cents = paid_amount_cents or int(order["amount_cents"])
+            result = conn.execute(
+                update(payment_orders)
+                .where(
+                    payment_orders.c.order_id == order_id,
+                    payment_orders.c.status != "paid",
+                )
+                .values(status="paid", paid_at=_iso(now))
+            )
+            if result.rowcount:
+                conn.execute(
+                    update(users)
+                    .where(users.c.id == order["user_id"])
+                    .values(balance_cents=users.c.balance_cents + amount_cents)
+                )
+                balance_after = int(
+                    conn.execute(select(users.c.balance_cents).where(users.c.id == order["user_id"])).scalar_one()
+                )
+                conn.execute(
+                    insert(billing_ledger).values(
+                        id=str(uuid.uuid4()),
+                        user_id=order["user_id"],
+                        type="recharge",
+                        title=f"{_payment_method_title(order['method'])}充值",
+                        amount_cents=amount_cents,
+                        balance_after_cents=balance_after,
+                        created_at=_iso(now),
+                    )
+                )
+
+            order = (
+                conn.execute(
+                    select(payment_orders).where(payment_orders.c.order_id == order_id)
+                )
+                .mappings()
+                .one()
+            )
+        user = self.get_user(order["user_id"])
+        if user is None:
+            raise ValueError("user not found")
+        return _payment_order_from_row(order, "充值成功"), user
+
+    def store_payment_webhook(
+        self,
+        order_id: str,
+        provider: str,
+        event_type: str,
+        payload_json: str,
+        signature: str | None = None,
+    ) -> str:
+        webhook_id = str(uuid.uuid4())
+        now = _now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(payment_webhooks).values(
+                    id=webhook_id,
+                    order_id=order_id,
+                    provider=provider,
+                    event_type=event_type,
+                    payload_json=payload_json,
+                    signature=signature,
+                    status="received",
+                    created_at=_iso(now),
+                )
+            )
+        return webhook_id
+
+    def mark_webhook_processed(self, webhook_id: str) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(payment_webhooks)
+                .where(payment_webhooks.c.id == webhook_id)
+                .values(status="processed", processed_at=now)
+            )
+
+    def mark_webhook_failed(self, webhook_id: str, error_message: str) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(payment_webhooks)
+                .where(payment_webhooks.c.id == webhook_id)
+                .values(status="failed", error_message=error_message[:500], processed_at=now)
+            )
 
     def insert_transcripts(self, user_id: str, items: list[TranscriptItem]) -> int:
         now = _now()
@@ -1095,6 +1351,209 @@ class Database:
                 )
         return self.admin_get_user_detail(user_id)
 
+    def admin_create_user(
+        self,
+        login_identifier: str,
+        email: str | None,
+        password_salt: str,
+        password_hash: str,
+        display_name: str | None = None,
+    ) -> dict[str, Any]:
+        user_id = str(uuid.uuid4())
+        created_at = _now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(users).values(
+                    id=user_id,
+                    login_identifier=login_identifier,
+                    password_salt=password_salt,
+                    password_hash=password_hash,
+                    plan="free",
+                    balance_cents=0,
+                    display_name=display_name,
+                    created_at=_iso(created_at),
+                )
+            )
+        return self.admin_get_user_detail(user_id)
+
+    def admin_list_all(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        query: str | None = None,
+        role: str | None = None,
+        is_active: bool | None = None,
+    ) -> dict[str, Any]:
+        stmt = select(admins).order_by(admins.c.created_at.desc())
+        count_stmt = select(func.count()).select_from(admins)
+        if query:
+            pattern = f"%{query.strip()}%"
+            stmt = stmt.where(or_(
+                admins.c.username.like(pattern),
+                admins.c.display_name.like(pattern),
+                admins.c.email.like(pattern),
+            ))
+            count_stmt = count_stmt.where(or_(
+                admins.c.username.like(pattern),
+                admins.c.display_name.like(pattern),
+                admins.c.email.like(pattern),
+            ))
+        if role:
+            stmt = stmt.where(admins.c.role == role)
+            count_stmt = count_stmt.where(admins.c.role == role)
+        if is_active is not None:
+            val = 1 if is_active else 0
+            stmt = stmt.where(admins.c.is_active == val)
+            count_stmt = count_stmt.where(admins.c.is_active == val)
+        with self.engine.begin() as conn:
+            total = int(conn.execute(count_stmt).scalar_one() or 0)
+            rows = conn.execute(stmt.limit(limit).offset(offset)).mappings().fetchall()
+        return {
+            "items": [_admin_from_row(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def admin_create(
+        self,
+        username: str,
+        password_salt: str,
+        password_hash: str,
+        role: str = "admin",
+        display_name: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, Any]:
+        admin_id = str(uuid.uuid4())
+        now = _now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(admins).values(
+                    id=admin_id,
+                    username=username,
+                    password_salt=password_salt,
+                    password_hash=password_hash,
+                    role=role,
+                    display_name=display_name,
+                    email=email,
+                    is_active=1,
+                    created_at=_iso(now),
+                    updated_at=_iso(now),
+                )
+            )
+        return self.admin_get(admin_id)
+
+    def admin_get(self, admin_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(admins).where(admins.c.id == admin_id)).mappings().fetchone()
+        return _admin_from_row(row) if row else None
+
+    def admin_get_by_username(self, username: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(admins).where(admins.c.username == username)).mappings().fetchone()
+        return _admin_from_row(row) if row else None
+
+    def admin_update(
+        self,
+        admin_id: str,
+        *,
+        password_salt: str | None = None,
+        password_hash: str | None = None,
+        role: str | None = None,
+        display_name: str | None = None,
+        email: str | None = None,
+        is_active: bool | None = None,
+    ) -> dict[str, Any] | None:
+        now = _now()
+        with self.engine.begin() as conn:
+            row = conn.execute(select(admins).where(admins.c.id == admin_id)).mappings().fetchone()
+            if row is None:
+                return None
+            values: dict[str, Any] = {"updated_at": _iso(now)}
+            if password_salt is not None and password_hash is not None:
+                values["password_salt"] = password_salt
+                values["password_hash"] = password_hash
+            if role is not None:
+                values["role"] = role
+            if display_name is not None:
+                values["display_name"] = display_name.strip() or None
+            if email is not None:
+                values["email"] = email.strip() or None
+            if is_active is not None:
+                values["is_active"] = 1 if is_active else 0
+            conn.execute(update(admins).where(admins.c.id == admin_id).values(**values))
+        return self.admin_get(admin_id)
+
+    def admin_touch_login(self, admin_id: str, ip_address: str | None = None) -> None:
+        now = _now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(admins)
+                .where(admins.c.id == admin_id)
+                .values(last_login_at=_iso(now), last_login_ip=ip_address)
+            )
+
+    def admin_delete(self, admin_id: str) -> bool:
+        with self.engine.begin() as conn:
+            result = conn.execute(delete(admins).where(admins.c.id == admin_id))
+        return result.rowcount > 0
+
+    def admin_session_create(
+        self,
+        admin_id: str,
+        username: str,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        ttl_hours: int = 168,
+    ) -> str:
+        token = os.urandom(32).hex()
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _now()
+        expires_at = now + timedelta(hours=ttl_hours)
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.admin_id == admin_id))
+            conn.execute(
+                insert(admin_sessions).values(
+                    token_hash=token_hash,
+                    admin_id=admin_id,
+                    username=username,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    created_at=_iso(now),
+                    expires_at=_iso(expires_at),
+                )
+            )
+        return token
+
+    def admin_session_verify(self, token: str) -> dict[str, Any] | None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(admin_sessions).where(admin_sessions.c.token_hash == token_hash)
+            ).mappings().fetchone()
+        if row is None:
+            return None
+        if _parse_dt(row["expires_at"]) < _now():
+            return None
+        admin = self.admin_get(row["admin_id"])
+        if admin is None or not admin.get("is_active"):
+            return None
+        return admin
+
+    def admin_session_destroy(self, token: str) -> None:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.token_hash == token_hash))
+
+    def admin_session_destroy_all(self, admin_id: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.admin_id == admin_id))
+
+    def admin_session_cleanup(self) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.expires_at < now))
+
     def cleanup_expired(self) -> None:
         now = _iso(_now())
         cutoff = _iso(_now() - timedelta(days=settings.retention_days))
@@ -1104,6 +1563,7 @@ class Database:
             conn.execute(delete(sessions).where(sessions.c.created_at < cutoff))
             conn.execute(delete(scenarios).where(scenarios.c.expires_at < now))
             conn.execute(delete(practice_results).where(practice_results.c.created_at < history_cutoff))
+        self.admin_session_cleanup()
 
     def _create_engine(self) -> Engine:
         kwargs: dict[str, Any] = {"pool_pre_ping": True, "future": True}
@@ -1123,6 +1583,7 @@ class Database:
         indexes = {item["name"] for item in inspect(conn).get_indexes("users")}
         if name not in indexes:
             conn.execute(text(statement))
+
 
 def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
     cursor = dbapi_connection.cursor()
@@ -1198,6 +1659,21 @@ def _backend_name(database_url: str) -> str:
     if database_url.startswith("postgresql"):
         return "postgresql-compatible"
     return database_url.split(":", 1)[0]
+
+
+def _admin_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "role": row["role"],
+        "display_name": row.get("display_name"),
+        "email": row.get("email"),
+        "is_active": bool(row.get("is_active") or 0),
+        "last_login_at": _parse_dt(row["last_login_at"]) if row.get("last_login_at") else None,
+        "last_login_ip": row.get("last_login_ip"),
+        "created_at": _parse_dt(row["created_at"]),
+        "updated_at": _parse_dt(row["updated_at"]) if row.get("updated_at") else None,
+    }
 
 
 def _user_from_row(row: Mapping[str, Any]) -> UserOut:

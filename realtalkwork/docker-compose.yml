@@ -29,9 +29,28 @@ services:
       AI_BASE_URL: "https://integrate.api.nvidia.com/v1"
       AI_MODEL: "stepfun-ai/step-3.7-flash"
       AI_API_KEY: "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"
+      ADMIN_FRONTEND_URL: "http://localhost:8080"
+      APP_BASE_URL: "http://localhost:8000"
+      EMAIL_DEV_MODE: "true"
+      APPLE_IAP_DEV_BYPASS: "true"
+      # WeChat/Alipay - configure for production
+      # WECHAT_MCHID: ""
+      # WECHAT_API_KEY: ""
+      # WECHAT_NOTIFY_URL: "http://localhost:8000/payment/wechat/webhook"
+      # ALIPAY_APP_ID: ""
+      # ALIPAY_PRIVATE_KEY: ""
+      # ALIPAY_NOTIFY_URL: "http://localhost:8000/payment/alipay/webhook"
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
+
+  admin-frontend:
+    build:
+      context: .
+      dockerfile: admin-frontend/Dockerfile
+    ports:
+      - "8080:80"
     restart: unless-stopped
