@@ -52,5 +52,5 @@ services:
       context: .
       dockerfile: admin-frontend/Dockerfile
     ports:
-      - "8080:80"
+      - "8000:8000"
     restart: unless-stopped
