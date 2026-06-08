@@ -90,14 +90,16 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
 
 async def current_admin(credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> str:
     if credentials is None:
-        raise_admin_auth()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
     username_ok = hmac.compare_digest(credentials.username, settings.admin_username)
     password_ok = hmac.compare_digest(credentials.password, settings.admin_password)
     if not username_ok or not password_ok:
-        raise_admin_auth()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="管理员账号或密码错误")
     return credentials.username
 
 
+def admin_html() -> str:
+    return """<!doctype html><html><head><meta charset="utf-8"/><title>RealTalk 管理台</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}.container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}.card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}a{color:#0071e3}</style></head><body><div class="container"><header><h1>RealTalk 管理台</h1><span class="badge">local</span></header><div class="card"><h2>数据概览</h2><p>请从上方 API 接口获取实时数据：</p><ul><li><a href="/admin/api/overview" target="_blank">/admin/api/overview</a></li><li><a href="/admin/api/users" target="_blank">/admin/api/users</a></li></ul></div><div class="card"><h2>健康检查</h2><ul><li><a href="/health" target="_blank">/health</a></li><li><a href="/ready" target="_blank">/ready</a></li></ul></div></div></body></html>"""
 @app.get("/health")
 async def health() -> dict[str, str | int]:
     return {
