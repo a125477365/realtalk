@@ -196,6 +196,117 @@ async def admin_logout(response: Response) -> Response:
     response.delete_cookie(key="admin_session", path="/admin")
     return RedirectResponse("/admin", status_code=303)
 
+def _session_store():
+    if not hasattr(_session_store, "_data"):
+        _session_store._data = {}
+        _session_store._next = int(time.time())
+    return _session_store._data
+
+
+def _new_session_id() -> str:
+    store = _session_store()
+    ts = _new_session_id._next
+    _new_session_id._next = ts + 1
+    return f"{ts:012x}"
+
+
+async def _current_admin(request: Request) -> str:
+    session_id = request.cookies.get("admin_session")
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
+    username = _session_store().get(session_id)
+    if not username:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="需要管理员登录")
+    return username
+
+
+def _admin_login_page() -> str:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台 - 登录</title>"
+        "<style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
+        ".box{max-width:420px;margin:80px auto;background:#fff;border-radius:18px;padding:32px;box-shadow:0 1px 2px rgba(0,0,0,0.06)}"
+        "h1{font-size:20px;margin:0 0 18px}"
+        "input{display:block;width:100%;padding:10px;margin:8px 0;border:1px solid #d1d1d6;border-radius:12px;font:inherit}"
+        "button{width:100%;padding:11px;border:0;border-radius:12px;background:#0071e3;color:#fff;font-weight:600;cursor:pointer}"
+        "small{color:#86868b}"
+        "</style></head><body><div class='box'><h1>RealTalk 管理台</h1>"
+        "<form method='post' action='/admin/login' autocomplete='off'>"
+        "<input name='username' placeholder='用户名' autofocus/>"
+        "<input name='password' type='password' placeholder='密码'/>"
+        "<button type='submit'>登 录</button></form>"
+        "<p style='text-align:center;margin-top:18px'><small>默认账号：admin / admin123456</small></p>"
+        "<p style='text-align:center;margin-top:8px'><a href='/'>返回首页</a></p>"
+        "</div></body></html>"
+    )
+
+
+def _admin_dashboard_html() -> str:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'/><title>RealTalk 管理台</title>"
+        "<style>"
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f7;color:#1d1d1f;margin:0;padding:24px}"
+        ".container{max-width:960px;margin:0 auto}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}"
+        "h1{font-size:22px;margin:0}.badge{font-size:12px;padding:4px 10px;border-radius:999px;background:#e5e5ea;color:#555}"
+        ".card{background:#fff;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(0,0,0,0.04);margin-bottom:16px}"
+        "a{color:#0071e3}button{padding:7px 12px;border:0;border-radius:10px;background:#ff3b30;color:#fff;cursor:pointer}"
+        "</style></head><body><div class='container'><header><h1>RealTalk 管理台</h1><span class='badge'>已登录</span></header>"
+        "<form method='post' action='/admin/logout' style='display:inline'><button type='submit'>退出登录</button></form>"
+        "<div class='card'><h2>数据概览</h2><p>请从下方接口获取实时数据：</p><ul>"
+        "<li><a href='/admin/api/overview' target='_blank'>/admin/api/overview</a></li>"
+        "<li><a href='/admin/api/users' target='_blank'>/admin/api/users</a></li>"
+        "</ul></div>"
+        "<div class='card'><h2>健康检查</h2><ul>"
+        "<li><a href='/health' target='_blank'>/health</a></li>"
+        "<li><a href='/ready' target='_blank'>/ready</a></li>"
+        "</ul></div></div></body></html>"
+    )
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_console(request: Request) -> HTMLResponse:
+    try:
+        await _current_admin(request)
+        return HTMLResponse(_admin_dashboard_html())
+    except HTTPException:
+        return HTMLResponse(_admin_login_page())
+
+
+@app.post("/admin/login")
+async def admin_login(request: Request, response: Response) -> Response:
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+    username_ok = hmac.compare_digest(username, settings.admin_username)
+    password_ok = hmac.compare_digest(password, settings.admin_password)
+    if not username_ok or not password_ok:
+        return HTMLResponse(
+            "<h1>管理员登录</h1><p style='color:#ff3b30'>账号或密码错误</p><a href='/admin'>返回</a>",
+            status_code=401,
+        )
+    session_id = _new_session_id()
+    _session_store()[session_id] = username
+    redirect = RedirectResponse("/admin", status_code=303)
+    redirect.set_cookie(
+        key="admin_session",
+        value=session_id,
+        httponly=True,
+        max_age=60 * 60 * 24 * 7,
+        path="/admin",
+        samesite="lax",
+    )
+    return redirect
+
+
+@app.post("/admin/logout")
+async def admin_logout(response: Response, request: Request) -> Response:
+    session_id = request.cookies.get("admin_session")
+    if session_id:
+        _session_store().pop(session_id, None)
+    redirect = RedirectResponse("/admin", status_code=303)
+    redirect.delete_cookie(key="admin_session", path="/admin")
+    return redirect
+
 @app.get("/health")
 async def health() -> dict[str, str | int]:
     return {
@@ -235,7 +346,7 @@ async def admin_console(request: Request) -> HTMLResponse:
 
 
 @app.get("/admin/api/overview")
-async def admin_overview(_: str = Depends(current_admin)) -> dict:
+async def admin_overview(_: str = Depends(_current_admin)) -> dict:
     return db.admin_overview()
 
 
@@ -243,13 +354,13 @@ async def admin_overview(_: str = Depends(current_admin)) -> dict:
 async def admin_users(
     q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=100, ge=1, le=500),
-    _: str = Depends(current_admin),
+    _: str = Depends(_current_admin),
 ) -> dict:
     return {"items": db.admin_list_users(limit=limit, query=q)}
 
 
 @app.get("/admin/api/users/{user_id}")
-async def admin_user_detail(user_id: str, _: str = Depends(current_admin)) -> dict:
+async def admin_user_detail(user_id: str, _: str = Depends(_current_admin)) -> dict:
     detail = db.admin_get_user_detail(user_id)
     if detail is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
@@ -260,7 +371,7 @@ async def admin_user_detail(user_id: str, _: str = Depends(current_admin)) -> di
 async def admin_update_user(
     user_id: str,
     request: AdminUserUpdateRequest,
-    _: str = Depends(current_admin),
+    _: str = Depends(_current_admin),
 ) -> dict:
     detail = db.admin_update_user(
         user_id,
