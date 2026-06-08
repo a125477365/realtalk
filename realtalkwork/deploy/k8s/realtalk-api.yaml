@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtalk-api
+  labels:
+    app: realtalk-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: realtalk-api
+  template:
+    metadata:
+      labels:
+        app: realtalk-api
+    spec:
+      containers:
+        - name: api
+          image: your-registry/realtalk-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: realtalk-api-secret
+            - configMapRef:
+                name: realtalk-api-config
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtalk-api
+spec:
+  selector:
+    app: realtalk-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
