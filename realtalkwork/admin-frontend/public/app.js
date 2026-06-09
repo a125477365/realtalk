@@ -21,6 +21,8 @@ var state = {
   currentAdminRoleName: null,
 };
 
+var _renderGuard = 0;
+
 // ============================================================
 // DOM helpers
 // ============================================================
@@ -175,11 +177,17 @@ function logout() {
   state.currentAdminRole = null;
   state.currentAdminRoleName = null;
   state.currentTab = "overview";
+  var guard = ++_renderGuard;
   fetch(API_BASE + "/admin/logout", {
     method: "POST",
     credentials: "include",
-  }).catch(function() {});
-  renderApp();
+  }).then(function(r) {
+    if (guard !== _renderGuard) return;
+    renderApp();
+  }).catch(function() {
+    if (guard !== _renderGuard) return;
+    renderApp();
+  });
 }
 
 // ============================================================
@@ -225,11 +233,14 @@ function handleLogin(e) {
   formData.append("username", username);
   formData.append("password", password);
 
+  var guard = ++_renderGuard;
+
   fetch(API_BASE + "/admin/login", {
     method: "POST",
     credentials: "include",
     body: formData,
   }).then(function(r) {
+    if (guard !== _renderGuard) return;
     if (r.ok || r.redirected) {
       return r.json().catch(function() { return {}; });
     } else {
@@ -239,13 +250,15 @@ function handleLogin(e) {
       });
     }
   }).then(function(d) {
-    if (!d) return;
+    if (!d || guard !== _renderGuard) return;
     state.loggedIn = true;
+    state.currentAdminId = d.id || null;
     state.currentAdminUsername = d.username || username;
     state.currentAdminRole = d.role || "admin";
     state.currentAdminRoleName = roleName(d.role || "admin");
     renderApp();
   }).catch(function() {
+    if (guard !== _renderGuard) return;
     renderApp({ loginError: "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5" });
   });
 }
@@ -962,8 +975,10 @@ function renderApp(loginOpts) {
     app.innerHTML = renderLogin(loginOpts && loginOpts.loginError);
     var form = getEl("login-form");
     if (form) form.onsubmit = handleLogin;
-    // Try to restore session
+    // Try to restore session — guarded so it can't overwrite the login page
+    var guard = ++_renderGuard;
     apiGet("/admin/api/overview").then(function(r) {
+      if (guard !== _renderGuard) return;
       if (r && r.ok) {
         state.loggedIn = true;
         renderApp();

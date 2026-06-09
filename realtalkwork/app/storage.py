@@ -1665,6 +1665,8 @@ def _admin_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "username": row["username"],
+        "password_salt": row["password_salt"],
+        "password_hash": row["password_hash"],
         "role": row["role"],
         "display_name": row.get("display_name"),
         "email": row.get("email"),

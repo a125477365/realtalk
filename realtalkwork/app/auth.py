@@ -185,12 +185,13 @@ def _sign(payload_b64: str) -> str:
 def _b64(data: bytes | str) -> str:
     if isinstance(data, str):
         data = data.encode("utf-8")
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+    return base64.b64encode(data).rstrip(b"=").decode("ascii")
 
 
 def _unb64(data: str) -> bytes:
+    data = data.replace("_", "/").replace("-", "+")
     padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
+    return base64.b64decode(data + padding)
 
 
 def _unauthorized(detail: str = "认证失败") -> HTTPException:

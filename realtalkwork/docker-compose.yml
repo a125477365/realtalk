@@ -16,30 +16,10 @@ services:
 
   api:
     build: .
+    env_file:
+      - .env
     environment:
       DATABASE_URL: "postgresql+psycopg://realtalk:realtalk@postgres:5432/realtalk?sslmode=disable"
-      REALTALK_REGION: "local"
-      JWT_SECRET: "h1MydTVAXiVa7D4slmophlPejLKkaedtEJH66J2o9RhOww4x"
-      TOKEN_TTL_HOURS: "720"
-      WECHAT_AUTH_DEV_MODE: "true"
-      PAYMENT_DEV_AUTO_CONFIRM: "true"
-      REQUIRE_PRO_FOR_AI: "true"
-      WECHAT_APP_ID: "wxa89f1bbda1a1164e"
-      WECHAT_APP_SECRET: "75585f82c461b6fc4684dc6a1e9f467e"
-      AI_BASE_URL: "https://integrate.api.nvidia.com/v1"
-      AI_MODEL: "stepfun-ai/step-3.7-flash"
-      AI_API_KEY: "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"
-      ADMIN_FRONTEND_URL: "http://localhost:8001"
-      APP_BASE_URL: "http://localhost:8000"
-      EMAIL_DEV_MODE: "true"
-      APPLE_IAP_DEV_BYPASS: "true"
-      # WeChat/Alipay - configure for production
-      # WECHAT_MCHID: ""
-      # WECHAT_API_KEY: ""
-      # WECHAT_NOTIFY_URL: "http://localhost:8000/payment/wechat/webhook"
-      # ALIPAY_APP_ID: ""
-      # ALIPAY_PRIVATE_KEY: ""
-      # ALIPAY_NOTIFY_URL: "http://localhost:8000/payment/alipay/webhook"
     ports:
       - "8000:8000"
     depends_on:
@@ -51,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: admin-frontend/Dockerfile
+    env_file:
+      - .env
     ports:
-    - "8001:80"
+      - "8001:80"
     restart: unless-stopped
