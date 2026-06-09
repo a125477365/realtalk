@@ -159,6 +159,30 @@ function roleName(role) {
 }
 
 // ============================================================
+// Navigation & Logout
+// ============================================================
+function navigate(tab) {
+  state.currentTab = tab;
+  state.userDetailId = null;
+  state.userPage = 1;
+  renderApp();
+}
+
+function logout() {
+  state.loggedIn = false;
+  state.currentAdminId = null;
+  state.currentAdminUsername = null;
+  state.currentAdminRole = null;
+  state.currentAdminRoleName = null;
+  state.currentTab = "overview";
+  fetch(API_BASE + "/admin/logout", {
+    method: "POST",
+    credentials: "include",
+  }).catch(function() {});
+  renderApp();
+}
+
+// ============================================================
 // Login
 // ============================================================
 function renderLogin(errorMsg) {

@@ -9,9 +9,9 @@
   }
 
   // 2. Detect environment from port
-  // Browser sees admin frontend on :8080, API on :8000 (same host, different port)
+  // Browser sees admin frontend on :8001, API on :8000 (same host, different port)
   var port = window.location.port;
-  if (port === "8080" || port === "80") {
+  if (port === "8080" || port === "8001" || port === "80") {
     // Admin frontend: API is on 8000
     var scheme = window.location.protocol === "https:" ? "https" : "http";
     window.API_BASE = scheme + "://" + window.location.hostname + ":8000";

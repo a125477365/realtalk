@@ -13,8 +13,8 @@ from difflib import SequenceMatcher
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import RedirectResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import evaluate_roleplay_turn, generate_ai_chat_reply, generate_learning, generate_scenario
@@ -85,16 +85,26 @@ security = HTTPBearer(auto_error=False)
 admin_security = HTTPBasic(auto_error=False)
 
 _af_url = os.getenv("ADMIN_FRONTEND_URL", "http://localhost:8080")
-_allow_origins = [_af_url] if not _af_url.startswith("http://localhost") else [_af_url, "http://localhost:8080", "http://127.0.0.1:8080"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allow_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Set-Cookie"],
+_is_localhost_af = (
+    _af_url.startswith("http://localhost")
+    or _af_url.startswith("http://127.0.0.1")
 )
+
+
+class DynamicCORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin", "")
+        response = await call_next(request)
+        if _is_localhost_af or origin == _af_url:
+            response.headers["Access-Control-Allow-Origin"] = origin or "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = "*"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Expose-Headers"] = "Set-Cookie"
+        return response
+
+
+app.add_middleware(DynamicCORSMiddleware)
 
 
 @app.on_event("startup")
