@@ -139,26 +139,22 @@ async def current_admin(request: Request, credentials: HTTPBasicCredentials | No
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="需要管理员登录",
-            headers={"WWW-Authenticate": "Basic"},
         )
     admin = db.admin_get_by_username(credentials.username)
     if admin is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="管理员账号或密码错误",
-            headers={"WWW-Authenticate": "Basic"},
         )
     if not admin["is_active"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="账号已被禁用",
-            headers={"WWW-Authenticate": "Basic"},
         )
     if not verify_admin_password(admin, credentials.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="管理员账号或密码错误",
-            headers={"WWW-Authenticate": "Basic"},
         )
     return admin
 
@@ -173,9 +169,15 @@ async def admin_login_page() -> RedirectResponse:
 
 @app.post("/admin/login")
 async def admin_login(request: Request, response: Response) -> dict:
-    form = await request.form()
-    username = (form.get("username") or "").strip()
-    password = form.get("password") or ""
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" in content_type:
+        body = await request.json()
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+    else:
+        form = await request.form()
+        username = (form.get("username") or "").strip()
+        password = form.get("password") or ""
     
     admin = db.admin_get_by_username(username)
     if admin is None:
@@ -197,7 +199,7 @@ async def admin_login(request: Request, response: Response) -> dict:
         httponly=True,
         max_age=60 * 60 * 24 * 7,
         path="/",
-        samesite="none",
+        samesite="lax",
         secure=False,
     )
     return {"ok": True, "username": admin["username"], "role": admin["role"]}

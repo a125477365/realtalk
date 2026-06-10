@@ -22,6 +22,8 @@ var state = {
 };
 
 var _renderGuard = 0;
+var _loggingOut = false;
+var _loggedOut = sessionStorage.getItem("admin_logged_out") === "1";
 
 // ============================================================
 // DOM helpers
@@ -171,23 +173,45 @@ function navigate(tab) {
 }
 
 function logout() {
+  _loggingOut = true;
+  _loggedOut = false;
+  sessionStorage.removeItem("admin_logged_out");
   state.loggedIn = false;
   state.currentAdminId = null;
   state.currentAdminUsername = null;
   state.currentAdminRole = null;
   state.currentAdminRoleName = null;
   state.currentTab = "overview";
-  var guard = ++_renderGuard;
+
+  var app = document.getElementById("app");
+  if (app) app.innerHTML = renderLogoutView();
+
   fetch(API_BASE + "/admin/logout", {
     method: "POST",
     credentials: "include",
-  }).then(function(r) {
-    if (guard !== _renderGuard) return;
-    renderApp();
   }).catch(function() {
-    if (guard !== _renderGuard) return;
-    renderApp();
+  }).finally(function() {
+    setTimeout(function() {
+      _loggingOut = false;
+      _loggedOut = false;
+      sessionStorage.removeItem("admin_logged_out");
+      renderApp();
+    }, 300);
   });
+}
+
+function renderLogoutView() {
+  return [
+    '<div class="login-page">',
+    '  <div class="login-box">',
+    '    <div class="logout-success">',
+    '      <div class="logout-icon">&#10004;</div>',
+    '      <h2>已退出登录</h2>',
+    '      <p>正在返回登录页面...</p>',
+    '    </div>',
+    '  </div>',
+    '</div>',
+  ].join('');
 }
 
 // ============================================================
@@ -252,6 +276,9 @@ function handleLogin(e) {
   }).then(function(d) {
     if (!d || guard !== _renderGuard) return;
     state.loggedIn = true;
+    _loggingOut = false;
+    _loggedOut = false;
+    sessionStorage.removeItem("admin_logged_out");
     state.currentAdminId = d.id || null;
     state.currentAdminUsername = d.username || username;
     state.currentAdminRole = d.role || "admin";
@@ -970,20 +997,18 @@ function renderApp(loginOpts) {
   var app = getEl("app");
   if (!app) return;
 
+  if (_loggingOut) {
+    app.innerHTML = renderLogoutView();
+    return;
+  }
+
   // Not logged in
   if (!state.loggedIn) {
+    _loggedOut = false;
+    sessionStorage.removeItem("admin_logged_out");
     app.innerHTML = renderLogin(loginOpts && loginOpts.loginError);
     var form = getEl("login-form");
     if (form) form.onsubmit = handleLogin;
-    // Try to restore session — guarded so it can't overwrite the login page
-    var guard = ++_renderGuard;
-    apiGet("/admin/api/overview").then(function(r) {
-      if (guard !== _renderGuard) return;
-      if (r && r.ok) {
-        state.loggedIn = true;
-        renderApp();
-      }
-    }).catch(function() {});
     return;
   }
 
