@@ -9,6 +9,7 @@ struct MainChatView: View {
 
     @State private var draft = ""
     @State private var showingAccount = false
+    @State private var roleDialogScenario: ScenarioSummary?
 
     var body: some View {
         NavigationStack {
@@ -17,6 +18,9 @@ struct MainChatView: View {
 
                 VStack(spacing: 0) {
                     topBar
+                    if model.todayScenarios.isEmpty == false {
+                        scenarioStrip
+                    }
                     messages
                     composer
                 }
@@ -25,7 +29,81 @@ struct MainChatView: View {
                 AccountPanelView()
                     .presentationDetents([.medium, .large])
             }
+            .confirmationDialog(
+                roleDialogScenario.map { "练习「\($0.title)」，你想扮演谁？" } ?? "选择角色",
+                isPresented: Binding(
+                    get: { roleDialogScenario != nil },
+                    set: { if $0 == false { roleDialogScenario = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let summary = roleDialogScenario {
+                    ForEach(summary.roles.filter(\.isUserCandidate)) { role in
+                        Button("\(role.name)（\(role.description)）") {
+                            roleDialogScenario = nil
+                            Task { await model.startScenarioPractice(summary, roleId: role.id) }
+                        }
+                    }
+                    Button("取消", role: .cancel) { roleDialogScenario = nil }
+                }
+            }
         }
+    }
+
+    /// 今日真实对话场景：默认展示当天最新生成的场景列表，点卡片选角色直接开练
+    private var scenarioStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("今日场景")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer()
+                Button {
+                    Task { await model.loadTodayScenarios() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isLoadingScenarios)
+            }
+            .padding(.horizontal, 18)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(model.todayScenarios) { summary in
+                        Button {
+                            roleDialogScenario = summary
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(summary.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(summary.summary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                HStack(spacing: 6) {
+                                    Label("\(summary.lineCount) 句", systemImage: "text.bubble")
+                                    Label(summary.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(12)
+                            .frame(width: 210, alignment: .leading)
+                            .background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 18)
+            }
+        }
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.06))
     }
 
     private var topBar: some View {
@@ -219,6 +297,7 @@ struct AccountPanelView: View {
 
     @State private var amountCents = 3000
     @State private var method = "wechat"
+    @State private var showingSettings = false
 
     private let amounts = [1000, 3000, 6800, 12800]
 
@@ -235,11 +314,21 @@ struct AccountPanelView: View {
             }
             .navigationTitle("账户")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
                         dismiss()
                     }
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
             }
             .task {
                 await model.loadBillingAccount()

@@ -408,6 +408,40 @@ class AdminListResponse(BaseModel):
     offset: int
 
 
+class AdminPasswordChangeRequest(BaseModel):
+    old_password: str = Field(min_length=6, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ModelSettingsUpdateRequest(BaseModel):
+    """管理台模型配置。留空字段保持不变；api_key 传空字符串表示清除。"""
+
+    provider: str | None = Field(default=None, max_length=40)
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
+    bot_id: str | None = Field(default=None, max_length=200)
+    timeout_seconds: float | None = Field(default=None, ge=5, le=300)
+    input_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
+    output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
+
+
+class ScenarioSummary(BaseModel):
+    scene_id: str
+    title: str
+    summary: str
+    roles: list[ScenarioRole]
+    line_count: int
+    source_start: datetime
+    source_end: datetime
+    created_at: datetime
+
+
+class ScenarioListResponse(BaseModel):
+    items: list[ScenarioSummary]
+    generated: bool = False  # 本次请求是否触发了自动生成
+
+
 # ============================================================
 # Payment Webhooks
 # ============================================================

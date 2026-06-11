@@ -219,3 +219,32 @@ struct PracticeHistoryItem: Identifiable, Codable, Equatable {
 struct PracticeHistoryResponse: Codable, Equatable {
     let items: [PracticeHistoryItem]
 }
+
+struct ScenarioSummary: Identifiable, Codable, Equatable {
+    var id: String { sceneId }
+
+    let sceneId: String
+    let title: String
+    let summary: String
+    let roles: [ScenarioRole]
+    let lineCount: Int
+    let sourceStart: Date
+    let sourceEnd: Date
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case sceneId = "scene_id"
+        case title
+        case summary
+        case roles
+        case lineCount = "line_count"
+        case sourceStart = "source_start"
+        case sourceEnd = "source_end"
+        case createdAt = "created_at"
+    }
+}
+
+struct ScenarioListResponse: Codable, Equatable {
+    let items: [ScenarioSummary]
+    let generated: Bool
+}

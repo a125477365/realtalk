@@ -792,3 +792,49 @@ tbody tr:last-child td {
   color: var(--text-secondary);
   font-size: 14px;
 }
+
+/* ============ 数据概览图表 ============ */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.chart-grid .card { margin-bottom: 0; }
+.ts-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  margin-top: 8px;
+}
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+.stat-card.stat-good .val { color: var(--success); }
+.stat-card.stat-warn .val { color: var(--danger); }
+
+/* ============ 模型设置表单 ============ */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 4px 20px;
+  margin-top: 12px;
+}
+.form-grid .form-group label .hint {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+#ms-test-result { align-self: center; margin-left: 8px; }

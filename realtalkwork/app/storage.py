@@ -279,6 +279,23 @@ admin_sessions = Table(
 Index("idx_admin_sessions_admin", admin_sessions.c.admin_id)
 Index("idx_admin_sessions_expires", admin_sessions.c.expires_at)
 
+ai_usage = Table(
+    "ai_usage",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("user_id", Text),
+    Column("kind", Text, nullable=False),
+    Column("model", Text, nullable=False),
+    Column("prompt_tokens", Integer, nullable=False, default=0),
+    Column("completion_tokens", Integer, nullable=False, default=0),
+    Column("total_tokens", Integer, nullable=False, default=0),
+    Column("cost_cents", Float, nullable=False, default=0),
+    Column("latency_ms", Integer, nullable=False, default=0),
+    Column("created_at", Text, nullable=False),
+)
+Index("idx_ai_usage_created", ai_usage.c.created_at)
+Index("idx_ai_usage_user_created", ai_usage.c.user_id, ai_usage.c.created_at)
+
 
 class Database:
     def __init__(self, database_url: str | None = None, path: Path | None = None):
@@ -442,6 +459,22 @@ class Database:
             return int(value)
         except ValueError:
             return default
+
+    def get_app_setting_str(self, key: str, default: str | None = None) -> str | None:
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(app_settings.c.value_text).where(app_settings.c.key == key)
+            ).scalar_one_or_none()
+        if value is None or value == "":
+            return default
+        return value
+
+    def get_app_settings_map(self, keys: list[str]) -> dict[str, str]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(app_settings.c.key, app_settings.c.value_text).where(app_settings.c.key.in_(keys))
+            ).fetchall()
+        return {row[0]: row[1] for row in rows if row[1] not in (None, "")}
 
     def set_app_setting(self, key: str, value: str) -> None:
         now = _iso(_now())
@@ -949,6 +982,70 @@ class Database:
             )
         return _scenario_from_row(row) if row else None
 
+    def list_scenarios(
+        self,
+        user_id: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        stmt = (
+            select(scenarios)
+            .where(scenarios.c.user_id == user_id)
+            .order_by(scenarios.c.created_at.desc())
+            .limit(limit)
+        )
+        if start is not None:
+            stmt = stmt.where(scenarios.c.created_at >= _iso(start))
+        if end is not None:
+            stmt = stmt.where(scenarios.c.created_at < _iso(end))
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            roles = [ScenarioRole(**item) for item in json.loads(row["roles_json"])]
+            lines = json.loads(row["lines_json"])
+            items.append(
+                {
+                    "scene_id": row["scene_id"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "roles": [role.model_dump() for role in roles],
+                    "line_count": len(lines),
+                    "source_start": _parse_dt(row["source_start"]),
+                    "source_end": _parse_dt(row["source_end"]),
+                    "created_at": _parse_dt(row["created_at"]),
+                }
+            )
+        return items
+
+    def record_ai_usage(
+        self,
+        user_id: str | None,
+        kind: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_cents: float,
+        latency_ms: int,
+    ) -> None:
+        now = _now()
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(ai_usage).values(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    kind=kind,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    cost_cents=cost_cents,
+                    latency_ms=latency_ms,
+                    created_at=_iso(now),
+                )
+            )
+
     def create_roleplay_session(
         self,
         user_id: str,
@@ -1213,6 +1310,34 @@ class Database:
                 conn.execute(select(func.count()).select_from(practice_results)).scalar_one() or 0
             )
             transcript_count = int(conn.execute(select(func.count()).select_from(transcripts)).scalar_one() or 0)
+            today_start = _iso(_now().replace(hour=0, minute=0, second=0, microsecond=0))
+            today_revenue_cents = int(
+                conn.execute(
+                    select(func.coalesce(func.sum(payment_orders.c.amount_cents), 0)).where(
+                        payment_orders.c.status == "paid",
+                        payment_orders.c.paid_at >= today_start,
+                    )
+                ).scalar_one() or 0
+            )
+            today_new_users = int(
+                conn.execute(
+                    select(func.count()).select_from(users).where(users.c.created_at >= today_start)
+                ).scalar_one() or 0
+            )
+            ai_calls = int(conn.execute(select(func.count()).select_from(ai_usage)).scalar_one() or 0)
+            ai_total_tokens = int(
+                conn.execute(select(func.coalesce(func.sum(ai_usage.c.total_tokens), 0))).scalar_one() or 0
+            )
+            ai_cost_cents = float(
+                conn.execute(select(func.coalesce(func.sum(ai_usage.c.cost_cents), 0))).scalar_one() or 0
+            )
+            ai_cost_today_cents = float(
+                conn.execute(
+                    select(func.coalesce(func.sum(ai_usage.c.cost_cents), 0)).where(
+                        ai_usage.c.created_at >= today_start
+                    )
+                ).scalar_one() or 0
+            )
         return {
             "total_users": total_users,
             "banned_users": banned_users,
@@ -1226,7 +1351,108 @@ class Database:
             "practice_result_count": practice_result_count,
             "transcript_count": transcript_count,
             "monthly_price_cents": self.get_monthly_price_cents(),
+            "today_revenue_cents": today_revenue_cents,
+            "today_new_users": today_new_users,
+            "ai_calls": ai_calls,
+            "ai_total_tokens": ai_total_tokens,
+            "ai_cost_cents": round(ai_cost_cents, 2),
+            "ai_cost_today_cents": round(ai_cost_today_cents, 2),
+            "gross_margin_cents": round(paid_recharge_cents - ai_cost_cents, 2),
         }
+
+    def admin_stats_timeseries(self, days: int = 30) -> dict[str, Any]:
+        start = (_now() - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        start_iso = _iso(start)
+        day_of = lambda column: func.substr(column, 1, 10)  # noqa: E731 — ISO 时间串前 10 位即日期
+        with self.engine.connect() as conn:
+            new_users = dict(
+                conn.execute(
+                    select(day_of(users.c.created_at), func.count())
+                    .where(users.c.created_at >= start_iso)
+                    .group_by(day_of(users.c.created_at))
+                ).fetchall()
+            )
+            revenue = dict(
+                conn.execute(
+                    select(day_of(payment_orders.c.paid_at), func.coalesce(func.sum(payment_orders.c.amount_cents), 0))
+                    .where(payment_orders.c.status == "paid", payment_orders.c.paid_at >= start_iso)
+                    .group_by(day_of(payment_orders.c.paid_at))
+                ).fetchall()
+            )
+            ai_cost = dict(
+                conn.execute(
+                    select(day_of(ai_usage.c.created_at), func.coalesce(func.sum(ai_usage.c.cost_cents), 0))
+                    .where(ai_usage.c.created_at >= start_iso)
+                    .group_by(day_of(ai_usage.c.created_at))
+                ).fetchall()
+            )
+            ai_calls = dict(
+                conn.execute(
+                    select(day_of(ai_usage.c.created_at), func.count())
+                    .where(ai_usage.c.created_at >= start_iso)
+                    .group_by(day_of(ai_usage.c.created_at))
+                ).fetchall()
+            )
+            sessions_created = dict(
+                conn.execute(
+                    select(day_of(roleplay_sessions.c.created_at), func.count())
+                    .where(roleplay_sessions.c.created_at >= start_iso)
+                    .group_by(day_of(roleplay_sessions.c.created_at))
+                ).fetchall()
+            )
+        items = []
+        for offset in range(days):
+            day = (start + timedelta(days=offset)).date().isoformat()
+            items.append(
+                {
+                    "date": day,
+                    "new_users": int(new_users.get(day, 0)),
+                    "revenue_cents": int(revenue.get(day, 0)),
+                    "ai_cost_cents": round(float(ai_cost.get(day, 0)), 2),
+                    "ai_calls": int(ai_calls.get(day, 0)),
+                    "roleplay_sessions": int(sessions_created.get(day, 0)),
+                }
+            )
+        return {"days": days, "items": items}
+
+    def admin_list_orders(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+        method: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        stmt = (
+            select(payment_orders, users.c.display_name, users.c.login_identifier)
+            .join(users, users.c.id == payment_orders.c.user_id, isouter=True)
+            .order_by(payment_orders.c.created_at.desc())
+        )
+        count_stmt = select(func.count()).select_from(payment_orders)
+        if status:
+            stmt = stmt.where(payment_orders.c.status == status)
+            count_stmt = count_stmt.where(payment_orders.c.status == status)
+        if method:
+            stmt = stmt.where(payment_orders.c.method == method)
+            count_stmt = count_stmt.where(payment_orders.c.method == method)
+        if query:
+            pattern = f"%{query.strip()}%"
+            cond = or_(
+                payment_orders.c.order_id.like(pattern),
+                payment_orders.c.user_id.like(pattern),
+            )
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
+        with self.engine.connect() as conn:
+            total = int(conn.execute(count_stmt).scalar_one() or 0)
+            rows = conn.execute(stmt.limit(limit).offset(offset)).mappings().fetchall()
+        items = []
+        for row in rows:
+            item = _payment_order_dict(row)
+            item["user_display_name"] = row.get("display_name")
+            item["user_login_identifier"] = row.get("login_identifier")
+            items.append(item)
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def admin_list_users(self, limit: int = 100, query: str | None = None) -> list[dict[str, Any]]:
         stmt = select(users).order_by(users.c.created_at.desc()).limit(limit)

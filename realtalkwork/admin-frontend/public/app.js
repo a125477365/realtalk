@@ -10,11 +10,14 @@ var API_BASE = window.API_BASE || "";
 // ============================================================
 var state = {
   loggedIn: false,
+  sessionChecked: false,
   currentTab: "overview",
   userDetailId: null,
   userPage: 1,
   userQuery: "",
   userLimit: 100,
+  orderStatusFilter: "",
+  orderMethodFilter: "",
   currentAdminId: null,
   currentAdminUsername: null,
   currentAdminRole: null,
@@ -22,8 +25,6 @@ var state = {
 };
 
 var _renderGuard = 0;
-var _loggingOut = false;
-var _loggedOut = sessionStorage.getItem("admin_logged_out") === "1";
 
 // ============================================================
 // DOM helpers
@@ -172,46 +173,26 @@ function navigate(tab) {
   renderApp();
 }
 
-function logout() {
-  _loggingOut = true;
-  _loggedOut = false;
-  sessionStorage.removeItem("admin_logged_out");
+function resetAdminState() {
   state.loggedIn = false;
   state.currentAdminId = null;
   state.currentAdminUsername = null;
   state.currentAdminRole = null;
   state.currentAdminRoleName = null;
   state.currentTab = "overview";
+  state.userDetailId = null;
+}
 
-  var app = document.getElementById("app");
-  if (app) app.innerHTML = renderLogoutView();
-
-  setTimeout(function() {
-    _loggingOut = false;
-    _loggedOut = false;
-    sessionStorage.removeItem("admin_logged_out");
-    renderApp();
-  }, 300);
-
+function logout() {
+  // 先销毁服务端会话，无论成功与否都回到登录页
   fetch(API_BASE + "/admin/logout", {
     method: "POST",
     credentials: "include",
-  }).catch(function() {
+  }).catch(function() {}).finally(function() {
+    resetAdminState();
+    renderApp();
+    toast("已退出登录", "success");
   });
-}
-
-function renderLogoutView() {
-  return [
-    '<div class="login-page">',
-    '  <div class="login-box">',
-    '    <div class="logout-success">',
-    '      <div class="logout-icon">&#10004;</div>',
-    '      <h2>已退出登录</h2>',
-    '      <p>正在返回登录页面...</p>',
-    '    </div>',
-    '  </div>',
-    '</div>',
-  ].join('');
 }
 
 // ============================================================
@@ -237,7 +218,7 @@ function renderLogin(errorMsg) {
     "      </div>",
     '      <button type="submit" class="btn btn-primary">\u767b \u5f55</button>',
     "    </form>",
-    '    <div class="hint">\u9ed8\u8ba4\u8d26\u53f7\uff1aadmin / admin123456</div>',
+    '    <div class="hint">\u9996\u6b21\u90e8\u7f72\u7684\u521d\u59cb\u8d26\u53f7\u5728\u5b89\u88c5\u65f6\u8bbe\u7f6e\uff08\u89c1 INSTALL.md\uff09\uff0c\u767b\u5f55\u540e\u8bf7\u53ca\u65f6\u4fee\u6539\u5bc6\u7801</div>',
     "  </div>",
     "</div>",
   ].join("");
@@ -276,9 +257,6 @@ function handleLogin(e) {
   }).then(function(d) {
     if (!d || guard !== _renderGuard) return;
     state.loggedIn = true;
-    _loggingOut = false;
-    _loggedOut = false;
-    sessionStorage.removeItem("admin_logged_out");
     state.currentAdminId = d.id || null;
     state.currentAdminUsername = d.username || username;
     state.currentAdminRole = d.role || "admin";
@@ -288,6 +266,21 @@ function handleLogin(e) {
     if (guard !== _renderGuard) return;
     renderApp({ loginError: "\u7f51\u7edc\u9519\u8bef\uff0c\u8bf7\u91cd\u8bd5" });
   });
+}
+
+// \u9875\u9762\u52a0\u8f7d/\u5237\u65b0\u65f6\u7528 Cookie \u6062\u590d\u4f1a\u8bdd\uff0c\u907f\u514d\u5237\u65b0\u540e\u88ab\u8e22\u56de\u767b\u5f55\u9875
+function restoreSession() {
+  return apiFetch("/admin/api/me").then(function(r) {
+    if (!r || !r.ok) return false;
+    return r.json().then(function(d) {
+      state.loggedIn = true;
+      state.currentAdminId = d.id || null;
+      state.currentAdminUsername = d.username || null;
+      state.currentAdminRole = d.role || "admin";
+      state.currentAdminRoleName = roleName(d.role || "admin");
+      return true;
+    });
+  }).catch(function() { return false; });
 }
 
 // ============================================================
@@ -305,8 +298,9 @@ function renderSidebar() {
     '  <nav class="sidebar-nav">',
     nav("overview", "\u6570\u636e\u6982\u89c8", "\ud83d\udcca"),
     nav("users", "\u7528\u6237\u7ba1\u7406", "\ud83d\udc65"),
+    nav("orders", "\u5145\u503c\u8ba2\u5355", "\ud83d\udcb3"),
     nav("admins", "\u7ba1\u7406\u5458\u7ba1\u7406", "\ud83d\udc64"),
-    nav("settings", "\u4ef7\u683c\u8bbe\u7f6e", "\u2699\ufe0f"),
+    nav("settings", "\u7cfb\u7edf\u8bbe\u7f6e", "\u2699\ufe0f"),
   "  </nav>",
   '  <div class="sidebar-footer">',
   '    <div class="sidebar-admin-info">',
@@ -325,9 +319,21 @@ function renderSidebar() {
 // ============================================================
 function renderOverviewPage() {
   return [
-    '<div class="page-header"><h1>\u6570\u636e\u6982\u89c8</h1></div>',
+    '<div class="page-header"><h1>\u6570\u636e\u6982\u89c8</h1><div class="actions">',
+    '<select id="ts-days" onchange="loadOverviewCharts()">',
+    '  <option value="14">\u8fd1 14 \u5929</option>',
+    '  <option value="30" selected>\u8fd1 30 \u5929</option>',
+    '  <option value="90">\u8fd1 90 \u5929</option>',
+    "</select>",
+    "</div></div>",
     '<div class="card">',
     '  <div class="stat-grid" id="overview-stats">' + loadingHTML() + "</div>",
+    "</div>",
+    '<div class="chart-grid">',
+    '  <div class="card"><h2>\u6536\u5165\u4e0e AI \u652f\u51fa\uff08\u5143/\u65e5\uff09</h2><div id="chart-money">' + loadingHTML() + "</div></div>",
+    '  <div class="card"><h2>\u65b0\u589e\u7528\u6237\uff08\u4eba/\u65e5\uff09</h2><div id="chart-users">' + loadingHTML() + "</div></div>",
+    '  <div class="card"><h2>\u53e3\u8bed\u7ec3\u4e60\u4f1a\u8bdd\uff08\u6b21/\u65e5\uff09</h2><div id="chart-sessions">' + loadingHTML() + "</div></div>",
+    '  <div class="card"><h2>AI \u8c03\u7528\u6b21\u6570\uff08\u6b21/\u65e5\uff09</h2><div id="chart-calls">' + loadingHTML() + "</div></div>",
     "</div>",
     '<div class="card">',
     '  <h2>\u7cfb\u7edf\u7aef\u70b9</h2>',
@@ -345,20 +351,25 @@ function loadOverview() {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
     r.json().then(function(d) {
-      function g(v, l) {
-        return '<div class="stat-card"><div class="val">' + esc(v) + '</div><div class="lbl">' + esc(l) + "</div></div>";
+      function g(v, l, cls) {
+        return '<div class="stat-card ' + (cls || "") + '"><div class="val">' + esc(v) + '</div><div class="lbl">' + esc(l) + "</div></div>";
       }
       var el = getEl("overview-stats");
       if (!el) return;
       el.innerHTML =
         g(d.total_users, "\u603b\u7528\u6237") +
-        g(d.banned_users, "\u5df2\u5c01\u7981") +
+        g("+" + (d.today_new_users || 0), "\u4eca\u65e5\u65b0\u589e") +
         g(d.online_users + "/" + d.online_window_minutes + "min", "\u5728\u7ebf\u7528\u6237") +
+        g(fmtYuan(d.paid_recharge_cents), "\u7d2f\u8ba1\u6536\u5165", "stat-good") +
+        g(fmtYuan(d.today_revenue_cents || 0), "\u4eca\u65e5\u6536\u5165", "stat-good") +
+        g(fmtYuan(Math.round(d.ai_cost_cents || 0)), "AI \u7d2f\u8ba1\u652f\u51fa", "stat-warn") +
+        g(fmtYuan(Math.round(d.ai_cost_today_cents || 0)), "AI \u4eca\u65e5\u652f\u51fa", "stat-warn") +
+        g(fmtYuan(Math.round(d.gross_margin_cents || 0)), "\u6bdb\u5229\uff08\u6536\u5165-AI \u6210\u672c\uff09") +
+        g((d.ai_calls || 0) + " \u6b21 / " + fmtTokens(d.ai_total_tokens), "AI \u8c03\u7528 / Tokens") +
         g(fmtYuan(d.total_balance_cents), "\u7528\u6237\u4f59\u989d\u603b\u8ba1") +
-        g(fmtYuan(d.paid_recharge_cents), "\u5df2\u5145\u503c\u603b\u989d") +
         g(fmtYuan(d.pending_recharge_cents), "\u5f85\u786e\u8ba4\u5145\u503c") +
         g(d.paid_orders, "\u5df2\u652f\u4ed8\u8ba2\u5355") +
-        g(d.roleplay_session_count, "\u89d2\u8272\u626e\u6f14\u4f1a\u8bdd") +
+        g(d.roleplay_session_count, "\u53e3\u8bed\u4f1a\u8bdd") +
         g(d.practice_result_count, "\u7ec3\u4e60\u8bb0\u5f55") +
         g(d.transcript_count, "\u5bf9\u8bdd\u8bb0\u5f55") +
         g(fmtYuan(d.monthly_price_cents), "\u5f53\u524d\u6708\u8d39");
@@ -367,6 +378,83 @@ function loadOverview() {
     var el = getEl("overview-stats");
     if (el) el.innerHTML = emptyHTML("\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u767b\u5f55\u72b6\u6001");
   });
+  loadOverviewCharts();
+}
+
+function fmtTokens(n) {
+  n = n || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+
+function loadOverviewCharts() {
+  var days = parseInt((getEl("ts-days") || { value: "30" }).value) || 30;
+  apiGet("/admin/api/stats/timeseries?days=" + days).then(function(r) {
+    if (!r || !r.ok) { return; }
+    r.json().then(function(d) {
+      var items = d.items || [];
+      var labels = items.map(function(it) { return it.date.slice(5); });
+      drawChart("chart-money", labels, [
+        { name: "\u6536\u5165", color: "#16a34a", values: items.map(function(it) { return it.revenue_cents / 100; }) },
+        { name: "AI \u652f\u51fa", color: "#dc2626", values: items.map(function(it) { return it.ai_cost_cents / 100; }) },
+      ]);
+      drawChart("chart-users", labels, [
+        { name: "\u65b0\u589e\u7528\u6237", color: "#2563eb", values: items.map(function(it) { return it.new_users; }) },
+      ]);
+      drawChart("chart-sessions", labels, [
+        { name: "\u53e3\u8bed\u4f1a\u8bdd", color: "#7c3aed", values: items.map(function(it) { return it.roleplay_sessions; }) },
+      ]);
+      drawChart("chart-calls", labels, [
+        { name: "AI \u8c03\u7528", color: "#ea580c", values: items.map(function(it) { return it.ai_calls; }) },
+      ]);
+    });
+  });
+}
+
+// \u8f7b\u91cf SVG \u6298\u7ebf\u56fe\uff08\u65e0\u5916\u90e8\u4f9d\u8d56\uff0c\u79bb\u7ebf\u53ef\u7528\uff09
+function drawChart(containerId, labels, series) {
+  var el = getEl(containerId);
+  if (!el) return;
+  var W = 560, H = 200, padL = 44, padR = 10, padT = 14, padB = 26;
+  var innerW = W - padL - padR, innerH = H - padT - padB;
+  var maxVal = 0;
+  series.forEach(function(s) {
+    s.values.forEach(function(v) { if (v > maxVal) maxVal = v; });
+  });
+  if (maxVal <= 0) maxVal = 1;
+  maxVal = maxVal * 1.15;
+  var n = labels.length;
+  function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+  function y(v) { return padT + innerH - (v / maxVal) * innerH; }
+
+  var svg = ['<svg viewBox="0 0 ' + W + " " + H + '" class="ts-chart" preserveAspectRatio="xMidYMid meet">'];
+  // \u7f51\u683c\u4e0e Y \u8f74\u523b\u5ea6
+  for (var gi = 0; gi <= 4; gi++) {
+    var gv = (maxVal / 4) * gi;
+    var gy = y(gv);
+    svg.push('<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - padR) + '" y2="' + gy + '" stroke="#e5e7eb" stroke-width="1"/>');
+    svg.push('<text x="' + (padL - 6) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="10" fill="#9ca3af">' + (gv >= 100 ? Math.round(gv) : Math.round(gv * 10) / 10) + "</text>");
+  }
+  // X \u8f74\u6807\u7b7e\uff08\u7a00\u758f\u5c55\u793a\uff09
+  var step = Math.max(1, Math.ceil(n / 8));
+  for (var li = 0; li < n; li += step) {
+    svg.push('<text x="' + x(li) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#9ca3af">' + esc(labels[li]) + "</text>");
+  }
+  // \u6570\u636e\u7ebf
+  series.forEach(function(s) {
+    var pts = s.values.map(function(v, i) { return x(i).toFixed(1) + "," + y(v).toFixed(1); }).join(" ");
+    svg.push('<polyline points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round"/>');
+    s.values.forEach(function(v, i) {
+      if (v > 0) svg.push('<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="2.4" fill="' + s.color + '"><title>' + esc(labels[i]) + " " + s.name + ": " + v + "</title></circle>");
+    });
+  });
+  svg.push("</svg>");
+  // \u56fe\u4f8b
+  var legend = '<div class="chart-legend">' + series.map(function(s) {
+    return '<span><i style="background:' + s.color + '"></i>' + esc(s.name) + "</span>";
+  }).join("") + "</div>";
+  el.innerHTML = svg.join("") + legend;
 }
 
 // ============================================================
@@ -613,6 +701,98 @@ function toggleBan(uid, ban) {
 }
 
 // ============================================================
+// Orders Page
+// ============================================================
+function renderOrdersPage() {
+  return [
+    '<div class="page-header"><h1>充值订单</h1><div class="actions">',
+    '<button class="btn btn-secondary" onclick="loadOrders()">刷新</button>',
+    "</div></div>",
+    '<div class="card">',
+    '  <div class="search-bar">',
+    '    <input type="text" id="order-search" placeholder="搜索订单号、用户ID..." onkeydown="if(event.key===\'Enter\')loadOrders()" />',
+    '    <select id="order-status-filter" onchange="loadOrders()">',
+    '      <option value="">全部状态</option>',
+    '      <option value="pending">待支付</option>',
+    '      <option value="paid">已支付</option>',
+    "    </select>",
+    '    <select id="order-method-filter" onchange="loadOrders()">',
+    '      <option value="">全部方式</option>',
+    '      <option value="wechat">微信</option>',
+    '      <option value="alipay">支付宝</option>',
+    "    </select>",
+    '    <button class="btn btn-primary" onclick="loadOrders()">搜索</button>',
+    "  </div>",
+    '  <div id="order-list-container">' + loadingHTML() + "</div>",
+    "</div>",
+  ].join("");
+}
+
+function loadOrders() {
+  var container = getEl("order-list-container");
+  if (!container) return;
+  container.innerHTML = loadingHTML();
+
+  var q = (getEl("order-search") || { value: "" }).value.trim();
+  var st = (getEl("order-status-filter") || { value: "" }).value;
+  var method = (getEl("order-method-filter") || { value: "" }).value;
+  var url = "/admin/api/orders?limit=100";
+  if (q) url += "&q=" + encodeURIComponent(q);
+  if (st) url += "&status=" + encodeURIComponent(st);
+  if (method) url += "&method=" + encodeURIComponent(method);
+
+  apiGet(url).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    r.json().then(function(d) {
+      var items = d.items || [];
+      if (!items.length) {
+        container.innerHTML = emptyHTML("暂无订单");
+        return;
+      }
+      var rows = items.map(function(o) {
+        var oidAttr = String(o.order_id).replace(/'/g, "\\'");
+        var userLabel = o.user_display_name || o.user_login_identifier || o.user_id;
+        var markBtn = o.status === "pending"
+          ? '<button class="btn btn-primary btn-sm" onclick="markOrderPaid(\'' + oidAttr + '\')">确认到账</button>'
+          : "—";
+        return [
+          "<tr>",
+          '<td class="mono" style="font-size:12px">' + esc(String(o.order_id).slice(0, 8)) + "…</td>",
+          '<td><div class="user-cell"><div class="name">' + esc(userLabel) + "</div></div></td>",
+          "<td>" + esc(o.method === "wechat" ? "微信" : o.method === "alipay" ? "支付宝" : o.method) + "</td>",
+          "<td>" + fmtYuan(o.amount_cents) + "</td>",
+          "<td>" + badge(o.status) + "</td>",
+          "<td>" + fmtDT(o.created_at) + "</td>",
+          "<td>" + (o.paid_at ? fmtDT(o.paid_at) : "—") + "</td>",
+          '<td class="table-actions">' + markBtn + "</td>",
+          "</tr>",
+        ].join("");
+      }).join("");
+      container.innerHTML = [
+        '<div class="table-wrap"><table>',
+        "<thead><tr><th>订单号</th><th>用户</th><th>方式</th><th>金额</th><th>状态</th><th>创建时间</th><th>支付时间</th><th>操作</th></tr></thead>",
+        "<tbody>" + rows + "</tbody></table></div>",
+        '<div class="pagination-info"><span>共 ' + d.total + " 条</span></div>",
+      ].join("");
+    });
+  }).catch(function() {
+    if (container) container.innerHTML = emptyHTML("加载失败");
+  });
+}
+
+function markOrderPaid(orderId) {
+  confirmDialog("确认到账", "确认已收到该订单款项并为用户入账？此操作会立即增加用户余额。", function() {
+    apiPost("/admin/api/orders/" + encodeURIComponent(orderId) + "/mark-paid").then(function(r) {
+      if (!r) return;
+      if (!r.ok) { handleApiError(r); return; }
+      toast("已入账", "success");
+      loadOrders();
+    });
+  });
+}
+
+// ============================================================
 // Edit Modal
 // ============================================================
 function openEditModal(uid) {
@@ -679,9 +859,43 @@ function submitEdit() {
 // ============================================================
 // Settings Page
 // ============================================================
+var MODEL_PRESETS = {
+  ark: { label: "\u706b\u5c71\u65b9\u821f\uff08\u8c46\u5305\uff09", base_url: "https://ark.cn-beijing.volces.com/api/v3", model: "doubao-seed-1-6-251015" },
+  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  qwen: { label: "\u901a\u4e49\u5343\u95ee\uff08\u963f\u91cc\uff09", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  moonshot: { label: "Kimi\uff08\u6708\u4e4b\u6697\u9762\uff09", base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
+  zhipu: { label: "\u667a\u8c31 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+  custom: { label: "\u81ea\u5b9a\u4e49\uff08OpenAI \u517c\u5bb9\uff09", base_url: "", model: "" },
+};
+
 function renderSettingsPage() {
+  var presetOptions = Object.keys(MODEL_PRESETS).map(function(key) {
+    return '<option value="' + key + '">' + esc(MODEL_PRESETS[key].label) + "</option>";
+  }).join("");
   return [
-    '<div class="page-header"><h1>\u4ef7\u683c\u8bbe\u7f6e</h1></div>',
+    '<div class="page-header"><h1>\u7cfb\u7edf\u8bbe\u7f6e</h1></div>',
+
+    '<div class="card">',
+    "  <h2>AI \u6a21\u578b\u5bf9\u63a5 <span class=\"subtitle\">\u652f\u6301\u4efb\u610f OpenAI \u517c\u5bb9\u670d\u52a1\uff0c\u4fdd\u5b58\u540e\u7acb\u5373\u751f\u6548\uff0c\u65e0\u9700\u91cd\u542f</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>\u670d\u52a1\u5546</label><select id="ms-provider" onchange="applyModelPreset()">' + presetOptions + "</select></div>",
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="ms-base-url" placeholder="https://..." /></div>',
+    '    <div class="form-group"><label>\u6a21\u578b\u540d\u79f0</label><input type="text" id="ms-model" placeholder="\u5982 deepseek-chat" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="ms-key-status"></span></label>',
+    '      <input type="password" id="ms-api-key" placeholder="\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>Bot/\u667a\u80fd\u4f53 ID\uff08\u4ec5\u65b9\u821f\u5e94\u7528\u9700\u8981\uff09</label><input type="text" id="ms-bot-id" placeholder="\u9009\u586b" /></div>',
+    '    <div class="form-group"><label>\u8d85\u65f6\uff08\u79d2\uff09</label><input type="number" id="ms-timeout" min="5" max="300" step="1" /></div>',
+    '    <div class="form-group"><label>\u8f93\u5165\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-in-price" min="0" step="0.01" /></div>',
+    '    <div class="form-group"><label>\u8f93\u51fa\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-out-price" min="0" step="0.01" /></div>',
+    "  </div>",
+    '  <div class="hint" style="margin:6px 0 12px">\u4ef7\u683c\u4ec5\u7528\u4e8e\u300c\u6570\u636e\u6982\u89c8\u300d\u4e2d\u7684\u652f\u51fa\u4f30\u7b97\uff0c\u8bf7\u6309\u6240\u9009\u6a21\u578b\u7684\u5b98\u65b9\u62a5\u4ef7\u586b\u5199\u3002</div>',
+    '  <div class="btn-row" style="justify-content:flex-start">',
+    '    <button class="btn btn-primary" onclick="saveModelSettings()">\u4fdd\u5b58\u6a21\u578b\u914d\u7f6e</button>',
+    '    <button class="btn btn-secondary" onclick="testModelSettings()">\u6d4b\u8bd5\u8fde\u63a5</button>',
+    '    <span id="ms-test-result" class="hint"></span>',
+    "  </div>",
+    "</div>",
+
     '<div class="card">',
     "  <h2>\u6708\u8d39\u8ba2\u9605\u4ef7\u683c <span class=\"subtitle\">\u8bbe\u7f6e\u540e\u7528\u6237\u7aef\u8ba2\u9605\u4ef7\u683c\u5c06\u7acb\u5373\u66f4\u65b0</span></h2>",
     '  <div class="price-form">',
@@ -698,7 +912,83 @@ function renderSettingsPage() {
   ].join("");
 }
 
+function applyModelPreset() {
+  var key = (getEl("ms-provider") || { value: "custom" }).value;
+  var preset = MODEL_PRESETS[key];
+  if (!preset) return;
+  if (preset.base_url) getEl("ms-base-url").value = preset.base_url;
+  if (preset.model) getEl("ms-model").value = preset.model;
+}
+
+function loadModelSettings() {
+  apiGet("/admin/api/settings/model").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      var providerEl = getEl("ms-provider");
+      if (providerEl) providerEl.value = MODEL_PRESETS[d.provider] ? d.provider : "custom";
+      if (getEl("ms-base-url")) getEl("ms-base-url").value = d.base_url || "";
+      if (getEl("ms-model")) getEl("ms-model").value = d.model || "";
+      if (getEl("ms-bot-id")) getEl("ms-bot-id").value = d.bot_id || "";
+      if (getEl("ms-timeout")) getEl("ms-timeout").value = d.timeout_seconds || 40;
+      if (getEl("ms-in-price")) getEl("ms-in-price").value = d.input_price_per_1m_cents;
+      if (getEl("ms-out-price")) getEl("ms-out-price").value = d.output_price_per_1m_cents;
+      var keyStatus = getEl("ms-key-status");
+      if (keyStatus) {
+        keyStatus.textContent = d.api_key_configured
+          ? "\uff08\u5df2\u914d\u7f6e\uff1a" + d.api_key_masked + "\uff09"
+          : "\uff08\u672a\u914d\u7f6e\uff0cAI \u529f\u80fd\u5c06\u4f7f\u7528\u5185\u7f6e\u6a21\u677f\u515c\u5e95\uff09";
+      }
+    });
+  });
+}
+
+function saveModelSettings() {
+  var body = {
+    provider: (getEl("ms-provider") || { value: "custom" }).value,
+    base_url: (getEl("ms-base-url") || { value: "" }).value.trim(),
+    model: (getEl("ms-model") || { value: "" }).value.trim(),
+    bot_id: (getEl("ms-bot-id") || { value: "" }).value.trim(),
+  };
+  var apiKey = (getEl("ms-api-key") || { value: "" }).value.trim();
+  if (apiKey) body.api_key = apiKey;
+  var timeout = parseFloat((getEl("ms-timeout") || { value: "" }).value);
+  if (!isNaN(timeout)) body.timeout_seconds = timeout;
+  var inPrice = parseFloat((getEl("ms-in-price") || { value: "" }).value);
+  if (!isNaN(inPrice)) body.input_price_per_1m_cents = inPrice;
+  var outPrice = parseFloat((getEl("ms-out-price") || { value: "" }).value);
+  if (!isNaN(outPrice)) body.output_price_per_1m_cents = outPrice;
+
+  if (!body.base_url) { toast("\u8bf7\u586b\u5199 Base URL", "error"); return; }
+  if (!body.model && !body.bot_id) { toast("\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0\u6216 Bot ID", "error"); return; }
+
+  apiPost("/admin/api/settings/model", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    getEl("ms-api-key").value = "";
+    toast("\u6a21\u578b\u914d\u7f6e\u5df2\u4fdd\u5b58", "success");
+    loadModelSettings();
+  });
+}
+
+function testModelSettings() {
+  var resultEl = getEl("ms-test-result");
+  if (resultEl) resultEl.textContent = "\u6d4b\u8bd5\u4e2d\u2026";
+  apiPost("/admin/api/settings/model/test").then(function(r) {
+    if (!r) return;
+    r.json().then(function(d) {
+      if (resultEl) {
+        resultEl.textContent = d.message || (d.ok ? "\u8fde\u63a5\u6210\u529f" : "\u8fde\u63a5\u5931\u8d25");
+        resultEl.style.color = d.ok ? "var(--success, #16a34a)" : "var(--danger, #dc2626)";
+      }
+      toast(d.message || "\u6d4b\u8bd5\u5b8c\u6210", d.ok ? "success" : "error");
+    });
+  }).catch(function() {
+    if (resultEl) resultEl.textContent = "\u7f51\u7edc\u9519\u8bef";
+  });
+}
+
 function loadSettings() {
+  loadModelSettings();
   var display = getEl("current-price-display");
   if (!display) return;
   display.innerHTML = loadingHTML();
@@ -962,21 +1252,24 @@ function submitChangePassword() {
   var confirmPw = (getEl("cp-confirm") || { value: '' }).value;
 
   if (!oldPw || oldPw.length < 6) { toast('\u8bf7\u8f93\u5165\u5f53\u524d\u5bc6\u7801', 'error'); return; }
-  if (!newPw || newPw.length < 6) { toast('\u65b0\u5bc6\u7801\u81f3\u5c116\u4f4d', 'error'); return; }
+  if (!newPw || newPw.length < 8) { toast('\u65b0\u5bc6\u7801\u81f3\u5c118\u4f4d', 'error'); return; }
   if (newPw !== confirmPw) { toast('\u4e24\u6b21\u5bc6\u7801\u4e0d\u4e00\u81f4', 'error'); return; }
   if (newPw === oldPw) { toast('\u65b0\u5bc6\u7801\u4e0d\u80fd\u4e0e\u5f53\u524d\u5bc6\u7801\u76f8\u540c', 'error'); return; }
 
-  apiPost('/auth/password/change', {
+  apiPost('/admin/api/password/change', {
     old_password: oldPw,
     new_password: newPw,
   }).then(function(r) {
     if (!r) return;
-    if (r.status === 401 || r.status === 400) {
+    if (!r.ok) {
       r.json().catch(function() { return {}; }).then(function(d) { toast(d.detail || '\u4fee\u6539\u5931\u8d25', 'error'); });
       return;
     }
     closeChangePasswordModal();
-    toast('\u5bc6\u7801\u4fee\u6539\u6210\u529f', 'success');
+    toast('\u5bc6\u7801\u4fee\u6539\u6210\u529f\uff0c\u8bf7\u7528\u65b0\u5bc6\u7801\u91cd\u65b0\u767b\u5f55', 'success');
+    // \u670d\u52a1\u7aef\u5df2\u9500\u6bc1\u5168\u90e8\u4f1a\u8bdd\uff0c\u56de\u5230\u767b\u5f55\u9875
+    resetAdminState();
+    renderApp();
   });
 }
 
@@ -997,15 +1290,8 @@ function renderApp(loginOpts) {
   var app = getEl("app");
   if (!app) return;
 
-  if (_loggingOut) {
-    app.innerHTML = renderLogoutView();
-    return;
-  }
-
   // Not logged in
   if (!state.loggedIn) {
-    _loggedOut = false;
-    sessionStorage.removeItem("admin_logged_out");
     app.innerHTML = renderLogin(loginOpts && loginOpts.loginError);
     var form = getEl("login-form");
     if (form) form.onsubmit = handleLogin;
@@ -1017,6 +1303,7 @@ function renderApp(loginOpts) {
   if (state.currentTab === "overview") pageContent = renderOverviewPage();
   else if (state.currentTab === "users") pageContent = renderUsersPage();
   else if (state.currentTab === "user_detail") pageContent = renderUserDetailPage();
+  else if (state.currentTab === "orders") pageContent = renderOrdersPage();
   else if (state.currentTab === "admins") pageContent = renderAdminMgmtPage();
   else if (state.currentTab === "settings") pageContent = renderSettingsPage();
 
@@ -1117,6 +1404,7 @@ function renderApp(loginOpts) {
   if (state.currentTab === "overview") loadOverview();
   else if (state.currentTab === "users") loadUsers();
   else if (state.currentTab === "user_detail") loadUserDetail();
+  else if (state.currentTab === "orders") loadOrders();
   else if (state.currentTab === "admins") loadAdminList();
   else if (state.currentTab === "settings") loadSettings();
 
@@ -1157,11 +1445,21 @@ window.deleteAdmin = deleteAdmin;
 window.openChangePasswordModal = openChangePasswordModal;
 window.closeChangePasswordModal = closeChangePasswordModal;
 window.submitChangePassword = submitChangePassword;
+window.loadOrders = loadOrders;
+window.markOrderPaid = markOrderPaid;
+window.loadOverviewCharts = loadOverviewCharts;
+window.applyModelPreset = applyModelPreset;
+window.saveModelSettings = saveModelSettings;
+window.testModelSettings = testModelSettings;
 window.toast = toast;
 
 // ============================================================
 // Init
 // ============================================================
 document.addEventListener("DOMContentLoaded", function() {
-  renderApp();
+  // 先尝试用 Cookie 恢复会话；失败再显示登录页
+  restoreSession().then(function() {
+    state.sessionChecked = true;
+    renderApp();
+  });
 });

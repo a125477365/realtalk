@@ -28,7 +28,10 @@ final class AppModel: ObservableObject {
     ]
     @Published var billingAccount: BillingAccountResponse?
     @Published var rechargeOrder: RechargeOrderResponse?
-    @Published var showDialogueContent = false
+    @Published var todayScenarios: [ScenarioSummary] = []
+    @Published var isLoadingScenarios = false
+    // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
+    @Published var showDialogueContent = true
     @Published var autoSpeakAI = true
     @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
@@ -42,9 +45,12 @@ final class AppModel: ObservableObject {
 
     private var uploadLoop: Task<Void, Never>?
     private var captureScheduleLoop: Task<Void, Never>?
+    private var answerTimeoutTask: Task<Void, Never>?
     private var spokenMessageIDs: Set<String> = []
     private var chattedRoleplayMessageIDs: Set<String> = []
     private let defaults = UserDefaults.standard
+    /// 轮到用户说话后，超过该秒数仍未开口则由 AI 主动给提示（要求 12）
+    private let answerTimeoutSeconds: UInt64 = 20
 
     private enum DefaultsKey {
         static let autoCaptureEnabled = "realtalk.autoCaptureEnabled"
@@ -77,6 +83,7 @@ final class AppModel: ObservableObject {
     deinit {
         uploadLoop?.cancel()
         captureScheduleLoop?.cancel()
+        answerTimeoutTask?.cancel()
     }
 
     var visibleSegments: [TranscriptSegment] {
@@ -89,9 +96,48 @@ final class AppModel: ObservableObject {
         await subscription.loadProducts()
         await loadBillingAccount()
         await loadPracticeHistory()
+        await loadTodayScenarios()
         startUploadLoop()
         startCaptureScheduleLoop()
         await evaluateAutomaticCaptureWindow()
+    }
+
+    /// 拉取今天的场景列表；服务端在已有当天对话却没有场景时会自动生成
+    func loadTodayScenarios() async {
+        guard let token = auth.token else { return }
+        isLoadingScenarios = true
+        defer { isLoadingScenarios = false }
+        do {
+            let response = try await api.todayScenarios(token: token)
+            todayScenarios = response.items
+            if response.generated {
+                appendChat(.assistant, "我已根据你今天的真实对话生成了新的英语场景，点上方卡片就能开练。")
+            }
+        } catch {
+            if statusMessage.isEmpty {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// 从「今日场景」卡片直接进入练习：拉取场景详情 → 选角色 → 开始对练
+    func startScenarioPractice(_ summary: ScenarioSummary, roleId: String) async {
+        guard let token = auth.token else {
+            statusMessage = "请先登录"
+            return
+        }
+        isWorking = true
+        do {
+            let detail = try await api.scenarioDetail(sceneId: summary.sceneId, token: token)
+            scenario = detail
+            selectedRoleID = roleId
+            isWorking = false
+            appendChat(.user, "练习：\(summary.title)（扮演\(roleName(roleId))）")
+            await startRoleplay()
+        } catch {
+            isWorking = false
+            statusMessage = error.localizedDescription
+        }
     }
 
     func toggleRecording() async {
@@ -127,6 +173,7 @@ final class AppModel: ObservableObject {
             speech.stop(savePartial: true)
             await uploadPending()
             appendChat(.assistant, "已停止采集，并把待同步的文字转写上传到后台。")
+            await loadTodayScenarios()
             return
         }
 
@@ -411,6 +458,7 @@ final class AppModel: ObservableObject {
 
     func pauseVoiceConversation() {
         isVoiceConversationActive = false
+        cancelAnswerTimeout()
         practiceSpeech.stop(emit: false)
         voice.stop()
         statusMessage = "语音对话已暂停"
@@ -450,6 +498,8 @@ final class AppModel: ObservableObject {
 
         let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard answer.isEmpty == false else { return }
+
+        cancelAnswerTimeout()
 
         if isPracticeHelpRequest(answer) {
             appendChat(.user, answer)
@@ -553,6 +603,7 @@ final class AppModel: ObservableObject {
         selectedRoleID = state.selectedRole
         if state.completed {
             isVoiceConversationActive = false
+            cancelAnswerTimeout()
             practiceSpeech.stop(emit: false)
         }
 
@@ -603,6 +654,39 @@ final class AppModel: ObservableObject {
         guard roleplay?.completed == false, roleplay?.nextLine != nil else { return }
         guard practiceSpeech.isListening == false, voice.isSpeaking == false else { return }
         await practiceSpeech.start()
+        scheduleAnswerTimeout()
+    }
+
+    /// 用户长时间没开口时，AI 主动暂停并给出指导，再继续等待回答
+    private func scheduleAnswerTimeout() {
+        cancelAnswerTimeout()
+        answerTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: (self?.answerTimeoutSeconds ?? 20) * 1_000_000_000)
+            guard Task.isCancelled == false else { return }
+            await self?.handleAnswerTimeout()
+        }
+    }
+
+    private func cancelAnswerTimeout() {
+        answerTimeoutTask?.cancel()
+        answerTimeoutTask = nil
+    }
+
+    private func handleAnswerTimeout() async {
+        guard isVoiceConversationActive else { return }
+        guard roleplay?.completed == false, let next = roleplay?.nextLine else { return }
+        guard practiceSpeech.partialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // 用户正在说，再宽限一轮
+            scheduleAnswerTimeout()
+            return
+        }
+        practiceSpeech.stop(emit: false)
+        appendChat(.assistant, "别紧张，我来帮你。\n中文提示：\(next.sourceText)\n可以这样说：\(next.english)")
+        voice.speak("Take your time. Try saying: \(next.english)") { [weak self] in
+            Task { @MainActor in
+                await self?.listenForNextRoleplayTurn()
+            }
+        }
     }
 
     private func appendChat(_ sender: ChatMessage.Sender, _ text: String) {

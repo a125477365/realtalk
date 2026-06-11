@@ -143,6 +143,18 @@ final class APIClient {
         )
     }
 
+    func todayScenarios(token: String) async throws -> ScenarioListResponse {
+        try await get("/scenario/today", token: token, queryItems: [])
+    }
+
+    func scenarioList(token: String) async throws -> ScenarioListResponse {
+        try await get("/scenario/list", token: token, queryItems: [])
+    }
+
+    func scenarioDetail(sceneId: String, token: String) async throws -> ScenarioResponse {
+        try await get("/scenario/\(sceneId)", token: token, queryItems: [])
+    }
+
     func startRoleplay(
         start: Date,
         end: Date,

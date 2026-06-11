@@ -4,6 +4,29 @@
 
 ---
 
+## 0. 一键安装（推荐）
+
+```bash
+cd realtalk/realtalkwork
+bash setup.sh
+```
+
+引导脚本会逐项提示并解释每个后台参数（JWT 密钥、端口、数据库、管理员账号、AI 模型、收款方式），自动生成 `.env` 并启动 `docker compose`。完成后：
+
+| 入口 | 地址 | 说明 |
+|------|------|------|
+| 管理台 | `http://<服务器IP>:8001` | 默认账号见安装时设置，登录后请立即改密 |
+| API | `http://<服务器IP>:8000` | iOS App 的 `AppConfig.apiBaseURL` 指向这里 |
+
+管理台功能速览：
+- **数据概览**：收入 / AI 支出 / 毛利 / 新增用户 / 在线用户 / 练习量多维统计与近 14/30/90 天趋势图
+- **用户管理**：搜索、查看明细（用量/账单/订单）、调余额、封禁
+- **充值订单**：全部订单查询；个人收款码模式下在此「确认到账」人工入账
+- **管理员管理**：多管理员 + 角色（超管/管理员/运维）
+- **系统设置**：AI 模型对接（火山方舟/DeepSeek/通义/Kimi/智谱/自定义 OpenAI 兼容，保存即生效，可测试连接）、月费价格
+
+---
+
 ## 1. 环境要求
 
 - Python >= 3.12（后端）
@@ -133,21 +156,22 @@ docker build -t realtalk-api:latest .
 
 Dockerfile 基础镜像：`python:3.12-slim`
 
-### 3.2 快速启动（含 CockroachDB）
+### 3.2 快速启动（含 PostgreSQL 与管理台）
 
-项目已提供 `docker-compose.yml`，一键启动 API + 单节点 CockroachDB：
+项目已提供 `docker-compose.yml`，一键启动 API + PostgreSQL + 管理台：
 
 ```bash
-docker compose up --build
+cp .env.example .env   # 或运行 bash setup.sh 交互式生成
+docker compose up -d --build
 ```
 
 服务说明：
 
-| 服务 | 端口 | 说明 |
+| 服务 | 端口（可在 .env 改） | 说明 |
 |------|------|------|
 | api | 8000 | FastAPI 服务 |
-| cockroach | 26257 | SQL 端口 |
-| cockroach | 8080 | Web 管理界面 |
+| admin-frontend | 8001 | 管理台（nginx 同源代理 API，无跨域问题） |
+| postgres | 内部 | 数据持久化在 `POSTGRES_DATA_DIR`（默认 `./data/postgres`） |
 
 健康检查：
 - `GET http://localhost:8000/health`：存活检查
@@ -155,24 +179,19 @@ docker compose up --build
 
 ### 3.3 环境变量配置
 
-Docker Compose 已预置部分变量，生产环境请根据实际覆盖：
+Compose 从 `.env` 读取配置，常用项：
 
-```yaml
-services:
-  api:
-    build: .
-    environment:
-      DATABASE_URL: postgresql+psycopg://root@cockroach:26257/realtalk?sslmode=disable
-      REALTALK_REGION: local-dev
-      JWT_SECRET: 替换为强随机字符串
-      WECHAT_AUTH_DEV_MODE: "true"
-      PAYMENT_DEV_AUTO_CONFIRM: "true"
-      REQUIRE_PRO_FOR_AI: "false"
-    ports:
-      - "8000:8000"
+```env
+API_PORT=8000            # API 对外端口
+ADMIN_PORT=8001          # 管理台对外端口
+POSTGRES_PASSWORD=...    # 数据库密码
+POSTGRES_DATA_DIR=./data/postgres
+JWT_SECRET=...           # 强随机字符串
+ADMIN_USERNAME=admin     # 首次启动自动创建的超级管理员
+ADMIN_PASSWORD=...
 ```
 
-如需使用外部 PostgreSQL / YugabyteDB / 托管数据库，修改 `DATABASE_URL` 并注释掉 Compose 中的 `cockroach` 相关服务。
+如需使用外部 PostgreSQL / YugabyteDB / 托管数据库，直接给 `api` 服务设置 `DATABASE_URL` 并删除 Compose 中的 `postgres` 服务。
 
 ### 3.4 多中心部署
 
@@ -190,8 +209,7 @@ docker compose logs -f api
 
 ```bash
 docker compose down
-# 如需同时删除 CockroachDB 数据卷：
-docker compose down -v
+# 数据库数据在宿主机目录（默认 ./data/postgres），down 不会删除
 ```
 
 ---
@@ -308,12 +326,12 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### 6.3 Docker 下数据库连接失败
 
-- 确认 `cockroach` 服务已 healthy：
+- 确认 `postgres` 服务已 healthy：
   ```bash
   docker compose ps
-  docker compose logs cockroach
+  docker compose logs postgres
   ```
-- 检查 `DATABASE_URL` 中的主机名是否为服务名 `cockroach`
+- 检查 `DATABASE_URL` 中的主机名是否为服务名 `postgres`
 
 ### 6.4 生产环境微信 / 支付不生效
 

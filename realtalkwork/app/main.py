@@ -17,7 +17,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
-from .ark_client import evaluate_roleplay_turn, generate_ai_chat_reply, generate_learning, generate_scenario
+from .ark_client import (
+    evaluate_roleplay_turn,
+    generate_ai_chat_reply,
+    generate_learning,
+    generate_scenario,
+    resolve_ai_config,
+    test_ai_connection,
+)
 from .auth import (
     create_admin_token, create_token, create_refresh_token,
     destroy_admin_token, hash_password, hash_email_code,
@@ -32,6 +39,7 @@ from .schemas import (
     AdminCreateRequest,
     AdminListResponse,
     AdminOut,
+    AdminPasswordChangeRequest,
     AdminPriceUpdateRequest,
     AdminUpdateRequest,
     AdminUserUpdateRequest,
@@ -49,6 +57,7 @@ from .schemas import (
     LearningGenerateRequest,
     LearningResponse,
     MessageResponse,
+    ModelSettingsUpdateRequest,
     PasswordChangeRequest,
     PasswordLoginRequest,
     PasswordRegisterRequest,
@@ -65,7 +74,9 @@ from .schemas import (
     RoleplayStartRequest,
     RoleplayStateResponse,
     ScenarioGenerateRequest,
+    ScenarioListResponse,
     ScenarioResponse,
+    ScenarioSummary,
     SceneLine,
     TokenRefreshRequest,
     TrainingAnswerRequest,
@@ -94,12 +105,25 @@ _is_localhost_af = (
 class DynamicCORSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin", "")
+        allowed = _is_localhost_af or origin == _af_url
+        # 预检请求必须在路由之前直接应答，否则跨域 JSON 请求会因 405 失败
+        if request.method == "OPTIONS" and allowed and origin:
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": request.headers.get(
+                        "access-control-request-headers", "*"
+                    ),
+                    "Access-Control-Max-Age": "600",
+                },
+            )
         response = await call_next(request)
-        if _is_localhost_af or origin == _af_url:
-            response.headers["Access-Control-Allow-Origin"] = origin or "*"
+        if allowed and origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
             response.headers["Access-Control-Expose-Headers"] = "Set-Cookie"
         return response
 
@@ -202,7 +226,13 @@ async def admin_login(request: Request, response: Response) -> dict:
         samesite="lax",
         secure=False,
     )
-    return {"ok": True, "username": admin["username"], "role": admin["role"]}
+    return {
+        "ok": True,
+        "id": admin["id"],
+        "username": admin["username"],
+        "role": admin["role"],
+        "display_name": admin.get("display_name"),
+    }
 
 
 @app.post("/admin/logout")
@@ -212,6 +242,33 @@ async def admin_logout(request: Request, response: Response) -> dict:
         destroy_admin_token(token)
     response.delete_cookie(key="admin_session", path="/")
     return {"ok": True}
+
+
+@app.get("/admin/api/me")
+async def admin_me(admin: dict = Depends(current_admin)) -> dict:
+    """供管理台前端恢复登录会话。"""
+    return {
+        "id": admin["id"],
+        "username": admin["username"],
+        "role": admin["role"],
+        "display_name": admin.get("display_name"),
+        "email": admin.get("email"),
+    }
+
+
+@app.post("/admin/api/password/change", response_model=MessageResponse)
+async def admin_change_password(
+    request: AdminPasswordChangeRequest,
+    admin: dict = Depends(current_admin),
+) -> MessageResponse:
+    from .auth import destroy_all_admin_tokens
+
+    if not verify_admin_password(admin, request.old_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码错误")
+    salt, pw_hash = hash_password(request.new_password)
+    db.admin_update(admin["id"], password_salt=salt, password_hash=pw_hash)
+    destroy_all_admin_tokens(admin["id"])
+    return MessageResponse(message="密码已修改，请重新登录")
 
 
 @app.get("/health")
@@ -295,6 +352,101 @@ async def admin_update_price(
 ) -> PriceResponse:
     db.set_app_setting("monthly_price_cents", str(request.monthly_price_cents))
     return await billing_prices()
+
+
+# ---- 模型配置（管理员可对接任意 OpenAI 兼容模型服务）----
+
+def _masked_key(key: str | None) -> str | None:
+    if not key:
+        return None
+    if len(key) <= 8:
+        return "****"
+    return key[:4] + "****" + key[-4:]
+
+
+@app.get("/admin/api/settings/model")
+async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict:
+    config = resolve_ai_config()
+    return {
+        "provider": config.provider,
+        "base_url": config.base_url,
+        "api_key_masked": _masked_key(config.api_key),
+        "api_key_configured": config.enabled,
+        "model": config.model,
+        "bot_id": config.bot_id,
+        "timeout_seconds": config.timeout_seconds,
+        "input_price_per_1m_cents": config.input_price_per_1m_cents,
+        "output_price_per_1m_cents": config.output_price_per_1m_cents,
+    }
+
+
+@app.post("/admin/api/settings/model")
+async def admin_update_model_settings(
+    request: ModelSettingsUpdateRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    updates: dict[str, str] = {}
+    if request.provider is not None:
+        updates["ai_provider"] = request.provider.strip()
+    if request.base_url is not None:
+        updates["ai_base_url"] = request.base_url.strip().rstrip("/")
+    if request.api_key is not None:
+        updates["ai_api_key"] = request.api_key.strip()
+    if request.model is not None:
+        updates["ai_model"] = request.model.strip()
+    if request.bot_id is not None:
+        updates["ai_bot_id"] = request.bot_id.strip()
+    if request.timeout_seconds is not None:
+        updates["ai_timeout_seconds"] = str(request.timeout_seconds)
+    if request.input_price_per_1m_cents is not None:
+        updates["ai_input_price_per_1m_cents"] = str(request.input_price_per_1m_cents)
+    if request.output_price_per_1m_cents is not None:
+        updates["ai_output_price_per_1m_cents"] = str(request.output_price_per_1m_cents)
+    for key, value in updates.items():
+        db.set_app_setting(key, value)
+    return await admin_get_model_settings(admin)
+
+
+@app.post("/admin/api/settings/model/test")
+async def admin_test_model_settings(admin: dict = Depends(current_admin)) -> dict:
+    return await test_ai_connection()
+
+
+@app.get("/admin/api/stats/timeseries")
+async def admin_stats_timeseries(
+    days: int = Query(default=30, ge=7, le=120),
+    admin: dict = Depends(current_admin),
+) -> dict:
+    return db.admin_stats_timeseries(days)
+
+
+@app.get("/admin/api/orders")
+async def admin_orders(
+    order_status: str | None = Query(default=None, alias="status"),
+    method: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    admin: dict = Depends(current_admin),
+) -> dict:
+    return db.admin_list_orders(limit=limit, offset=offset, status=order_status, method=method, query=q)
+
+
+@app.post("/admin/api/orders/{order_id}/mark-paid")
+async def admin_mark_order_paid(
+    order_id: str,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    """人工对账：管理员确认线下/转账到账后手动入账。"""
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    try:
+        order, user = db.mark_recharge_paid_by_order_id(order_id, 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在") from exc
+    return {"order": order.model_dump(), "user_balance_cents": user.balance_cents}
 
 
 # ---- Admin CRUD ----
@@ -390,11 +542,6 @@ async def admin_delete_target(
     if not success:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="管理员不存在")
     return MessageResponse(message="管理员已删除")
-
-
-@app.post("/auth/email/code", response_model=EmailCodeResponse)
-async def send_register_email_code(request: EmailCodeRequest) -> EmailCodeResponse:
-    raise HTTPException(status_code=status.HTTP_410_GONE, detail="仅支持微信快速授权登录")
 
 
 @app.post("/auth/register", response_model=AuthResponse)
@@ -581,9 +728,10 @@ async def me(user: UserOut = Depends(current_user)) -> UserOut:
 async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user)) -> AIChatResponse:
     require_ai_access(user)
     if is_political_sensitive(request.message):
-        return AIChatResponse(reply="")
+        # 涉政话题不进入模型，直接引导回口语练习
+        return AIChatResponse(reply="这个话题我们就不展开了。我们继续练英语吧，你想还原哪段真实对话？")
     scenario = db.get_scenario(user.id, request.scene_id) if request.scene_id else None
-    reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario)
+    reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario, user_id=user.id)
     return AIChatResponse(reply=reply)
 
 
@@ -601,15 +749,24 @@ async def create_recharge(
 ) -> RechargeOrderResponse:
     if request.method == "admin":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效支付方式")
-    
-    if request.method == "wechat" and not settings.wechat_mchid:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付暂不可用")
-    if request.method == "alipay" and not settings.alipay_app_id:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="支付宝暂不可用")
-    
+
+    # 三种到账方式（按优先级）：官方支付（商户号）→ 收款码人工确认 → 开发模式自动确认。
+    wechat_official = bool(settings.wechat_mchid and settings.wechat_notify_url)
+    alipay_official = bool(settings.alipay_app_id and settings.alipay_notify_url)
+    manual_fallback = settings.payment_dev_auto_confirm or bool(
+        settings.wechat_receiver_account
+        or settings.alipay_receiver_account
+        or settings.wechat_pay_url
+        or settings.alipay_pay_url
+    )
+    if request.method == "wechat" and not wechat_official and not manual_fallback:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付暂不可用，请联系管理员配置收款方式")
+    if request.method == "alipay" and not alipay_official and not manual_fallback:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="支付宝暂不可用，请联系管理员配置收款方式")
+
     client_ip = http_request.client.host if http_request.client else "127.0.0.1"
-    
-    if request.method == "wechat" and settings.wechat_notify_url:
+
+    if request.method == "wechat" and wechat_official:
         try:
             result = await wechat_pay.create_unified_order(
                 out_trade_no=str(uuid.uuid4()),
@@ -644,7 +801,7 @@ async def create_recharge(
         except Exception as e:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"微信支付创建失败: {str(e)[:100]}")
     
-    if request.method == "alipay" and settings.alipay_notify_url:
+    if request.method == "alipay" and alipay_official:
         try:
             result = await alipay.create_trade_precreate(
                 out_trade_no=str(uuid.uuid4()),
@@ -821,12 +978,12 @@ async def query_payment_status(
     
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
-    
+
     method = row[0]
-    status = row[1]
-    
+    order_status = row[1]
+
     provider_status = "unknown"
-    if status == "pending" and method in ("wechat", "alipay"):
+    if order_status == "pending" and method in ("wechat", "alipay"):
         try:
             if method == "wechat" and settings.wechat_mchid:
                 result = await wechat_pay.query_order(order_id)
@@ -835,7 +992,7 @@ async def query_payment_status(
                     amount = int(result.get("amount", {}).get("total", 0))
                     if amount > 0:
                         _, _ = db.mark_recharge_paid_by_order_id(order_id, amount)
-                        status = "paid"
+                        order_status = "paid"
             elif method == "alipay" and settings.alipay_app_id:
                 result = await alipay.query_trade(order_id)
                 provider_status = result.get("trade_status", "unknown")
@@ -843,11 +1000,11 @@ async def query_payment_status(
                     total = float(result.get("total_amount", 0))
                     if total > 0:
                         _, _ = db.mark_recharge_paid_by_order_id(order_id, int(total * 100))
-                        status = "paid"
+                        order_status = "paid"
         except HTTPException:
             pass
-    
-    return {"order_id": order_id, "status": status, "provider_status": provider_status}
+
+    return {"order_id": order_id, "status": order_status, "provider_status": provider_status}
 
 
 @app.post("/transcript/upload", response_model=TranscriptUploadResponse)
@@ -881,7 +1038,7 @@ async def learning_generate(
     items = materialize_items(user.id, request.start, request.end, request.items)
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-    return await generate_learning(items)
+    return await generate_learning(items, user_id=user.id)
 
 
 @app.post("/scenario/generate", response_model=ScenarioResponse)
@@ -893,8 +1050,61 @@ async def scenario_generate(
     items = materialize_items(user.id, request.start, request.end, request.items)
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-    scenario = await generate_scenario(items)
+    scenario = await generate_scenario(items, user_id=user.id)
     return db.create_scenario(user.id, request.start, request.end, scenario)
+
+
+@app.get("/scenario/list", response_model=ScenarioListResponse)
+async def scenario_list(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=100),
+    user: UserOut = Depends(current_user),
+) -> ScenarioListResponse:
+    items = db.list_scenarios(user.id, start, end, limit=limit)
+    return ScenarioListResponse(items=[ScenarioSummary(**item) for item in items])
+
+
+@app.get("/scenario/today", response_model=ScenarioListResponse)
+async def scenario_today(
+    auto_generate: bool = Query(default=True),
+    user: UserOut = Depends(current_user),
+) -> ScenarioListResponse:
+    """返回今天的场景列表；如果今天还没有场景但已有真实对话，自动按当天对话生成一个。
+
+    生成由用户打开 App 触发而非全局定时任务，避免给不活跃用户白白消耗模型费用。
+    """
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    existing = db.list_scenarios(user.id, day_start, now + timedelta(minutes=1))
+    generated = False
+    if not existing and auto_generate:
+        transcripts = db.query_transcripts(user.id, day_start, now)
+        if transcripts:
+            try:
+                require_ai_access(user)
+            except HTTPException:
+                transcripts = []
+            if transcripts:
+                scenario = await generate_scenario(transcripts, user_id=user.id)
+                db.create_scenario(user.id, day_start, now, scenario)
+                existing = db.list_scenarios(user.id, day_start, now + timedelta(minutes=1))
+                generated = True
+    return ScenarioListResponse(
+        items=[ScenarioSummary(**item) for item in existing],
+        generated=generated,
+    )
+
+
+@app.get("/scenario/{scene_id}", response_model=ScenarioResponse)
+async def scenario_detail(
+    scene_id: str,
+    user: UserOut = Depends(current_user),
+) -> ScenarioResponse:
+    scenario = db.get_scenario(user.id, scene_id)
+    if scenario is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景不存在")
+    return scenario
 
 
 @app.post("/roleplay/start", response_model=RoleplayStateResponse)
@@ -911,7 +1121,7 @@ async def roleplay_start(
         items = materialize_items(user.id, request.start, request.end, request.items)
         if not items:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-        scenario = db.create_scenario(user.id, request.start, request.end, await generate_scenario(items))
+        scenario = db.create_scenario(user.id, request.start, request.end, await generate_scenario(items, user_id=user.id))
 
     role_ids = {role.id for role in scenario.roles if role.is_user_candidate}
     if request.selected_role not in role_ids:
@@ -950,6 +1160,7 @@ async def roleplay_message(
         target_line,
         scenario,
         db.list_roleplay_messages(user.id, session.session_id),
+        user_id=user.id,
     )
     score = evaluation.score
     accepted = evaluation.accepted and score >= settings.roleplay_accept_score
@@ -1020,7 +1231,7 @@ async def training_start(
     items = materialize_items(user.id, request.start, request.end, request.items)
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-    learning = await generate_learning(items)
+    learning = await generate_learning(items, user_id=user.id)
     drills = learning.drills[:8]
     if not drills:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有可训练的句子")

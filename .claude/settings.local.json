@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile app/main.py app/storage.py app/ark_client.py app/schemas.py app/settings.py app/auth.py app/billing.py app/content_policy.py)",
+      "Bash(python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(ls /Volumes/istore/Public/code/realtalk/realtalkwork/requirements.txt && cat /Volumes/istore/Public/code/realtalk/realtalkwork/requirements.txt; which python3.11 python3.12 python3.13 2>/dev/null; ls /opt/homebrew/bin/python3* 2>/dev/null)",
+      "Bash(/Users/tanjian/.local/bin/python3.11 -m venv /tmp/rtvenv)",
+      "Bash(/tmp/rtvenv/bin/pip install *)",
+      "Bash(REALTALK_DB=/tmp/rt_test.sqlite3 DATABASE_URL='' /tmp/rtvenv/bin/python -c ' *)",
+      "Bash(rm -f /tmp/rt_test.sqlite3)",
+      "Bash(REALTALK_DB=/tmp/rt_test.sqlite3 DATABASE_URL= /tmp/rtvenv/bin/uvicorn app.main:app --port 8765)",
+      "Bash(curl -s http://127.0.0.1:8765/health)",
+      "Bash(tail -20 /tmp/rt_uvicorn.log)",
+      "Bash(curl -s -X POST http://127.0.0.1:8765/auth/wechat/login -H 'Content-Type: application/json' -d '{\"code\":\"smoke-device-1\"}')"
+    ]
+  }
+}

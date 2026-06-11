@@ -2,13 +2,13 @@ services:
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: realtalk
-      POSTGRES_PASSWORD: realtalk
-      POSTGRES_DB: realtalk
+      POSTGRES_USER: ${POSTGRES_USER:-realtalk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-realtalk}
+      POSTGRES_DB: ${POSTGRES_DB:-realtalk}
     volumes:
-      - /mnt/data_md0/DB/realtalk:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U realtalk"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-realtalk}"]
       interval: 2s
       timeout: 5s
       retries: 10
@@ -19,9 +19,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: "postgresql+psycopg://realtalk:realtalk@postgres:5432/realtalk?sslmode=disable"
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@postgres:5432/${POSTGRES_DB:-realtalk}?sslmode=disable"
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,7 +34,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8001:80"
+      - "${ADMIN_PORT:-8001}:80"
     depends_on:
       api:
         condition: service_started

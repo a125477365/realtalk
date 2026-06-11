@@ -14,10 +14,17 @@ cd realtalk/realtalkwork
 ```
 
 ### 1.3 环境变量配置
+
+推荐使用交互式引导（逐项解释每个后台参数并自动生成 `.env`，可直接启动）：
+```bash
+bash setup.sh
+```
+
+或手动配置：
 ```bash
 cp .env.example .env
 ```
-必填项: JWT_SECRET, AI_API_KEY + AI_BASE_URL + AI_MODEL（或 ARK_*），WECHAT_APP_ID + WECHAT_APP_SECRET。
+必填项: JWT_SECRET、ADMIN_USERNAME/ADMIN_PASSWORD。AI 模型可在 `.env` 配置（AI_BASE_URL + AI_API_KEY + AI_MODEL），也可以部署后在管理台「系统设置 → AI 模型对接」中随时配置/切换（管理台配置优先生效）。生产接入微信登录需 WECHAT_APP_ID + WECHAT_APP_SECRET。
 
 ### 1.4 部署方式 A：Docker Compose（推荐）
 ```bash

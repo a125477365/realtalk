@@ -69,6 +69,9 @@ class Settings:
     ai_base_url: str = os.getenv("AI_BASE_URL") or os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
     ai_model: str = os.getenv("AI_MODEL") or os.getenv("ARK_MODEL", "doubao-seed-1-6-251015")
     ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "40"))
+    # 成本估算：每百万 token 的价格（分）。用于管理台支出统计，可在管理台覆盖。
+    ai_input_price_per_1m_cents: float = float(os.getenv("AI_INPUT_PRICE_PER_1M_CENTS", "80"))
+    ai_output_price_per_1m_cents: float = float(os.getenv("AI_OUTPUT_PRICE_PER_1M_CENTS", "200"))
 
     ark_api_key: str | None = os.getenv("ARK_API_KEY")
     ark_base_url: str = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
