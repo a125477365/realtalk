@@ -186,17 +186,17 @@ function logout() {
   var app = document.getElementById("app");
   if (app) app.innerHTML = renderLogoutView();
 
+  setTimeout(function() {
+    _loggingOut = false;
+    _loggedOut = false;
+    sessionStorage.removeItem("admin_logged_out");
+    renderApp();
+  }, 300);
+
   fetch(API_BASE + "/admin/logout", {
     method: "POST",
     credentials: "include",
   }).catch(function() {
-  }).finally(function() {
-    setTimeout(function() {
-      _loggingOut = false;
-      _loggedOut = false;
-      sessionStorage.removeItem("admin_logged_out");
-      renderApp();
-    }, 300);
   });
 }
 
