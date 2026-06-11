@@ -27,5 +27,3 @@ DerivedData/
 # Build outputs
 build/
 dist/
-realtalkwork/data/postgres/
-realtalkwork/data/
