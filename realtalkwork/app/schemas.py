@@ -12,6 +12,8 @@ class UserOut(BaseModel):
     display_name: str | None = None
     avatar_url: str | None = None
     plan: str
+    plan_tier: str = "free"  # 生效套餐：free / basic / premium（按到期时间折算）
+    plan_expires_at: datetime | None = None
     balance_cents: int = 0
     is_banned: bool = False
     admin_notes: str | None = None
@@ -47,6 +49,7 @@ class WeChatLoginRequest(BaseModel):
     code: str = Field(min_length=1, max_length=512)
     nickname: str | None = Field(default=None, max_length=80)
     avatar_url: str | None = Field(default=None, max_length=1000)
+    client: Literal["app", "web"] = "app"  # 网站应用与移动应用是两套微信凭据
 
 
 class TranscriptItem(BaseModel):
@@ -251,9 +254,63 @@ class BillingLedgerItem(BaseModel):
     created_at: datetime
 
 
+class TokenUsageInfo(BaseModel):
+    today_tokens: int
+    daily_limit: int
+    remaining_tokens: int
+    over_limit: bool
+
+
 class BillingAccountResponse(BaseModel):
     user: UserOut
     ledger: list[BillingLedgerItem]
+    usage: TokenUsageInfo | None = None
+
+
+class PlanItem(BaseModel):
+    id: str
+    tier: Literal["basic", "premium"]
+    months: int = Field(ge=1, le=36)
+    price_cents: int = Field(ge=0, le=10000000)
+    per_month_cents: int = Field(ge=0, le=10000000)
+    title: str
+
+
+class PlanCatalogResponse(BaseModel):
+    items: list[PlanItem]
+    trial_days: int
+
+
+class SubscribeRequest(BaseModel):
+    plan_id: str = Field(min_length=1, max_length=40)
+
+
+class AudioJobOut(BaseModel):
+    id: str
+    filename: str
+    size_bytes: int
+    status: str
+    error: str | None = None
+    scene_id: str | None = None
+    transcript_chars: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class AudioJobListResponse(BaseModel):
+    items: list[AudioJobOut]
+
+
+class QuotaSettingsRequest(BaseModel):
+    daily_token_limit_free: int | None = Field(default=None, ge=0, le=100000000)
+    daily_token_limit_basic: int | None = Field(default=None, ge=0, le=100000000)
+    daily_token_limit_premium: int | None = Field(default=None, ge=0, le=100000000)
+
+
+class AsrSettingsRequest(BaseModel):
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
 
 
 class RechargeCreateRequest(BaseModel):

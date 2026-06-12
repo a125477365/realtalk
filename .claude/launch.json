@@ -4,7 +4,7 @@
     {
       "name": "admin-frontend",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["realtalkwork/scripts/admin_dev_proxy.py"],
+      "runtimeArgs": ["/tmp/admin_dev_proxy.py"],
       "port": 8080
     }
   ]

@@ -1,5 +1,17 @@
 import SwiftUI
 
+/// Claude 风格的对话主界面：奶白底色、助手消息纯文本、用户消息浅色气泡、
+/// 系统提示居中胶囊；字幕随对话自动向上滚动。
+enum RTTheme {
+    static let background = Color(red: 0.965, green: 0.957, blue: 0.937)   // 奶白
+    static let surface = Color.white
+    static let userBubble = Color(red: 0.922, green: 0.910, blue: 0.878)
+    static let accent = Color(red: 0.78, green: 0.42, blue: 0.26)          // 暖陶土色
+    static let textPrimary = Color(red: 0.13, green: 0.12, blue: 0.11)
+    static let textSecondary = Color(red: 0.45, green: 0.43, blue: 0.40)
+    static let hairline = Color.black.opacity(0.08)
+}
+
 struct MainChatView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var auth: AuthStore
@@ -14,7 +26,7 @@ struct MainChatView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                DreamyBackdrop()
+                RTTheme.background.ignoresSafeArea()
 
                 VStack(spacing: 0) {
                     topBar
@@ -27,7 +39,7 @@ struct MainChatView: View {
             }
             .sheet(isPresented: $showingAccount) {
                 AccountPanelView()
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.large])
             }
             .confirmationDialog(
                 roleDialogScenario.map { "练习「\($0.title)」，你想扮演谁？" } ?? "选择角色",
@@ -50,61 +62,7 @@ struct MainChatView: View {
         }
     }
 
-    /// 今日真实对话场景：默认展示当天最新生成的场景列表，点卡片选角色直接开练
-    private var scenarioStrip: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("今日场景")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                Spacer()
-                Button {
-                    Task { await model.loadTodayScenarios() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isLoadingScenarios)
-            }
-            .padding(.horizontal, 18)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(model.todayScenarios) { summary in
-                        Button {
-                            roleDialogScenario = summary
-                        } label: {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(summary.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text(summary.summary)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                HStack(spacing: 6) {
-                                    Label("\(summary.lineCount) 句", systemImage: "text.bubble")
-                                    Label(summary.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            }
-                            .padding(12)
-                            .frame(width: 210, alignment: .leading)
-                            .background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 18)
-            }
-        }
-        .padding(.vertical, 8)
-        .background(.black.opacity(0.06))
-    }
+    // MARK: 顶栏
 
     private var topBar: some View {
         HStack(spacing: 12) {
@@ -112,127 +70,195 @@ struct MainChatView: View {
                 showingAccount = true
             } label: {
                 ZStack {
-                    Circle()
-                        .fill(.white.opacity(0.82))
-                    Text((auth.user?.displayName ?? "微信").prefix(1))
-                        .font(.headline)
-                        .foregroundStyle(.blue)
+                    Circle().fill(RTTheme.accent.opacity(0.16))
+                    Text((auth.user?.displayName ?? "我").prefix(1))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(RTTheme.accent)
                 }
-                .frame(width: 38, height: 38)
+                .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("RealTalk")
                     .font(.headline)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(RTTheme.textPrimary)
                 Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.78))
+                    .font(.caption2)
+                    .foregroundStyle(RTTheme.textSecondary)
             }
 
             Spacer()
 
             Button {
                 Task {
-                    if speech.isRecording {
-                        await model.sendMainChatMessage("停止录音")
-                    } else {
-                        await model.sendMainChatMessage("开始录音")
-                    }
+                    await model.sendMainChatMessage(speech.isRecording ? "停止录音" : "开始录音")
                 }
             } label: {
-                Image(systemName: speech.isRecording ? "stop.circle.fill" : "waveform.circle")
-                    .font(.title2)
-                    .foregroundStyle(speech.isRecording ? .red : .white)
+                Image(systemName: speech.isRecording ? "record.circle.fill" : "waveform")
+                    .font(.title3)
+                    .foregroundStyle(speech.isRecording ? .red : RTTheme.textSecondary)
+                    .frame(width: 34, height: 34)
+                    .background(RTTheme.surface, in: Circle())
+                    .overlay(Circle().stroke(RTTheme.hairline))
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(.black.opacity(0.10))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
+
+    // MARK: 今日场景
+
+    private var scenarioStrip: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("今日场景")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(RTTheme.textSecondary)
+                Spacer()
+                Button {
+                    Task { await model.loadTodayScenarios() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundStyle(RTTheme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isLoadingScenarios)
+            }
+            .padding(.horizontal, 16)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(model.todayScenarios) { summary in
+                        Button {
+                            roleDialogScenario = summary
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(summary.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(RTTheme.textPrimary)
+                                    .lineLimit(1)
+                                Text(summary.summary)
+                                    .font(.caption)
+                                    .foregroundStyle(RTTheme.textSecondary)
+                                    .lineLimit(2)
+                                Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption2)
+                                    .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                            }
+                            .padding(12)
+                            .frame(width: 200, alignment: .leading)
+                            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    // MARK: 消息流（字幕自动上滚）
 
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(model.chatMessages) { message in
-                        ChatBubble(message: message)
+                        ChatRow(message: message)
                             .id(message.id)
                     }
+                    if practiceSpeech.partialText.isEmpty == false {
+                        // 实时识别字幕：用户开口时同步显示
+                        HStack {
+                            Spacer(minLength: 56)
+                            Text(practiceSpeech.partialText)
+                                .font(.body)
+                                .foregroundStyle(RTTheme.textSecondary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(RTTheme.userBubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 18))
+                        }
+                        .id("partial")
+                    }
+                    Color.clear.frame(height: 8).id("bottom")
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 18)
+                .padding(.vertical, 14)
             }
-            .background(.white.opacity(0.90))
+            .scrollIndicators(.hidden)
             .onChange(of: model.chatMessages.count) { _, _ in
-                if let last = model.chatMessages.last {
-                    withAnimation(.easeOut(duration: 0.22)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+            .onChange(of: practiceSpeech.partialText) { _, text in
+                guard text.isEmpty == false else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
     }
 
-    private var composer: some View {
-        VStack(spacing: 8) {
-            if practiceSpeech.partialText.isEmpty == false {
-                Text(practiceSpeech.partialText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-            }
+    // MARK: 输入栏
 
+    private var composer: some View {
+        VStack(spacing: 0) {
             HStack(spacing: 10) {
-                TextField("向 RealTalk 说出你的目标", text: $draft, axis: .vertical)
+                TextField("和 RealTalk 说说今天想练什么", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
+                    .font(.body)
                     .textFieldStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.leading, 16)
+
+                Button {
+                    Task { await model.toggleVoiceConversation() }
+                } label: {
+                    Image(systemName: model.isVoiceConversationActive ? "pause.circle.fill" : "mic.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(model.isVoiceConversationActive ? .orange : RTTheme.accent)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isWorking)
 
                 Button {
                     Task { await sendDraft() }
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 34))
+                        .font(.system(size: 30))
+                        .foregroundStyle(
+                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? RTTheme.textSecondary.opacity(0.4)
+                                : RTTheme.accent
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isWorking)
-
-                Button {
-                    Task { await model.toggleVoiceConversation() }
-                } label: {
-                    VoicePulseGlyph(
-                        isActive: model.isVoiceConversationActive || practiceSpeech.isListening || speech.isRecording || voice.isSpeaking,
-                        tint: model.isVoiceConversationActive ? .orange : .blue
-                    )
-                    .frame(width: 42, height: 42)
-                }
-                .buttonStyle(.plain)
-                .disabled(model.roleplay == nil || model.isWorking)
             }
+            .padding(.vertical, 7)
+            .padding(.trailing, 8)
+            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 26))
+            .overlay(RoundedRectangle(cornerRadius: 26).stroke(RTTheme.hairline))
             .padding(.horizontal, 14)
+            .padding(.top, 8)
             .padding(.bottom, 10)
         }
-        .padding(.top, 10)
-        .background(.white.opacity(0.92))
+        .background(RTTheme.background)
     }
 
     private var statusText: String {
-        if voice.isSpeaking {
-            return "AI 正在说话"
+        if voice.isSpeaking { return "AI 正在说话…" }
+        if practiceSpeech.isListening { return "正在听你说英语…" }
+        if speech.isRecording { return "正在采集真实对话…" }
+        if let usage = model.billingAccount?.usage, usage.overLimit {
+            return "今日 AI 用量已达上限"
         }
-        if practiceSpeech.isListening {
-            return "正在听你说英语"
-        }
-        if speech.isRecording {
-            return "正在采集真实对话"
-        }
-        return "用真实生活练英语"
+        return auth.user?.tierName ?? "用真实生活练英语"
     }
 
     private func sendDraft() async {
@@ -242,237 +268,48 @@ struct MainChatView: View {
     }
 }
 
-struct ChatBubble: View {
+// MARK: - 消息行
+
+struct ChatRow: View {
     let message: ChatMessage
 
     var body: some View {
-        HStack {
-            if message.sender == .user {
-                Spacer(minLength: 46)
-            }
-
-            Text(message.text)
-                .font(.body)
-                .foregroundStyle(foreground)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(background, in: RoundedRectangle(cornerRadius: 8))
-                .frame(maxWidth: 310, alignment: alignment)
-
-            if message.sender != .user {
-                Spacer(minLength: 46)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: rowAlignment)
-    }
-
-    private var background: Color {
         switch message.sender {
-        case .user:
-            return .blue
         case .assistant:
-            return Color(.secondarySystemGroupedBackground)
-        case .system:
-            return Color(.systemYellow).opacity(0.22)
-        }
-    }
-
-    private var foreground: Color {
-        message.sender == .user ? .white : .primary
-    }
-
-    private var rowAlignment: Alignment {
-        message.sender == .user ? .trailing : .leading
-    }
-
-    private var alignment: Alignment {
-        message.sender == .user ? .trailing : .leading
-    }
-}
-
-struct AccountPanelView: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var auth: AuthStore
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var amountCents = 3000
-    @State private var method = "wechat"
-    @State private var showingSettings = false
-
-    private let amounts = [1000, 3000, 6800, 12800]
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    profile
-                    recharge
-                    ledger
-                    StatusBanner(text: model.statusMessage)
-                }
-                .padding(18)
-            }
-            .navigationTitle("账户")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") {
-                        dismiss()
-                    }
-                }
-            }
-            .sheet(isPresented: $showingSettings) {
-                SettingsView()
-            }
-            .task {
-                await model.loadBillingAccount()
-            }
-        }
-    }
-
-    private var profile: some View {
-        HStack(spacing: 14) {
-            ZStack {
+            // Claude 风格：助手消息纯文本，无气泡
+            HStack(alignment: .top, spacing: 10) {
                 Circle()
-                    .fill(Color.blue.opacity(0.14))
-                Text((auth.user?.displayName ?? auth.user?.loginIdentifier ?? "R").prefix(1).uppercased())
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(.blue)
-            }
-            .frame(width: 58, height: 58)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(auth.user?.displayName ?? "微信用户")
-                    .font(.headline)
-                    .lineLimit(1)
-                Text("微信授权已登录")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("余额 \(money(auth.user?.balanceCents ?? 0))")
-                    .font(.title3.weight(.semibold))
-            }
-            Spacer()
-            Button {
-                auth.logout()
-                dismiss()
-            } label: {
-                Image(systemName: "rectangle.portrait.and.arrow.right")
-            }
-            .buttonStyle(.bordered)
-        }
-        .padding(16)
-        .background(Color(.systemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var recharge: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("充值")
-                .font(.headline)
-
-            Picker("支付方式", selection: $method) {
-                Text("微信").tag("wechat")
-                Text("支付宝").tag("alipay")
-            }
-            .pickerStyle(.segmented)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                ForEach(amounts, id: \.self) { amount in
-                    Button {
-                        amountCents = amount
-                    } label: {
-                        Text(money(amount))
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(amount == amountCents ? .blue : .gray)
-                }
-            }
-
-            Button {
-                Task { await model.createRecharge(amountCents: amountCents, method: method) }
-            } label: {
-                Label("生成付款单", systemImage: "creditcard")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-
-            if let order = model.rechargeOrder {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(order.message)
-                        .font(.subheadline)
-                    Text("订单号：\(order.orderId)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    if let account = order.receiverAccount, account.isEmpty == false {
-                        Text("收款账号：\(account)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        Task { await model.confirmRecharge() }
-                    } label: {
-                        Text("我已付款")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(12)
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
-            }
-        }
-        .padding(16)
-        .background(Color(.systemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var ledger: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("账单")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    Task { await model.loadBillingAccount() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-
-            if model.billingAccount?.ledger.isEmpty != false {
-                Text("暂无账单")
-                    .foregroundStyle(.secondary)
+                    .fill(RTTheme.accent.opacity(0.9))
+                    .frame(width: 6, height: 6)
+                    .padding(.top, 8)
+                Text(message.text)
+                    .font(.body)
+                    .foregroundStyle(RTTheme.textPrimary)
+                    .lineSpacing(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-            } else {
-                ForEach(model.billingAccount?.ledger ?? []) { item in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.title)
-                                .font(.subheadline.weight(.medium))
-                            Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(money(item.amountCents))
-                            .font(.subheadline.monospacedDigit())
-                    }
-                    .padding(.vertical, 6)
-                }
+            }
+        case .user:
+            HStack {
+                Spacer(minLength: 56)
+                Text(message.text)
+                    .font(.body)
+                    .foregroundStyle(RTTheme.textPrimary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(RTTheme.userBubble, in: RoundedRectangle(cornerRadius: 18))
+            }
+        case .system:
+            // 「轮到你」等提示：居中胶囊
+            HStack {
+                Spacer()
+                Text(message.text)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(RTTheme.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background(RTTheme.accent.opacity(0.10), in: Capsule())
+                Spacer()
             }
         }
-        .padding(16)
-        .background(Color(.systemGroupedBackground), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func money(_ cents: Int) -> String {
-        "¥" + String(format: "%.2f", Double(cents) / 100)
     }
 }

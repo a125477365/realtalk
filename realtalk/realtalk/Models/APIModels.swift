@@ -6,6 +6,8 @@ struct AppUser: Codable, Equatable {
     let displayName: String?
     let avatarUrl: String?
     let plan: String
+    let planTier: String?
+    let planExpiresAt: Date?
     let balanceCents: Int
     let createdAt: Date
 
@@ -15,9 +17,109 @@ struct AppUser: Codable, Equatable {
         case displayName = "display_name"
         case avatarUrl = "avatar_url"
         case plan
+        case planTier = "plan_tier"
+        case planExpiresAt = "plan_expires_at"
         case balanceCents = "balance_cents"
         case createdAt = "created_at"
     }
+
+    var effectiveTier: String { planTier ?? "free" }
+    var tierName: String {
+        switch effectiveTier {
+        case "premium": return "高级会员"
+        case "basic": return "基础会员"
+        default: return "免费用户"
+        }
+    }
+}
+
+struct TokenUsageInfo: Codable, Equatable {
+    let todayTokens: Int
+    let dailyLimit: Int
+    let remainingTokens: Int
+    let overLimit: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case todayTokens = "today_tokens"
+        case dailyLimit = "daily_limit"
+        case remainingTokens = "remaining_tokens"
+        case overLimit = "over_limit"
+    }
+}
+
+struct PlanItem: Identifiable, Codable, Equatable {
+    let id: String
+    let tier: String
+    let months: Int
+    let priceCents: Int
+    let perMonthCents: Int
+    let title: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case tier
+        case months
+        case priceCents = "price_cents"
+        case perMonthCents = "per_month_cents"
+        case title
+    }
+}
+
+struct PlanCatalogResponse: Codable, Equatable {
+    let items: [PlanItem]
+    let trialDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case trialDays = "trial_days"
+    }
+}
+
+struct SubscribeRequest: Codable {
+    let planId: String
+
+    enum CodingKeys: String, CodingKey {
+        case planId = "plan_id"
+    }
+}
+
+struct AudioJob: Identifiable, Codable, Equatable {
+    let id: String
+    let filename: String
+    let sizeBytes: Int
+    let status: String
+    let error: String?
+    let sceneId: String?
+    let transcriptChars: Int
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case filename
+        case sizeBytes = "size_bytes"
+        case status
+        case error
+        case sceneId = "scene_id"
+        case transcriptChars = "transcript_chars"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    var statusText: String {
+        switch status {
+        case "completed": return "已完成"
+        case "failed": return "失败"
+        case "pending": return "排队中"
+        case "transcribing": return "转写中"
+        case "generating": return "生成场景中"
+        default: return status
+        }
+    }
+}
+
+struct AudioJobListResponse: Codable, Equatable {
+    let items: [AudioJob]
 }
 
 struct AuthResponse: Codable {
@@ -206,6 +308,7 @@ struct BillingLedgerItem: Identifiable, Codable, Equatable {
 struct BillingAccountResponse: Codable, Equatable {
     let user: AppUser
     let ledger: [BillingLedgerItem]
+    let usage: TokenUsageInfo?
 }
 
 struct RechargeCreateRequest: Codable {

@@ -28,6 +28,9 @@ final class AppModel: ObservableObject {
     ]
     @Published var billingAccount: BillingAccountResponse?
     @Published var rechargeOrder: RechargeOrderResponse?
+    @Published var planCatalog: [PlanItem] = []
+    @Published var audioJobs: [AudioJob] = []
+    @Published var isUploadingAudio = false
     @Published var todayScenarios: [ScenarioSummary] = []
     @Published var isLoadingScenarios = false
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
@@ -97,6 +100,7 @@ final class AppModel: ObservableObject {
         await loadBillingAccount()
         await loadPracticeHistory()
         await loadTodayScenarios()
+        await loadPlanCatalog()
         startUploadLoop()
         startCaptureScheduleLoop()
         await evaluateAutomaticCaptureWindow()
@@ -438,6 +442,14 @@ final class AppModel: ObservableObject {
 
     func toggleVoiceConversation() async {
         if roleplay == nil {
+            guard scenario != nil else {
+                // 引导放进聊天流，主界面随处可见（statusMessage 只在账户面板展示）
+                chatMessages.append(ChatMessage(
+                    sender: .assistant,
+                    text: "先选一个练习场景：点上方「今日场景」卡片，或点右上角按钮采集今天的真实对话。"
+                ))
+                return
+            }
             await startRoleplay()
             return
         }
@@ -556,6 +568,65 @@ final class AppModel: ObservableObject {
             if statusMessage.isEmpty {
                 statusMessage = error.localizedDescription
             }
+        }
+    }
+
+    func loadPlanCatalog() async {
+        do {
+            planCatalog = try await api.planCatalog().items
+        } catch {
+            if statusMessage.isEmpty { statusMessage = error.localizedDescription }
+        }
+    }
+
+    func subscribe(planId: String) async {
+        guard let token = auth.token else {
+            statusMessage = "请先登录"
+            return
+        }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let account = try await api.subscribe(planId: planId, token: token)
+            billingAccount = account
+            auth.applyBillingUser(account.user)
+            statusMessage = "开通成功，当前为\(account.user.tierName)"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func loadAudioJobs() async {
+        guard let token = auth.token else { return }
+        do {
+            audioJobs = try await api.audioJobs(token: token).items
+        } catch {
+            if statusMessage.isEmpty { statusMessage = error.localizedDescription }
+        }
+    }
+
+    /// 高级会员：上传录音文件（手机本地或录音笔下载的文件）生成场景
+    func uploadRecording(fileURL: URL) async {
+        guard let token = auth.token else {
+            statusMessage = "请先登录"
+            return
+        }
+        isUploadingAudio = true
+        defer { isUploadingAudio = false }
+        do {
+            _ = try await api.uploadAudio(fileURL: fileURL, token: token)
+            statusMessage = "上传成功，正在转写生成场景"
+            await loadAudioJobs()
+            // 处理是异步的，轮询直到完成
+            for _ in 0..<60 {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                await loadAudioJobs()
+                let active = audioJobs.contains { ["pending", "transcribing", "generating"].contains($0.status) }
+                if active == false { break }
+            }
+            await loadTodayScenarios()
+        } catch {
+            statusMessage = error.localizedDescription
         }
     }
 

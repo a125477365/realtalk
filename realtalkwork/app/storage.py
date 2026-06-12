@@ -56,6 +56,26 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+class InsufficientBalanceError(Exception):
+    """余额不足，missing_cents 表示还差多少分。"""
+
+    def __init__(self, missing_cents: int):
+        self.missing_cents = missing_cents
+        super().__init__(f"insufficient balance, missing {missing_cents} cents")
+
+
+def effective_plan_tier(plan: str | None, plan_expires_at: datetime | None) -> str:
+    """计算生效套餐：到期即降为 free；历史 'pro' 视为 basic。"""
+    tier = (plan or "free").lower()
+    if tier == "pro":
+        tier = "basic"
+    if tier not in ("basic", "premium"):
+        return "free"
+    if plan_expires_at is None or plan_expires_at > datetime.now(timezone.utc):
+        return tier
+    return "free"
+
+
 metadata = MetaData()
 
 users = Table(
@@ -76,6 +96,7 @@ users = Table(
     Column("is_banned", Integer, nullable=False, default=0),
     Column("admin_notes", Text),
     Column("last_seen_at", Text),
+    Column("plan_expires_at", Text),
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -279,6 +300,22 @@ admin_sessions = Table(
 Index("idx_admin_sessions_admin", admin_sessions.c.admin_id)
 Index("idx_admin_sessions_expires", admin_sessions.c.expires_at)
 
+audio_jobs = Table(
+    "audio_jobs",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("filename", Text, nullable=False),
+    Column("size_bytes", Integer, nullable=False, default=0),
+    Column("status", Text, nullable=False, default="pending"),  # pending/transcribing/generating/completed/failed
+    Column("error", Text),
+    Column("scene_id", Text),
+    Column("transcript_chars", Integer, nullable=False, default=0),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+Index("idx_audio_jobs_user_created", audio_jobs.c.user_id, audio_jobs.c.created_at)
+
 ai_usage = Table(
     "ai_usage",
     metadata,
@@ -314,6 +351,7 @@ class Database:
             self._ensure_column(conn, "users", "is_banned", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "admin_notes", "TEXT")
             self._ensure_column(conn, "users", "last_seen_at", "TEXT")
+            self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
             self._ensure_index(
                 conn,
                 "idx_users_login_identifier",
@@ -344,6 +382,7 @@ class Database:
     def create_user(self, login_identifier: str, salt: str, password_hash: str) -> UserOut:
         user_id = str(uuid.uuid4())
         created_at = _now()
+        trial_expires = created_at + timedelta(days=settings.trial_days)
         with self.engine.begin() as conn:
             conn.execute(
                 insert(users).values(
@@ -351,17 +390,29 @@ class Database:
                     login_identifier=login_identifier,
                     password_salt=salt,
                     password_hash=password_hash,
-                    plan="free",
+                    plan="basic",
+                    plan_expires_at=_iso(trial_expires),
                     balance_cents=0,
                     created_at=_iso(created_at),
                 )
             )
-        return UserOut(
-            id=user_id,
-            login_identifier=login_identifier,
-            plan="free",
-            balance_cents=0,
-            created_at=created_at,
+            self._insert_trial_ledger(conn, user_id, created_at)
+        user = self.get_user(user_id)
+        if user is None:
+            raise ValueError("user not found")
+        return user
+
+    def _insert_trial_ledger(self, conn, user_id: str, now: datetime) -> None:
+        conn.execute(
+            insert(billing_ledger).values(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                type="trial",
+                title=f"新用户首月免费试用（基础会员 {settings.trial_days} 天）",
+                amount_cents=0,
+                balance_after_cents=0,
+                created_at=_iso(now),
+            )
         )
 
     def get_user_by_login_identifier(self, login_identifier: str) -> Mapping[str, Any] | None:
@@ -400,6 +451,7 @@ class Database:
 
         user_id = str(uuid.uuid4())
         identity = f"wechat:{openid}"
+        trial_expires = now + timedelta(days=settings.trial_days)
         with self.engine.begin() as conn:
             conn.execute(
                 insert(users).values(
@@ -407,7 +459,8 @@ class Database:
                     login_identifier=identity,
                     password_salt=salt,
                     password_hash=password_hash,
-                    plan="free",
+                    plan="basic",
+                    plan_expires_at=_iso(trial_expires),
                     balance_cents=0,
                     wechat_openid=openid,
                     display_name=display_name,
@@ -415,15 +468,11 @@ class Database:
                     created_at=_iso(now),
                 )
             )
-        return UserOut(
-            id=user_id,
-            login_identifier=identity,
-            display_name=display_name,
-            avatar_url=avatar_url,
-            plan="free",
-            balance_cents=0,
-            created_at=now,
-        )
+            self._insert_trial_ledger(conn, user_id, now)
+        user = self.get_user(user_id)
+        if user is None:
+            raise ValueError("user not found")
+        return user
 
     def get_user_by_wechat_openid(self, openid: str) -> Mapping[str, Any] | None:
         with self.engine.connect() as conn:
@@ -447,6 +496,206 @@ class Database:
 
     def get_monthly_price_cents(self) -> int:
         return self.get_app_setting_int("monthly_price_cents", settings.monthly_price_cents)
+
+    # ---- 套餐目录与订阅 ----
+
+    DEFAULT_PLAN_CATALOG = [
+        {"id": "basic_1m", "tier": "basic", "months": 1, "price_cents": 3000, "title": "基础 · 月付", "per_month_cents": 3000},
+        {"id": "basic_3m", "tier": "basic", "months": 3, "price_cents": 7500, "title": "基础 · 季付", "per_month_cents": 2500},
+        {"id": "basic_12m", "tier": "basic", "months": 12, "price_cents": 24000, "title": "基础 · 年付", "per_month_cents": 2000},
+        {"id": "premium_1m", "tier": "premium", "months": 1, "price_cents": 5000, "title": "高级 · 月付", "per_month_cents": 5000},
+        {"id": "premium_3m", "tier": "premium", "months": 3, "price_cents": 12000, "title": "高级 · 季付", "per_month_cents": 4000},
+        {"id": "premium_12m", "tier": "premium", "months": 12, "price_cents": 36000, "title": "高级 · 年付", "per_month_cents": 3000},
+    ]
+
+    def get_plan_catalog(self) -> list[dict[str, Any]]:
+        raw = self.get_app_setting_str("plan_catalog")
+        if raw:
+            try:
+                catalog = json.loads(raw)
+                if isinstance(catalog, list) and catalog:
+                    return catalog
+            except json.JSONDecodeError:
+                pass
+        return [dict(item) for item in self.DEFAULT_PLAN_CATALOG]
+
+    def set_plan_catalog(self, catalog: list[dict[str, Any]]) -> None:
+        self.set_app_setting("plan_catalog", json.dumps(catalog, ensure_ascii=False))
+
+    def subscribe_plan(self, user_id: str, plan: dict[str, Any]) -> UserOut:
+        """余额购买/续费套餐。同档续费从到期日顺延；升级/降级从当前时间重新计算。"""
+        price = int(plan["price_cents"])
+        tier = str(plan["tier"])
+        months = int(plan["months"])
+        now = _now()
+        with self.engine.begin() as conn:
+            row = conn.execute(select(users).where(users.c.id == user_id)).mappings().fetchone()
+            if row is None:
+                raise ValueError("user not found")
+            balance = int(row["balance_cents"] or 0)
+            if balance < price:
+                raise InsufficientBalanceError(price - balance)
+
+            current_expiry = _parse_dt(row["plan_expires_at"]) if row.get("plan_expires_at") else None
+            same_tier_active = (
+                row["plan"] == tier and current_expiry is not None and current_expiry > now
+            )
+            base = current_expiry if same_tier_active else now
+            new_expiry = base + timedelta(days=30 * months)
+            new_balance = balance - price
+
+            conn.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(plan=tier, plan_expires_at=_iso(new_expiry), balance_cents=new_balance)
+            )
+            conn.execute(
+                insert(billing_ledger).values(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    type="subscription",
+                    title=f"订阅{plan.get('title', tier)}（{months} 个月）",
+                    amount_cents=-price,
+                    balance_after_cents=new_balance,
+                    created_at=_iso(now),
+                )
+            )
+        user = self.get_user(user_id)
+        if user is None:
+            raise ValueError("user not found")
+        return user
+
+    # ---- token 配额 ----
+
+    def get_daily_token_limit(self, tier: str) -> int:
+        defaults = {
+            "free": settings.daily_token_limit_free,
+            "basic": settings.daily_token_limit_basic,
+            "premium": settings.daily_token_limit_premium,
+        }
+        return self.get_app_setting_int(f"daily_token_limit_{tier}", defaults.get(tier, settings.daily_token_limit_free))
+
+    def tokens_used_today(self, user_id: str) -> int:
+        today_start = _iso(_now().replace(hour=0, minute=0, second=0, microsecond=0))
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(func.coalesce(func.sum(ai_usage.c.total_tokens), 0)).where(
+                    ai_usage.c.user_id == user_id,
+                    ai_usage.c.created_at >= today_start,
+                )
+            ).scalar_one()
+        return int(value or 0)
+
+    def admin_usage_users(self, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
+        """按今日 token 用量倒序的用户列表，标记接近/超过限额的用户。"""
+        now = _now()
+        today_start = _iso(now.replace(hour=0, minute=0, second=0, microsecond=0))
+        period_start = _iso(now - timedelta(days=days))
+        with self.engine.connect() as conn:
+            today_rows = conn.execute(
+                select(
+                    ai_usage.c.user_id,
+                    func.coalesce(func.sum(ai_usage.c.total_tokens), 0),
+                    func.coalesce(func.sum(ai_usage.c.cost_cents), 0),
+                )
+                .where(ai_usage.c.created_at >= today_start, ai_usage.c.user_id.isnot(None))
+                .group_by(ai_usage.c.user_id)
+            ).fetchall()
+            period_rows = conn.execute(
+                select(
+                    ai_usage.c.user_id,
+                    func.coalesce(func.sum(ai_usage.c.total_tokens), 0),
+                    func.coalesce(func.sum(ai_usage.c.cost_cents), 0),
+                    func.count(),
+                )
+                .where(ai_usage.c.created_at >= period_start, ai_usage.c.user_id.isnot(None))
+                .group_by(ai_usage.c.user_id)
+            ).fetchall()
+            today_map = {r[0]: (int(r[1]), float(r[2])) for r in today_rows}
+            period_map = {r[0]: (int(r[1]), float(r[2]), int(r[3])) for r in period_rows}
+            user_ids = list({*today_map.keys(), *period_map.keys()})
+            user_rows = []
+            if user_ids:
+                user_rows = conn.execute(select(users).where(users.c.id.in_(user_ids))).mappings().fetchall()
+        items = []
+        for row in user_rows:
+            user = _user_from_row(row)
+            today_tokens, today_cost = today_map.get(user.id, (0, 0.0))
+            period_tokens, period_cost, calls = period_map.get(user.id, (0, 0.0, 0))
+            daily_limit = self.get_daily_token_limit(user.plan_tier)
+            items.append(
+                {
+                    "user_id": user.id,
+                    "display_name": user.display_name,
+                    "login_identifier": user.login_identifier,
+                    "plan_tier": user.plan_tier,
+                    "today_tokens": today_tokens,
+                    "today_cost_cents": round(today_cost, 2),
+                    "daily_limit": daily_limit,
+                    "usage_ratio": round(today_tokens / daily_limit, 3) if daily_limit else 0,
+                    "over_limit": daily_limit > 0 and today_tokens >= daily_limit,
+                    "near_limit": daily_limit > 0 and today_tokens >= daily_limit * 0.8,
+                    "period_tokens": period_tokens,
+                    "period_cost_cents": round(period_cost, 2),
+                    "period_calls": calls,
+                }
+            )
+        items.sort(key=lambda item: item["today_tokens"], reverse=True)
+        return items[:limit]
+
+    # ---- 音频转写任务 ----
+
+    def create_audio_job(self, user_id: str, filename: str, size_bytes: int) -> dict[str, Any]:
+        job_id = str(uuid.uuid4())
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(audio_jobs).values(
+                    id=job_id,
+                    user_id=user_id,
+                    filename=filename,
+                    size_bytes=size_bytes,
+                    status="pending",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        return self.get_audio_job(user_id, job_id)
+
+    def get_audio_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(audio_jobs).where(audio_jobs.c.id == job_id, audio_jobs.c.user_id == user_id)
+            ).mappings().fetchone()
+        return _audio_job_dict(row) if row else None
+
+    def update_audio_job(
+        self,
+        job_id: str,
+        status: str,
+        error: str | None = None,
+        scene_id: str | None = None,
+        transcript_chars: int | None = None,
+    ) -> None:
+        values: dict[str, Any] = {"status": status, "updated_at": _iso(_now())}
+        if error is not None:
+            values["error"] = error[:500]
+        if scene_id is not None:
+            values["scene_id"] = scene_id
+        if transcript_chars is not None:
+            values["transcript_chars"] = transcript_chars
+        with self.engine.begin() as conn:
+            conn.execute(update(audio_jobs).where(audio_jobs.c.id == job_id).values(**values))
+
+    def list_audio_jobs(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(audio_jobs)
+                .where(audio_jobs.c.user_id == user_id)
+                .order_by(audio_jobs.c.created_at.desc())
+                .limit(limit)
+            ).mappings().fetchall()
+        return [_audio_job_dict(row) for row in rows]
 
     def get_app_setting_int(self, key: str, default: int) -> int:
         with self.engine.connect() as conn:
@@ -504,7 +753,8 @@ class Database:
                 update(users)
                 .where(users.c.id == user_id)
                 .values(
-                    plan="pro",
+                    plan="basic",
+                    plan_expires_at=_iso(expires_at) if expires_at else None,
                     apple_original_transaction_id=original_transaction_id,
                     subscription_expires_at=_iso(expires_at) if expires_at else None,
                 )
@@ -1780,10 +2030,19 @@ class Database:
         with self.engine.begin() as conn:
             conn.execute(delete(admin_sessions).where(admin_sessions.c.expires_at < now))
 
-    def cleanup_expired(self) -> None:
-        now = _iso(_now())
-        cutoff = _iso(_now() - timedelta(days=settings.retention_days))
-        history_cutoff = _iso(_now() - timedelta(days=settings.history_retention_days))
+    _CLEANUP_MIN_INTERVAL_SECONDS = 600
+
+    def cleanup_expired(self, force: bool = False) -> None:
+        # 节流：过期清理是全表 DELETE 扫描，高并发下不能挂在每个请求上跑
+        now_ts = _now()
+        last = getattr(self, "_last_cleanup_at", None)
+        if not force and last is not None and (now_ts - last).total_seconds() < self._CLEANUP_MIN_INTERVAL_SECONDS:
+            return
+        self._last_cleanup_at = now_ts
+
+        now = _iso(now_ts)
+        cutoff = _iso(now_ts - timedelta(days=settings.retention_days))
+        history_cutoff = _iso(now_ts - timedelta(days=settings.history_retention_days))
         with self.engine.begin() as conn:
             conn.execute(delete(transcripts).where(transcripts.c.expires_at < now))
             conn.execute(delete(sessions).where(sessions.c.created_at < cutoff))
@@ -1795,6 +2054,11 @@ class Database:
         kwargs: dict[str, Any] = {"pool_pre_ping": True, "future": True}
         if self.backend == "sqlite":
             kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            # PostgreSQL：连接池按并发量配置（每 worker 进程独立一套池）
+            kwargs["pool_size"] = settings.db_pool_size
+            kwargs["max_overflow"] = settings.db_max_overflow
+            kwargs["pool_recycle"] = 1800
         engine = create_engine(self.url, **kwargs)
         if self.backend == "sqlite":
             event.listen(engine, "connect", _enable_sqlite_foreign_keys)
@@ -1905,18 +2169,35 @@ def _admin_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _user_from_row(row: Mapping[str, Any]) -> UserOut:
+    plan_expires_at = _parse_dt(row["plan_expires_at"]) if row.get("plan_expires_at") else None
     return UserOut(
         id=row["id"],
         login_identifier=row["login_identifier"],
         display_name=row.get("display_name"),
         avatar_url=row.get("avatar_url"),
         plan=row["plan"],
+        plan_expires_at=plan_expires_at,
+        plan_tier=effective_plan_tier(row["plan"], plan_expires_at),
         balance_cents=int(row.get("balance_cents") or 0),
         is_banned=bool(row.get("is_banned") or 0),
         admin_notes=row.get("admin_notes"),
         last_seen_at=_parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,
         created_at=_parse_dt(row["created_at"]),
     )
+
+
+def _audio_job_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "filename": row["filename"],
+        "size_bytes": int(row["size_bytes"] or 0),
+        "status": row["status"],
+        "error": row.get("error"),
+        "scene_id": row.get("scene_id"),
+        "transcript_chars": int(row.get("transcript_chars") or 0),
+        "created_at": _parse_dt(row["created_at"]),
+        "updated_at": _parse_dt(row["updated_at"]),
+    }
 
 
 def _admin_user_from_row(row: Mapping[str, Any]) -> dict[str, Any]:

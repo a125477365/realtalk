@@ -17,7 +17,7 @@ BACKEND = os.environ.get("REALTALK_API", "http://127.0.0.1:8000")
 PORT = int(os.environ.get("PORT", "8080"))
 API_PREFIXES = ("/api/", "/admin", "/payment/", "/auth/", "/health", "/ready",
                 "/billing/", "/transcript/", "/learning/", "/scenario/",
-                "/roleplay/", "/practice/", "/training/", "/apple/")
+                "/roleplay/", "/practice/", "/training/", "/apple/", "/web", "/audio/")
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):

@@ -54,6 +54,20 @@ _DB_CONFIG_KEYS = [
 ]
 
 
+_shared_client: httpx.AsyncClient | None = None
+
+
+def _http_client() -> httpx.AsyncClient:
+    """进程级共享客户端：复用连接池，避免每次模型调用重建 TCP/TLS。"""
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            timeout=httpx.Timeout(60, connect=10),
+        )
+    return _shared_client
+
+
 def resolve_ai_config() -> AIRuntimeConfig:
     from .storage import db
 
@@ -99,16 +113,16 @@ async def _chat_completion(
         "temperature": temperature,
     }
     started = time.monotonic()
-    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
-        response = await client.post(
-            config.base_url.rstrip("/") + endpoint,
-            headers={
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        response.raise_for_status()
+    response = await _http_client().post(
+        config.base_url.rstrip("/") + endpoint,
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=config.timeout_seconds,
+    )
+    response.raise_for_status()
     latency_ms = int((time.monotonic() - started) * 1000)
     data = response.json()
     _record_usage(data, kind, model, user_id, latency_ms, config)

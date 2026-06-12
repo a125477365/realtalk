@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# RealTalk 一键安装引导：交互式生成 .env 并启动 Docker 服务。
+# RealTalk 部署引导：选择要部署的应用 → 逐应用设置参数 → 一键容器化部署。
+# 支持分布式：在不同机器上分别运行本脚本、各自勾选应用并填写对端地址即可。
 # 用法：cd realtalkwork && bash setup.sh
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 BOLD=$'\033[1m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RESET=$'\033[0m'
-
 say()  { printf '%s\n' "${BOLD}$*${RESET}"; }
 note() { printf '%s\n' "${YELLOW}  ➜ $*${RESET}"; }
 
-ask() { # ask "提示" "默认值" -> REPLY_VALUE
+ask() { # ask "提示" "默认值"
   local prompt="$1" default="${2:-}" input
   if [ -n "$default" ]; then
     read -r -p "$prompt [$default]: " input
@@ -21,15 +21,17 @@ ask() { # ask "提示" "默认值" -> REPLY_VALUE
   fi
 }
 
-ask_secret() { # 不回显
+ask_secret() {
   local prompt="$1" input
   read -r -s -p "$prompt: " input
   echo
   REPLY_VALUE="$input"
 }
 
+rand() { LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "${1:-32}"; }
+
 say "=============================================="
-say " RealTalk 后端 + 管理台 安装引导"
+say " RealTalk 部署引导（可分布式拆机部署）"
 say "=============================================="
 echo
 
@@ -43,166 +45,152 @@ if [ -f .env ]; then
   note "旧配置已备份。"
 fi
 
-# ---------- 基础 ----------
-say "[1/6] 基础配置"
-note "JWT_SECRET 用于签发用户登录令牌，必须保密；回车自动生成强随机值。"
-ask "JWT 密钥（回车自动生成）" "$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 48)"
-JWT_SECRET="$REPLY_VALUE"
+# ============ 第 1 步：选择本机要部署的应用 ============
+say "[1] 选择本机要部署的应用（逗号分隔可多选）"
+echo "    1) 后端 API（含可选内置 PostgreSQL）"
+echo "    2) 管理台（运营/财务/模型配置）"
+echo "    3) 用户 Web 端（充值/会员/场景/录音上传）"
+ask "要部署哪些应用？" "1,2,3"
+SEL=",$REPLY_VALUE,"
+DEPLOY_BACKEND=false; DEPLOY_ADMIN=false; DEPLOY_WEB=false
+[[ "$SEL" == *",1,"* ]] && DEPLOY_BACKEND=true
+[[ "$SEL" == *",2,"* ]] && DEPLOY_ADMIN=true
+[[ "$SEL" == *",3,"* ]] && DEPLOY_WEB=true
+$DEPLOY_BACKEND || $DEPLOY_ADMIN || $DEPLOY_WEB || { say "未选择任何应用，退出。"; exit 1; }
 
-ask "API 对外端口" "8000"
-API_PORT="$REPLY_VALUE"
-ask "管理台对外端口" "8001"
-ADMIN_PORT="$REPLY_VALUE"
+PROFILES=()
+ENV_LINES=("# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====")
 
-# ---------- 数据库 ----------
-echo; say "[2/6] 数据库（Docker 内置 PostgreSQL）"
-note "数据默认持久化到 ./data/postgres，可改为任意宿主机目录。"
-ask "PostgreSQL 数据目录" "./data/postgres"
-POSTGRES_DATA_DIR="$REPLY_VALUE"
-ask "PostgreSQL 密码（回车自动生成）" "$(LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 20)"
-POSTGRES_PASSWORD="$REPLY_VALUE"
+API_UPSTREAM_DEFAULT="http://api:8000"
 
-# ---------- 管理员 ----------
-echo; say "[3/6] 管理台初始账号"
-note "首次启动自动创建超级管理员；登录后请立即在「修改密码」中更换。"
-ask "管理员用户名" "admin"
-ADMIN_USERNAME="$REPLY_VALUE"
-ask "管理员初始密码（至少 8 位）" "admin123456"
-ADMIN_PASSWORD="$REPLY_VALUE"
+# ============ 第 2 步：后端参数 ============
+if $DEPLOY_BACKEND; then
+  echo; say "[2] 后端 API 参数"
+  PROFILES+=("backend")
 
-# ---------- AI 模型 ----------
-echo; say "[4/6] AI 大模型（可跳过，之后在管理台「系统设置 → AI 模型对接」中配置）"
-note "支持任意 OpenAI 兼容服务：火山方舟/豆包、DeepSeek、通义千问、Kimi、智谱等。"
-note "未配置时翻译/场景生成使用内置模板兜底，功能可用但质量有限。"
-ask "AI Base URL（回车跳过）" ""
-AI_BASE_URL="$REPLY_VALUE"
-AI_API_KEY=""
-AI_MODEL=""
-if [ -n "$AI_BASE_URL" ]; then
-  ask_secret "AI API Key"
-  AI_API_KEY="$REPLY_VALUE"
-  ask "模型名称" "doubao-seed-1-6-251015"
-  AI_MODEL="$REPLY_VALUE"
+  ask "API 对外端口" "8000"
+  ENV_LINES+=("API_PORT=$REPLY_VALUE")
+  API_PORT="$REPLY_VALUE"
+
+  note "数据库二选一：内置 PostgreSQL 容器，或填写已有数据库连接串（分布式/托管库）。"
+  ask "使用内置 PostgreSQL 容器？(yes=内置 / no=外部数据库)" "yes"
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    PROFILES+=("backend-db")
+    ask "PostgreSQL 数据目录" "./data/postgres"
+    ENV_LINES+=("POSTGRES_DATA_DIR=$REPLY_VALUE")
+    ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
+    ENV_LINES+=("POSTGRES_USER=realtalk" "POSTGRES_PASSWORD=$REPLY_VALUE" "POSTGRES_DB=realtalk" "DATABASE_URL=")
+  else
+    note "示例：postgresql+psycopg://user:pass@db.example.com:5432/realtalk?sslmode=require"
+    ask "数据库连接串 DATABASE_URL" ""
+    [ -n "$REPLY_VALUE" ] || { say "外部数据库必须填写连接串"; exit 1; }
+    ENV_LINES+=("DATABASE_URL=$REPLY_VALUE")
+  fi
+
+  ask "JWT 密钥（回车自动生成）" "$(rand 48)"
+  ENV_LINES+=("JWT_SECRET=$REPLY_VALUE")
+
+  ask "管理员用户名" "admin"
+  ENV_LINES+=("ADMIN_USERNAME=$REPLY_VALUE")
+  ask "管理员初始密码（至少 8 位，登录后请改密）" "admin123456"
+  ENV_LINES+=("ADMIN_PASSWORD=$REPLY_VALUE")
+
+  note "AI 模型可跳过，部署后在管理台「系统设置 → AI 模型对接」配置（推荐）。"
+  ask "AI Base URL（回车跳过）" ""
+  AI_BASE_URL="$REPLY_VALUE"
+  if [ -n "$AI_BASE_URL" ]; then
+    ask_secret "AI API Key"; AI_KEY="$REPLY_VALUE"
+    ask "模型名称" "doubao-seed-1-6-251015"
+    ENV_LINES+=("AI_BASE_URL=$AI_BASE_URL" "AI_API_KEY=$AI_KEY" "AI_MODEL=$REPLY_VALUE")
+  else
+    ENV_LINES+=("AI_BASE_URL=" "AI_API_KEY=" "AI_MODEL=")
+  fi
+
+  ask "worker 进程数（建议=CPU核数）" "4"
+  ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
+
+  ENV_LINES+=(
+    "REALTALK_REGION=prod"
+    "TRIAL_DAYS=30"
+    "DAILY_TOKEN_LIMIT_FREE=8000"
+    "DAILY_TOKEN_LIMIT_BASIC=120000"
+    "DAILY_TOKEN_LIMIT_PREMIUM=400000"
+    "UPLOAD_DATA_DIR=./data/uploads"
+    "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_DEV_MODE=false"
+    "# 登录：生产接入微信开放平台后改 false 并填写凭据（App 与网站应用分开申请）"
+    "WECHAT_AUTH_DEV_MODE=true"
+    "WECHAT_APP_ID=" "WECHAT_APP_SECRET="
+    "WECHAT_WEB_APP_ID=" "WECHAT_WEB_APP_SECRET="
+    "# 邮箱注册默认关闭（防垃圾邮箱薅取免费试用），仅微信认证"
+    "EMAIL_AUTH_ENABLED=false"
+    "PAYMENT_RECEIVER_NAME=RealTalk"
+    "WECHAT_RECEIVER_ACCOUNT=" "ALIPAY_RECEIVER_ACCOUNT="
+    "PAYMENT_DEV_AUTO_CONFIRM=true"
+    "WECHAT_MCHID=" "WECHAT_API_KEY=" "WECHAT_NOTIFY_URL="
+    "ALIPAY_APP_ID=" "ALIPAY_PRIVATE_KEY=" "ALIPAY_PUBLIC_KEY=" "ALIPAY_NOTIFY_URL="
+    "EMAIL_DEV_MODE=true"
+  )
 fi
 
-# ---------- 支付 ----------
-echo; say "[5/6] 收款配置"
-note "正式接入微信支付/支付宝需要商户号与证书（见 .env 注释）；"
-note "未接入前可填「个人收款码账号」，用户转账后在管理台「充值订单」人工确认到账。"
-ask "微信收款账号/备注（回车跳过）" ""
-WECHAT_RECEIVER_ACCOUNT="$REPLY_VALUE"
-ask "支付宝收款账号（回车跳过）" ""
-ALIPAY_RECEIVER_ACCOUNT="$REPLY_VALUE"
-ask "是否启用开发模式自动确认到账（生产请选 no）(yes/no)" "yes"
-if [ "$REPLY_VALUE" = "yes" ]; then PAYMENT_DEV_AUTO_CONFIRM=true; else PAYMENT_DEV_AUTO_CONFIRM=false; fi
+# ============ 第 3 步：管理台参数 ============
+if $DEPLOY_ADMIN; then
+  echo; say "[3] 管理台参数"
+  PROFILES+=("admin")
+  ask "管理台对外端口" "8001"
+  ENV_LINES+=("ADMIN_PORT=$REPLY_VALUE")
+  if $DEPLOY_BACKEND; then
+    note "后端在同机部署，管理台自动走内部网络 $API_UPSTREAM_DEFAULT"
+  else
+    ask "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
+    API_UPSTREAM_DEFAULT="$REPLY_VALUE"
+  fi
+fi
 
-# ---------- 写入 .env ----------
-echo; say "[6/6] 生成 .env"
-cat > .env <<EOF
-# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====
+# ============ 第 4 步：用户 Web 端参数 ============
+if $DEPLOY_WEB; then
+  echo; say "[4] 用户 Web 端参数"
+  PROFILES+=("web")
+  ask "用户 Web 端对外端口" "8002"
+  ENV_LINES+=("WEB_PORT=$REPLY_VALUE")
+  if ! $DEPLOY_BACKEND && ! $DEPLOY_ADMIN; then
+    ask "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
+    API_UPSTREAM_DEFAULT="$REPLY_VALUE"
+  fi
+fi
 
-# 基础
-JWT_SECRET=${JWT_SECRET}
-REALTALK_REGION=prod
-TOKEN_TTL_HOURS=720
-RETENTION_DAYS=3
-HISTORY_RETENTION_DAYS=90
-REQUIRE_PRO_FOR_AI=false
+ENV_LINES+=("API_UPSTREAM=$API_UPSTREAM_DEFAULT")
+IFS=,; ENV_LINES+=("COMPOSE_PROFILES=${PROFILES[*]}"); unset IFS
 
-# 端口（docker compose 使用）
-API_PORT=${API_PORT}
-ADMIN_PORT=${ADMIN_PORT}
-
-# 数据库（docker compose 使用）
-POSTGRES_USER=realtalk
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-POSTGRES_DB=realtalk
-POSTGRES_DATA_DIR=${POSTGRES_DATA_DIR}
-
-# 管理台
-ADMIN_USERNAME=${ADMIN_USERNAME}
-ADMIN_PASSWORD=${ADMIN_PASSWORD}
-ADMIN_FRONTEND_URL=http://localhost:${ADMIN_PORT}
-
-# AI 模型（也可在管理台「系统设置」中配置，管理台配置优先生效）
-AI_BASE_URL=${AI_BASE_URL}
-AI_API_KEY=${AI_API_KEY}
-AI_MODEL=${AI_MODEL}
-AI_TIMEOUT_SECONDS=40
-# 成本估算单价（分/百万 tokens），用于管理台支出统计
-AI_INPUT_PRICE_PER_1M_CENTS=80
-AI_OUTPUT_PRICE_PER_1M_CENTS=200
-
-# 登录（生产接入微信开放平台后改为 false 并填写 APP_ID/SECRET）
-WECHAT_AUTH_DEV_MODE=true
-WECHAT_APP_ID=
-WECHAT_APP_SECRET=
-
-# 收款
-PAYMENT_RECEIVER_NAME=RealTalk
-WECHAT_RECEIVER_ACCOUNT=${WECHAT_RECEIVER_ACCOUNT}
-ALIPAY_RECEIVER_ACCOUNT=${ALIPAY_RECEIVER_ACCOUNT}
-PAYMENT_DEV_AUTO_CONFIRM=${PAYMENT_DEV_AUTO_CONFIRM}
-
-# 微信支付（原生支付，正式商户必填）
-WECHAT_MCHID=
-WECHAT_API_KEY=
-WECHAT_NOTIFY_URL=
-# 支付宝（当面付，正式商户必填）
-ALIPAY_APP_ID=
-ALIPAY_PRIVATE_KEY=
-ALIPAY_PUBLIC_KEY=
-ALIPAY_NOTIFY_URL=
-
-# 邮件（找回密码；EMAIL_DEV_MODE=true 时不真正发信）
-EMAIL_DEV_MODE=true
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SMTP_FROM=RealTalk <noreply@realtalk.local>
-APP_BASE_URL=https://realtalk.app
-
-# Apple 内购（上架 App Store 时配置）
-APPLE_PRODUCT_ID=realtalk.pro.monthly
-APPLE_BUNDLE_ID=com.realtalk.app
-APPLE_USE_SANDBOX=true
-APPLE_IAP_DEV_BYPASS=true
-EOF
+# ============ 写入 .env 并部署 ============
+echo; say "[5] 生成 .env（应用: ${PROFILES[*]}）"
+printf '%s\n' "${ENV_LINES[@]}" > .env
 say ".env 已生成。"
 
-# ---------- 启动 ----------
 echo
-ask "是否立即构建并启动服务？(yes/no)" "yes"
+ask "是否立即构建并启动？(yes/no)" "yes"
 if [ "$REPLY_VALUE" = "yes" ]; then
-  if ! command -v docker >/dev/null 2>&1; then
-    say "未检测到 docker，请先安装 Docker 后执行：docker compose up -d --build"
-    exit 1
-  fi
+  command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
   docker compose up -d --build
-  echo
-  say "等待服务就绪…"
-  for _ in $(seq 1 30); do
-    if curl -fs "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then break; fi
-    sleep 2
-  done
-  curl -fs "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1 \
-    && say "${GREEN}✔ API 已就绪${RESET}" \
-    || say "API 尚未就绪，可执行 docker compose logs -f api 查看日志"
+  if $DEPLOY_BACKEND; then
+    say "等待 API 就绪…"
+    for _ in $(seq 1 30); do
+      curl -fs "http://127.0.0.1:${API_PORT:-8000}/health" >/dev/null 2>&1 && break
+      sleep 2
+    done
+    curl -fs "http://127.0.0.1:${API_PORT:-8000}/health" >/dev/null 2>&1 \
+      && say "${GREEN}✔ API 已就绪${RESET}" \
+      || say "API 尚未就绪：docker compose logs -f api"
+  fi
 fi
 
 echo
 say "=============================================="
-say " 安装完成，下一步："
+say " 部署完成，本机入口："
 say "=============================================="
-cat <<EOF
- 1. 管理台：   http://<服务器IP>:${ADMIN_PORT}
-    账号：${ADMIN_USERNAME} / 你设置的密码（登录后请立即修改密码）
- 2. 配置模型： 管理台 → 系统设置 → AI 模型对接（可随时切换服务商，立即生效）
- 3. 看板：     管理台 → 数据概览（收入 / AI 支出 / 用户 / 练习量多维统计）
- 4. 充值对账： 管理台 → 充值订单（个人收款码模式下在此人工确认到账）
- 5. iOS App：  修改 realtalk/realtalk/AppConfig.swift 中 apiBaseURL 为
-               http://<服务器IP>:${API_PORT} 后用 Xcode 构建运行
- 常用命令：    docker compose logs -f api   查看日志
-               docker compose down          停止服务
+$DEPLOY_BACKEND && echo "  后端 API：    http://<本机IP>:${API_PORT:-8000}  （App 服务地址指向这里）"
+$DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
+$DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"
+cat <<'EOF'
+ 常用命令：docker compose ps / logs -f api / down
+ 跨机部署：在其他机器重复运行 bash setup.sh，只勾选该机的应用并填写后端地址。
 EOF

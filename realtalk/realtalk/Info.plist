@@ -27,6 +27,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>RealTalk 需要蓝牙权限连接录音笔设备，读取并上传录音文件。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>RealTalk 需要麦克风权限来采集用户主动开启的对话语音。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

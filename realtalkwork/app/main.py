@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -88,8 +88,18 @@ from .schemas import (
     UserOut,
     WeChatLoginRequest,
 )
+from .schemas import (
+    AsrSettingsRequest,
+    AudioJobListResponse,
+    AudioJobOut,
+    PlanCatalogResponse,
+    PlanItem,
+    QuotaSettingsRequest,
+    SubscribeRequest,
+    TokenUsageInfo,
+)
 from .settings import settings
-from .storage import DatabaseIntegrityError, clean_transcript_items, db
+from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
@@ -139,7 +149,8 @@ async def startup() -> None:
     seed_default_admin()
 
 
-async def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UserOut:
+def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UserOut:
+    # 同步依赖：FastAPI 自动放到线程池执行，DB 查询不阻塞事件循环
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
     user_id = verify_token(credentials.credentials)
@@ -152,7 +163,7 @@ async def current_user(credentials: HTTPAuthorizationCredentials | None = Depend
     return user
 
 
-async def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> dict:
+def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> dict:
     """Authenticate admin via session cookie or HTTP Basic. Returns admin dict."""
     session_token = request.cookies.get("admin_session")
     if session_token:
@@ -245,7 +256,7 @@ async def admin_logout(request: Request, response: Response) -> dict:
 
 
 @app.get("/admin/api/me")
-async def admin_me(admin: dict = Depends(current_admin)) -> dict:
+def admin_me(admin: dict = Depends(current_admin)) -> dict:
     """供管理台前端恢复登录会话。"""
     return {
         "id": admin["id"],
@@ -257,7 +268,7 @@ async def admin_me(admin: dict = Depends(current_admin)) -> dict:
 
 
 @app.post("/admin/api/password/change", response_model=MessageResponse)
-async def admin_change_password(
+def admin_change_password(
     request: AdminPasswordChangeRequest,
     admin: dict = Depends(current_admin),
 ) -> MessageResponse:
@@ -289,7 +300,7 @@ async def ready() -> dict[str, str]:
 
 
 @app.get("/billing/prices", response_model=PriceResponse)
-async def billing_prices() -> PriceResponse:
+def billing_prices() -> PriceResponse:
     monthly_price_cents = db.get_monthly_price_cents()
     return PriceResponse(
         monthly_price_cents=monthly_price_cents,
@@ -304,12 +315,12 @@ async def admin_console() -> RedirectResponse:
 
 
 @app.get("/admin/api/overview")
-async def admin_overview(admin: dict = Depends(current_admin)) -> dict:
+def admin_overview(admin: dict = Depends(current_admin)) -> dict:
     return db.admin_overview()
 
 
 @app.get("/admin/api/users")
-async def admin_users(
+def admin_users(
     q: str | None = Query(default=None, max_length=120),
     limit: int = Query(default=100, ge=1, le=500),
     admin: dict = Depends(current_admin),
@@ -318,7 +329,7 @@ async def admin_users(
 
 
 @app.get("/admin/api/users/{user_id}")
-async def admin_user_detail(user_id: str, admin: dict = Depends(current_admin)) -> dict:
+def admin_user_detail(user_id: str, admin: dict = Depends(current_admin)) -> dict:
     detail = db.admin_get_user_detail(user_id)
     if detail is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
@@ -326,7 +337,7 @@ async def admin_user_detail(user_id: str, admin: dict = Depends(current_admin)) 
 
 
 @app.patch("/admin/api/users/{user_id}")
-async def admin_update_user(
+def admin_update_user(
     user_id: str,
     request: AdminUserUpdateRequest,
     admin: dict = Depends(current_admin),
@@ -346,12 +357,12 @@ async def admin_update_user(
 
 
 @app.post("/admin/api/settings/price")
-async def admin_update_price(
+def admin_update_price(
     request: AdminPriceUpdateRequest,
     admin: dict = Depends(current_admin),
 ) -> PriceResponse:
     db.set_app_setting("monthly_price_cents", str(request.monthly_price_cents))
-    return await billing_prices()
+    return billing_prices()
 
 
 # ---- 模型配置（管理员可对接任意 OpenAI 兼容模型服务）----
@@ -414,8 +425,94 @@ async def admin_test_model_settings(admin: dict = Depends(current_admin)) -> dic
     return await test_ai_connection()
 
 
+@app.get("/admin/api/settings/plans", response_model=PlanCatalogResponse)
+def admin_get_plans(admin: dict = Depends(current_admin)) -> PlanCatalogResponse:
+    return PlanCatalogResponse(
+        items=[PlanItem(**item) for item in db.get_plan_catalog()],
+        trial_days=settings.trial_days,
+    )
+
+
+@app.post("/admin/api/settings/plans", response_model=PlanCatalogResponse)
+def admin_set_plans(
+    items: list[PlanItem],
+    admin: dict = Depends(current_admin),
+) -> PlanCatalogResponse:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if not items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐目录不能为空")
+    ids = [item.id for item in items]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐 ID 重复")
+    db.set_plan_catalog([item.model_dump() for item in items])
+    return admin_get_plans(admin)
+
+
+@app.get("/admin/api/settings/quota")
+def admin_get_quota(admin: dict = Depends(current_admin)) -> dict:
+    return {
+        "daily_token_limit_free": db.get_daily_token_limit("free"),
+        "daily_token_limit_basic": db.get_daily_token_limit("basic"),
+        "daily_token_limit_premium": db.get_daily_token_limit("premium"),
+    }
+
+
+@app.post("/admin/api/settings/quota")
+def admin_set_quota(
+    request: QuotaSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    for key in ("daily_token_limit_free", "daily_token_limit_basic", "daily_token_limit_premium"):
+        value = getattr(request, key)
+        if value is not None:
+            db.set_app_setting(key, str(value))
+    return admin_get_quota(admin)
+
+
+@app.get("/admin/api/settings/asr")
+def admin_get_asr(admin: dict = Depends(current_admin)) -> dict:
+    from .audio_pipeline import resolve_asr_config
+
+    config = resolve_asr_config()
+    return {
+        "base_url": config["base_url"],
+        "model": config["model"],
+        "api_key_masked": _masked_key(config["api_key"]),
+        "api_key_configured": bool(config["api_key"]),
+        "dev_mode": config["dev_mode"],
+    }
+
+
+@app.post("/admin/api/settings/asr")
+def admin_set_asr(
+    request: AsrSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if request.base_url is not None:
+        db.set_app_setting("asr_base_url", request.base_url.strip().rstrip("/"))
+    if request.api_key is not None:
+        db.set_app_setting("asr_api_key", request.api_key.strip())
+    if request.model is not None:
+        db.set_app_setting("asr_model", request.model.strip())
+    return admin_get_asr(admin)
+
+
+@app.get("/admin/api/usage/users")
+def admin_usage_users(
+    days: int = Query(default=30, ge=1, le=120),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin: dict = Depends(current_admin),
+) -> dict:
+    return {"items": db.admin_usage_users(days=days, limit=limit), "days": days}
+
+
 @app.get("/admin/api/stats/timeseries")
-async def admin_stats_timeseries(
+def admin_stats_timeseries(
     days: int = Query(default=30, ge=7, le=120),
     admin: dict = Depends(current_admin),
 ) -> dict:
@@ -423,7 +520,7 @@ async def admin_stats_timeseries(
 
 
 @app.get("/admin/api/orders")
-async def admin_orders(
+def admin_orders(
     order_status: str | None = Query(default=None, alias="status"),
     method: str | None = None,
     q: str | None = Query(default=None, max_length=120),
@@ -435,7 +532,7 @@ async def admin_orders(
 
 
 @app.post("/admin/api/orders/{order_id}/mark-paid")
-async def admin_mark_order_paid(
+def admin_mark_order_paid(
     order_id: str,
     admin: dict = Depends(current_admin),
 ) -> dict:
@@ -452,7 +549,7 @@ async def admin_mark_order_paid(
 # ---- Admin CRUD ----
 
 @app.get("/admin/api/admins", response_model=AdminListResponse)
-async def admin_list_admins(
+def admin_list_admins(
     q: str | None = Query(default=None, max_length=120),
     role: str | None = None,
     is_active: bool | None = None,
@@ -470,7 +567,7 @@ async def admin_list_admins(
 
 
 @app.post("/admin/api/admins", response_model=AdminOut)
-async def admin_create_admin(
+def admin_create_admin(
     request: AdminCreateRequest,
     admin: dict = Depends(current_admin),
 ) -> AdminOut:
@@ -494,7 +591,7 @@ async def admin_create_admin(
 
 
 @app.patch("/admin/api/admins/{target_id}", response_model=AdminOut)
-async def admin_update_target(
+def admin_update_target(
     target_id: str,
     request: AdminUpdateRequest,
     admin: dict = Depends(current_admin),
@@ -529,7 +626,7 @@ async def admin_update_target(
 
 
 @app.delete("/admin/api/admins/{target_id}")
-async def admin_delete_target(
+def admin_delete_target(
     target_id: str,
     admin: dict = Depends(current_admin),
 ) -> MessageResponse:
@@ -554,6 +651,24 @@ async def login(request: AuthRequest) -> AuthResponse:
     raise HTTPException(status_code=status.HTTP_410_GONE, detail="仅支持微信快速授权登录")
 
 
+@app.get("/auth/wechat/web-config")
+def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict:
+    """Web 端微信登录配置：开发模式直登；生产返回开放平台扫码授权 URL。"""
+    if settings.wechat_auth_dev_mode:
+        return {"dev_mode": True, "auth_url": None}
+    if not settings.wechat_web_app_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="网站微信登录未配置（WECHAT_WEB_APP_ID）")
+    from urllib.parse import quote
+
+    auth_url = (
+        "https://open.weixin.qq.com/connect/qrconnect"
+        f"?appid={settings.wechat_web_app_id}"
+        f"&redirect_uri={quote(redirect, safe='')}"
+        "&response_type=code&scope=snsapi_login#wechat_redirect"
+    )
+    return {"dev_mode": False, "auth_url": auth_url}
+
+
 @app.post("/auth/wechat/login", response_model=AuthResponse)
 async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
     profile = await resolve_wechat_profile(request)
@@ -576,9 +691,11 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
 # ---- Email/Password Auth for App Users ----
 
 @app.post("/auth/password/register", response_model=AuthTokenResponse)
-async def register_password(
+def register_password(
     request: PasswordRegisterRequest,
 ) -> AuthTokenResponse:
+    if not settings.email_auth_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="邮箱注册未开放，请使用微信登录")
     normalized = normalize_email(request.email)
     existing = db.get_user_by_login_identifier(normalized)
     if existing:
@@ -597,7 +714,7 @@ async def register_password(
 
 
 @app.post("/auth/password/login", response_model=AuthTokenResponse)
-async def login_password(
+def login_password(
     request: PasswordLoginRequest,
 ) -> AuthTokenResponse:
     normalized = normalize_email(request.email)
@@ -625,7 +742,7 @@ async def login_password(
 
 
 @app.post("/auth/password/change", response_model=AuthTokenResponse)
-async def change_password(
+def change_password(
     request: PasswordChangeRequest,
     user: UserOut = Depends(current_user),
 ) -> AuthTokenResponse:
@@ -645,7 +762,7 @@ async def change_password(
 
 
 @app.post("/auth/password/reset/send")
-async def send_password_reset(
+def send_password_reset(
     request: PasswordResetSendRequest,
 ) -> MessageResponse:
     normalized = normalize_email(request.email)
@@ -661,7 +778,7 @@ async def send_password_reset(
 
 
 @app.post("/auth/password/reset/confirm", response_model=AuthTokenResponse)
-async def confirm_password_reset(
+def confirm_password_reset(
     request: PasswordResetConfirmRequest,
 ) -> AuthTokenResponse:
     raw_hash = hashlib.sha256(request.token.encode()).hexdigest()
@@ -680,7 +797,7 @@ async def confirm_password_reset(
 
 
 @app.post("/auth/token/refresh", response_model=AuthTokenResponse)
-async def refresh_token(
+def refresh_token(
     request: TokenRefreshRequest,
 ) -> AuthTokenResponse:
     user_id = verify_refresh_token(request.refresh_token)
@@ -699,9 +816,11 @@ async def refresh_token(
 
 
 @app.post("/auth/email/code")
-async def send_register_code(
+def send_register_code(
     request: EmailCodeRequest,
 ) -> EmailCodeResponse:
+    if not settings.email_auth_enabled:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="邮箱注册未开放，请使用微信登录")
     email = normalize_email(request.email)
     existing = db.get_user_by_login_identifier(email)
     if existing:
@@ -720,7 +839,7 @@ async def send_register_code(
 
 
 @app.get("/auth/me", response_model=UserOut)
-async def me(user: UserOut = Depends(current_user)) -> UserOut:
+def me(user: UserOut = Depends(current_user)) -> UserOut:
     return user
 
 
@@ -736,9 +855,43 @@ async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user))
 
 
 @app.get("/billing/account", response_model=BillingAccountResponse)
-async def billing_account(user: UserOut = Depends(current_user)) -> BillingAccountResponse:
+def billing_account(user: UserOut = Depends(current_user)) -> BillingAccountResponse:
     updated = db.get_user(user.id) or user
-    return BillingAccountResponse(user=updated, ledger=db.list_billing_ledger(user.id))
+    return BillingAccountResponse(
+        user=updated,
+        ledger=db.list_billing_ledger(user.id),
+        usage=token_usage_info(updated),
+    )
+
+
+@app.get("/billing/plans", response_model=PlanCatalogResponse)
+def billing_plans() -> PlanCatalogResponse:
+    return PlanCatalogResponse(
+        items=[PlanItem(**item) for item in db.get_plan_catalog()],
+        trial_days=settings.trial_days,
+    )
+
+
+@app.post("/billing/subscribe", response_model=BillingAccountResponse)
+def billing_subscribe(
+    request: SubscribeRequest,
+    user: UserOut = Depends(current_user),
+) -> BillingAccountResponse:
+    plan = next((item for item in db.get_plan_catalog() if item.get("id") == request.plan_id), None)
+    if plan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套餐不存在")
+    try:
+        updated = db.subscribe_plan(user.id, plan)
+    except InsufficientBalanceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"余额不足，还差 ¥{exc.missing_cents / 100:.2f}，请先充值",
+        ) from exc
+    return BillingAccountResponse(
+        user=updated,
+        ledger=db.list_billing_ledger(updated.id),
+        usage=token_usage_info(updated),
+    )
 
 
 @app.post("/billing/recharge", response_model=RechargeOrderResponse)
@@ -851,7 +1004,7 @@ async def create_recharge(
 
 
 @app.post("/billing/recharge/confirm", response_model=BillingAccountResponse)
-async def confirm_recharge(
+def confirm_recharge(
     request: RechargeConfirmRequest,
     user: UserOut = Depends(current_user),
 ) -> BillingAccountResponse:
@@ -1008,7 +1161,7 @@ async def query_payment_status(
 
 
 @app.post("/transcript/upload", response_model=TranscriptUploadResponse)
-async def upload_transcripts(
+def upload_transcripts(
     request: TranscriptUploadRequest,
     user: UserOut = Depends(current_user),
 ) -> TranscriptUploadResponse:
@@ -1017,8 +1170,66 @@ async def upload_transcripts(
     return TranscriptUploadResponse(uploaded=uploaded, retention_days=settings.retention_days)
 
 
+# ---- 高级会员：录音文件上传 → 转写 → 生成场景 ----
+
+_ALLOWED_AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a"}
+
+
+@app.post("/audio/upload", response_model=AudioJobOut)
+async def audio_upload(
+    file: UploadFile = File(...),
+    user: UserOut = Depends(current_user),
+) -> AudioJobOut:
+    require_premium(user)
+    require_ai_access(user)
+
+    from .audio_pipeline import asr_configured, process_audio_job
+
+    if not asr_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="语音转写服务未配置，请联系管理员在管理台「系统设置」中配置 ASR",
+        )
+
+    suffix = os.path.splitext(file.filename or "")[1].lower()
+    if suffix not in _ALLOWED_AUDIO_SUFFIXES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅支持 mp3 / wav / m4a 格式")
+
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > settings.audio_max_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件为空")
+
+    job = db.create_audio_job(user.id, file.filename or dest.name, size)
+    asyncio.create_task(process_audio_job(job["id"], user.id, dest))
+    return AudioJobOut(**job)
+
+
+@app.get("/audio/jobs", response_model=AudioJobListResponse)
+def audio_jobs_list(
+    limit: int = Query(default=20, ge=1, le=100),
+    user: UserOut = Depends(current_user),
+) -> AudioJobListResponse:
+    return AudioJobListResponse(items=[AudioJobOut(**item) for item in db.list_audio_jobs(user.id, limit=limit)])
+
+
 @app.get("/transcript/query", response_model=TranscriptQueryResponse)
-async def query_transcripts(
+def query_transcripts(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     user: UserOut = Depends(current_user),
@@ -1055,7 +1266,7 @@ async def scenario_generate(
 
 
 @app.get("/scenario/list", response_model=ScenarioListResponse)
-async def scenario_list(
+def scenario_list(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
@@ -1097,7 +1308,7 @@ async def scenario_today(
 
 
 @app.get("/scenario/{scene_id}", response_model=ScenarioResponse)
-async def scenario_detail(
+def scenario_detail(
     scene_id: str,
     user: UserOut = Depends(current_user),
 ) -> ScenarioResponse:
@@ -1215,7 +1426,7 @@ async def roleplay_message(
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)
-async def practice_history(
+def practice_history(
     limit: int = Query(default=20, ge=1, le=100),
     user: UserOut = Depends(current_user),
 ) -> PracticeHistoryResponse:
@@ -1275,8 +1486,42 @@ async def training_answer(
 
 
 def require_ai_access(user: UserOut) -> None:
-    if settings.require_pro_for_ai and user.plan != "pro":
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="请订阅 RealTalk Pro 后使用 AI 学习和训练")
+    """模型功能门禁：会员（或试用期）+ 每日 token 限额。
+
+    超限只拦截需要后端大模型的功能（对话、场景生成、评测）；
+    采集、回看历史等不调用模型的功能不受影响。
+    """
+    if user.plan_tier == "free":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="试用期已结束，请订阅基础或高级会员后继续使用 AI 功能",
+        )
+    used = db.tokens_used_today(user.id)
+    limit = db.get_daily_token_limit(user.plan_tier)
+    if limit > 0 and used >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"今日 AI 用量已达上限（{limit} tokens），明天自动恢复；其他不使用模型的功能不受影响",
+        )
+
+
+def require_premium(user: UserOut) -> None:
+    if user.plan_tier != "premium":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="上传录音文件生成场景是高级会员功能，请升级高级会员",
+        )
+
+
+def token_usage_info(user: UserOut) -> TokenUsageInfo:
+    used = db.tokens_used_today(user.id)
+    limit = db.get_daily_token_limit(user.plan_tier)
+    return TokenUsageInfo(
+        today_tokens=used,
+        daily_limit=limit,
+        remaining_tokens=max(0, limit - used),
+        over_limit=limit > 0 and used >= limit,
+    )
 
 
 def payment_method_settings(method: str) -> dict[str, str | None]:
@@ -1310,15 +1555,19 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
             "avatar_url": request.avatar_url,
         }
 
-    if not settings.wechat_app_id or not settings.wechat_app_secret:
+    if request.client == "web":
+        app_id, app_secret = settings.wechat_web_app_id, settings.wechat_web_app_secret
+    else:
+        app_id, app_secret = settings.wechat_app_id, settings.wechat_app_secret
+    if not app_id or not app_secret:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信登录未配置")
 
     async with httpx.AsyncClient(timeout=15) as client:
         token_response = await client.get(
             "https://api.weixin.qq.com/sns/oauth2/access_token",
             params={
-                "appid": settings.wechat_app_id,
-                "secret": settings.wechat_app_secret,
+                "appid": app_id,
+                "secret": app_secret,
                 "code": request.code,
                 "grant_type": "authorization_code",
             },
@@ -1475,4 +1724,14 @@ def format_roleplay_feedback(
 async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(60 * 60)
-        db.cleanup_expired()
+        db.cleanup_expired(force=True)
+
+
+# ---- 用户 Web 端（同源静态站点，登录后管理账号/充值/订阅/场景/上传录音）----
+from pathlib import Path as _Path
+
+from fastapi.staticfiles import StaticFiles
+
+_web_dir = _Path(__file__).resolve().parents[1] / "web-frontend" / "public"
+if _web_dir.is_dir():
+    app.mount("/web", StaticFiles(directory=str(_web_dir), html=True), name="web")

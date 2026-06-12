@@ -1,5 +1,18 @@
+# RealTalk 容器编排：按 profile 选择部署哪些应用（支持分布式拆机部署）
+#
+#   backend     后端 API（DATABASE_URL 留空时连内置 postgres）
+#   backend-db  内置 PostgreSQL（使用外部数据库时不要启用）
+#   admin       管理台
+#   web         用户 Web 端
+#
+# 用法（推荐通过 bash setup.sh 交互式生成 .env 与 COMPOSE_PROFILES）：
+#   COMPOSE_PROFILES=backend,backend-db,admin,web docker compose up -d --build
+#   # 仅在另一台机器部署管理台（API 在别处）：
+#   COMPOSE_PROFILES=admin API_UPSTREAM=http://10.0.0.5:8000 docker compose up -d --build
+
 services:
   postgres:
+    profiles: ["backend-db"]
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-realtalk}
@@ -15,27 +28,41 @@ services:
     restart: unless-stopped
 
   api:
+    profiles: ["backend"]
     build: .
     env_file:
       - .env
     environment:
-      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@postgres:5432/${POSTGRES_DB:-realtalk}?sslmode=disable"
+      # 外部数据库：在 .env 设 DATABASE_URL 即覆盖；留空连内置 postgres
+      DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@postgres:5432/${POSTGRES_DB:-realtalk}?sslmode=disable}"
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - ${UPLOAD_DATA_DIR:-./data/uploads}:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
     restart: unless-stopped
 
   admin-frontend:
+    profiles: ["admin"]
     build:
       context: .
       dockerfile: admin-frontend/Dockerfile
-    env_file:
-      - .env
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:8000}
     ports:
       - "${ADMIN_PORT:-8001}:80"
-    depends_on:
-      api:
-        condition: service_started
+    restart: unless-stopped
+
+  web-frontend:
+    profiles: ["web"]
+    build:
+      context: .
+      dockerfile: web-frontend/Dockerfile
+    environment:
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:8000}
+    ports:
+      - "${WEB_PORT:-8002}:80"
     restart: unless-stopped

@@ -11,19 +11,38 @@ cd realtalk/realtalkwork
 bash setup.sh
 ```
 
-引导脚本会逐项提示并解释每个后台参数（JWT 密钥、端口、数据库、管理员账号、AI 模型、收款方式），自动生成 `.env` 并启动 `docker compose`。完成后：
+引导流程：**先多选要部署的应用**（后端 API / 管理台 / 用户 Web 端），再**逐应用设置参数**
+（后端含数据库选择：内置 PostgreSQL 容器或外部数据库连接串），最后一键容器化部署。
+
+支持分布式拆机部署：每台机器各自运行 `bash setup.sh`，只勾选该机的应用并填写后端 API
+地址即可（前端容器通过 `API_UPSTREAM` 环境变量指向远端后端）。也可手动指定：
+
+```bash
+# 机器 A：后端 + 内置数据库
+COMPOSE_PROFILES=backend,backend-db docker compose up -d --build
+# 机器 B：仅管理台 + 用户 Web 端，后端在机器 A
+COMPOSE_PROFILES=admin,web API_UPSTREAM=http://<机器A>:8000 docker compose up -d --build
+```
+
+完成后：
 
 | 入口 | 地址 | 说明 |
 |------|------|------|
 | 管理台 | `http://<服务器IP>:8001` | 默认账号见安装时设置，登录后请立即改密 |
-| API | `http://<服务器IP>:8000` | iOS App 的 `AppConfig.apiBaseURL` 指向这里 |
+| 用户 Web 端 | `http://<服务器IP>:8002` | 微信登录（与 App 同账号）、充值、买会员、看场景、高级会员上传录音 |
+| API | `http://<服务器IP>:8000` | iOS / Android App 的服务地址指向这里 |
 
 管理台功能速览：
 - **数据概览**：收入 / AI 支出 / 毛利 / 新增用户 / 在线用户 / 练习量多维统计与近 14/30/90 天趋势图
 - **用户管理**：搜索、查看明细（用量/账单/订单）、调余额、封禁
 - **充值订单**：全部订单查询；个人收款码模式下在此「确认到账」人工入账
 - **管理员管理**：多管理员 + 角色（超管/管理员/运维）
-- **系统设置**：AI 模型对接（火山方舟/DeepSeek/通义/Kimi/智谱/自定义 OpenAI 兼容，保存即生效，可测试连接）、月费价格
+- **Token 用量**：按用户排序的当日/周期 token 用量，超量/接近上限自动标红标黄
+- **系统设置**：AI 模型对接（保存即生效，可测试连接）、会员套餐价格（6 档）、每日 token 限额、ASR 语音转写配置
+
+会员体系：新用户注册自动获得 30 天基础会员试用；基础会员可用全部 App 功能，高级会员
+额外支持在 App/Web 上传最长 6 小时（300MB）录音文件自动转写生成场景；所有会员受每日
+token 限额约束，超限当天暂停 AI 功能（非 AI 功能不受影响）。
 
 ---
 
@@ -333,7 +352,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
   ```
 - 检查 `DATABASE_URL` 中的主机名是否为服务名 `postgres`
 
-### 6.4 生产环境微信 / 支付不生效
+### 6.4 用户认证说明（防薅羊毛）
+
+- 用户端（App + Web）统一**微信认证**，新用户首次登录自动注册并发放试用；一个微信
+  openid 只能领取一次试用，杜绝垃圾邮箱批量注册薅取免费额度。
+- Web 扫码登录需在微信开放平台创建「网站应用」，将 `WECHAT_WEB_APP_ID/SECRET` 写入
+  `.env`（与移动应用的 `WECHAT_APP_ID/SECRET` 是两套凭据）。
+- 如确需邮箱注册，设 `EMAIL_AUTH_ENABLED=true`（默认关闭）。
+
+### 6.5 生产环境微信 / 支付不生效
 
 - 开发环境默认 `WECHAT_AUTH_DEV_MODE=true` 和 `PAYMENT_DEV_AUTO_CONFIRM=true`，不会真正调用微信/支付宝接口
 - 生产环境必须关闭这两个开关，并填写真实的 `WECHAT_APP_ID`、`WECHAT_APP_SECRET`、支付 URL

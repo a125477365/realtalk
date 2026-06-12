@@ -7,7 +7,7 @@ server {
 
     resolver 127.0.0.11 valid=10s ipv6=off;
 
-    set $api_backend "http://api:8000";
+    set $api_backend "${API_UPSTREAM}";
 
     # Proxy API requests to backend (eliminates CORS for admin login)
     location ~ ^/(api|admin|payment|auth|health|ready|billing|transcript|learning|scenario|roleplay|practice|training|apple)/ {

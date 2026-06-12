@@ -221,6 +221,55 @@ final class APIClient {
         )
     }
 
+    func planCatalog() async throws -> PlanCatalogResponse {
+        try await get("/billing/plans", token: nil, queryItems: [])
+    }
+
+    func subscribe(planId: String, token: String) async throws -> BillingAccountResponse {
+        try await post("/billing/subscribe", body: SubscribeRequest(planId: planId), token: token)
+    }
+
+    func audioJobs(token: String) async throws -> AudioJobListResponse {
+        try await get("/audio/jobs", token: token, queryItems: [])
+    }
+
+    /// 大音频文件上传：multipart 先拼到临时文件再流式上传，避免 300MB 进内存
+    func uploadAudio(fileURL: URL, token: String) async throws -> AudioJob {
+        let boundary = "rt-\(UUID().uuidString)"
+        let filename = fileURL.lastPathComponent
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let prelude = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: audio/mpeg\r\n\r\n"
+        let epilogue = "\r\n--\(boundary)--\r\n"
+        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try handle.write(contentsOf: Data(prelude.utf8))
+        let input = try FileHandle(forReadingFrom: fileURL)
+        while let chunk = try input.read(upToCount: 4 * 1024 * 1024), chunk.isEmpty == false {
+            try handle.write(contentsOf: chunk)
+        }
+        try input.close()
+        try handle.write(contentsOf: Data(epilogue.utf8))
+        try handle.close()
+
+        var request = URLRequest(url: url(for: "/audio/upload"))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 1800
+
+        let (data, response) = try await session.upload(for: request, fromFile: tempURL)
+        guard let httpResponse = response as? HTTPURLResponse else { throw APIClientError.invalidResponse }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            if let error = try? decoder.decode(ErrorResponse.self, from: data) {
+                throw APIClientError.server(error.detail)
+            }
+            throw APIClientError.server("上传失败：HTTP \(httpResponse.statusCode)")
+        }
+        return try decoder.decode(AudioJob.self, from: data)
+    }
+
     private func get<Response: Decodable>(
         _ path: String,
         token: String?,

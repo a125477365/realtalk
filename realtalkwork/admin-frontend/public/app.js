@@ -218,7 +218,6 @@ function renderLogin(errorMsg) {
     "      </div>",
     '      <button type="submit" class="btn btn-primary">\u767b \u5f55</button>',
     "    </form>",
-    '    <div class="hint">\u9996\u6b21\u90e8\u7f72\u7684\u521d\u59cb\u8d26\u53f7\u5728\u5b89\u88c5\u65f6\u8bbe\u7f6e\uff08\u89c1 INSTALL.md\uff09\uff0c\u767b\u5f55\u540e\u8bf7\u53ca\u65f6\u4fee\u6539\u5bc6\u7801</div>',
     "  </div>",
     "</div>",
   ].join("");
@@ -792,6 +791,186 @@ function markOrderPaid(orderId) {
   });
 }
 
+
+// ============================================================
+// Token Usage Page
+// ============================================================
+function renderUsagePage() {
+  return [
+    '<div class="page-header"><h1>Token 用量</h1><div class="actions">',
+    '<select id="usage-days" onchange="loadUsage()">',
+    '  <option value="7">近 7 天</option>',
+    '  <option value="30" selected>近 30 天</option>',
+    '  <option value="90">近 90 天</option>',
+    "</select>",
+    '<button class="btn btn-secondary" onclick="loadUsage()">刷新</button>',
+    "</div></div>",
+    '<div class="card">',
+    '  <h2>用户用量排行 <span class="subtitle">按今日用量倒序；达到 80% 标黄，超限标红。模型 token 单价可在「系统设置」动态修改以保证费用统计准确</span></h2>',
+    '  <div id="usage-list">' + loadingHTML() + "</div>",
+    "</div>",
+  ].join("");
+}
+
+function loadUsage() {
+  var el = getEl("usage-list");
+  if (!el) return;
+  el.innerHTML = loadingHTML();
+  var days = (getEl("usage-days") || { value: "30" }).value;
+  apiGet("/admin/api/usage/users?days=" + days).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    r.json().then(function(d) {
+      var items = d.items || [];
+      if (!items.length) { el.innerHTML = emptyHTML("暂无用量记录"); return; }
+      var rows = items.map(function(u) {
+        var cls = u.over_limit ? ' style="background:#fef2f2"' : (u.near_limit ? ' style="background:#fffbeb"' : "");
+        var flag = u.over_limit ? '<span class="badge badge-banned">已超限</span>'
+                 : u.near_limit ? '<span class="badge" style="background:#fef3c7;color:#b07000">接近上限</span>'
+                 : '<span class="badge badge-active">正常</span>';
+        return [
+          "<tr" + cls + ">",
+          '<td><div class="user-cell"><div class="name">' + esc(u.display_name || "—") + '</div><div class="uid">' + esc(u.user_id) + "</div></div></td>",
+          "<td>" + badge(u.plan_tier) + "</td>",
+          "<td><b>" + u.today_tokens.toLocaleString() + "</b> / " + u.daily_limit.toLocaleString() + "</td>",
+          "<td>" + Math.round(u.usage_ratio * 100) + "%</td>",
+          "<td>" + flag + "</td>",
+          "<td>" + fmtYuan(Math.round(u.today_cost_cents)) + "</td>",
+          "<td>" + u.period_tokens.toLocaleString() + " / " + u.period_calls + " 次</td>",
+          "<td>" + fmtYuan(Math.round(u.period_cost_cents)) + "</td>",
+          "</tr>",
+        ].join("");
+      }).join("");
+      el.innerHTML = [
+        '<div class="table-wrap"><table>',
+        "<thead><tr><th>用户</th><th>套餐</th><th>今日 tokens / 限额</th><th>占比</th><th>状态</th><th>今日成本</th><th>周期 tokens / 调用</th><th>周期成本</th></tr></thead>",
+        "<tbody>" + rows + "</tbody></table></div>",
+      ].join("");
+    });
+  }).catch(function() { el.innerHTML = emptyHTML("加载失败"); });
+}
+
+// ============================================================
+// Plan / Quota / ASR Settings
+// ============================================================
+function renderPlanQuotaCards() {
+  return [
+    '<div class="card">',
+    "  <h2>会员套餐价格 <span class=\"subtitle\">App 与 Web 端实时生效；单位为分</span></h2>",
+    '  <div id="plan-editor">' + loadingHTML() + "</div>",
+    "</div>",
+    '<div class="card">',
+    "  <h2>每日 Token 限额 <span class=\"subtitle\">按生效套餐限制每位用户每天的模型用量；0 表示不限制</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>免费用户</label><input type="number" id="q-free" min="0" /></div>',
+    '    <div class="form-group"><label>基础会员</label><input type="number" id="q-basic" min="0" /></div>',
+    '    <div class="form-group"><label>高级会员</label><input type="number" id="q-premium" min="0" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" onclick="saveQuota()">保存限额</button>',
+    "</div>",
+    '<div class="card">',
+    "  <h2>语音转写（ASR）<span class=\"subtitle\">高级会员上传录音转文字所用的 OpenAI 兼容 /audio/transcriptions 服务</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="https://api.openai.com/v1" /></div>',
+    '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label>',
+    '      <input type="password" id="asr-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" onclick="saveAsr()">保存 ASR 配置</button>',
+    "</div>",
+  ].join("");
+}
+
+function loadPlanQuotaAsr() {
+  apiGet("/admin/api/settings/plans").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      var el = getEl("plan-editor");
+      if (!el) return;
+      var rows = (d.items || []).map(function(p, i) {
+        return [
+          "<tr>",
+          '<td>' + esc(p.title) + ' <span class="hint">(' + esc(p.id) + ")</span></td>",
+          "<td>" + (p.tier === "premium" ? "高级" : "基础") + "</td>",
+          "<td>" + p.months + " 个月</td>",
+          '<td><input type="number" id="plan-price-' + i + '" value="' + p.price_cents + '" min="0" style="width:110px" /></td>',
+          "<td>" + fmtYuan(p.per_month_cents) + "/月</td>",
+          "</tr>",
+        ].join("");
+      }).join("");
+      el.innerHTML = [
+        '<div class="table-wrap"><table>',
+        "<thead><tr><th>套餐</th><th>档位</th><th>时长</th><th>总价（分）</th><th>当前折合</th></tr></thead>",
+        "<tbody>" + rows + "</tbody></table></div>",
+        '<button class="btn btn-primary" style="margin-top:10px" onclick="savePlans()">保存套餐价格</button>',
+      ].join("");
+      window._planItems = d.items;
+    });
+  });
+  apiGet("/admin/api/settings/quota").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("q-free")) getEl("q-free").value = d.daily_token_limit_free;
+      if (getEl("q-basic")) getEl("q-basic").value = d.daily_token_limit_basic;
+      if (getEl("q-premium")) getEl("q-premium").value = d.daily_token_limit_premium;
+    });
+  });
+  apiGet("/admin/api/settings/asr").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
+      if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
+      var ks = getEl("asr-key-status");
+      if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
+    });
+  });
+}
+
+function savePlans() {
+  var items = (window._planItems || []).map(function(p, i) {
+    var price = parseInt((getEl("plan-price-" + i) || { value: p.price_cents }).value) || p.price_cents;
+    return {
+      id: p.id, tier: p.tier, months: p.months, title: p.title,
+      price_cents: price,
+      per_month_cents: Math.round(price / p.months),
+    };
+  });
+  apiPost("/admin/api/settings/plans", items).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("套餐价格已保存", "success");
+    loadPlanQuotaAsr();
+  });
+}
+
+function saveQuota() {
+  apiPost("/admin/api/settings/quota", {
+    daily_token_limit_free: parseInt((getEl("q-free") || {}).value) || 0,
+    daily_token_limit_basic: parseInt((getEl("q-basic") || {}).value) || 0,
+    daily_token_limit_premium: parseInt((getEl("q-premium") || {}).value) || 0,
+  }).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("限额已保存", "success");
+  });
+}
+
+function saveAsr() {
+  var body = {
+    base_url: (getEl("asr-base-url") || { value: "" }).value.trim(),
+    model: (getEl("asr-model") || { value: "" }).value.trim(),
+  };
+  var key = (getEl("asr-api-key") || { value: "" }).value.trim();
+  if (key) body.api_key = key;
+  apiPost("/admin/api/settings/asr", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    if (getEl("asr-api-key")) getEl("asr-api-key").value = "";
+    toast("ASR 配置已保存", "success");
+    loadPlanQuotaAsr();
+  });
+}
+
 // ============================================================
 // Edit Modal
 // ============================================================
@@ -909,6 +1088,7 @@ function renderSettingsPage() {
     "  <h2>\u5f53\u524d\u8ba2\u9605\u4ef7\u683c</h2>",
     '  <div id="current-price-display">' + loadingHTML() + "</div>",
     "</div>",
+    renderPlanQuotaCards(),
   ].join("");
 }
 
@@ -989,6 +1169,7 @@ function testModelSettings() {
 
 function loadSettings() {
   loadModelSettings();
+  loadPlanQuotaAsr();
   var display = getEl("current-price-display");
   if (!display) return;
   display.innerHTML = loadingHTML();
@@ -1304,6 +1485,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "users") pageContent = renderUsersPage();
   else if (state.currentTab === "user_detail") pageContent = renderUserDetailPage();
   else if (state.currentTab === "orders") pageContent = renderOrdersPage();
+  else if (state.currentTab === "usage") pageContent = renderUsagePage();
   else if (state.currentTab === "admins") pageContent = renderAdminMgmtPage();
   else if (state.currentTab === "settings") pageContent = renderSettingsPage();
 
@@ -1405,6 +1587,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "users") loadUsers();
   else if (state.currentTab === "user_detail") loadUserDetail();
   else if (state.currentTab === "orders") loadOrders();
+  else if (state.currentTab === "usage") loadUsage();
   else if (state.currentTab === "admins") loadAdminList();
   else if (state.currentTab === "settings") loadSettings();
 
@@ -1446,6 +1629,10 @@ window.openChangePasswordModal = openChangePasswordModal;
 window.closeChangePasswordModal = closeChangePasswordModal;
 window.submitChangePassword = submitChangePassword;
 window.loadOrders = loadOrders;
+window.loadUsage = loadUsage;
+window.savePlans = savePlans;
+window.saveQuota = saveQuota;
+window.saveAsr = saveAsr;
 window.markOrderPaid = markOrderPaid;
 window.loadOverviewCharts = loadOverviewCharts;
 window.applyModelPreset = applyModelPreset;

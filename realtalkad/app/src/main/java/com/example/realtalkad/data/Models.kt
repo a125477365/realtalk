@@ -1,0 +1,247 @@
+package com.example.realtalkad.data
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/* 与 RealTalk 后端 API 一一对应的数据模型（与 iOS 端 APIModels/LearningModels 等价）。 */
+
+@Serializable
+data class AppUser(
+    val id: String,
+    @SerialName("login_identifier") val loginIdentifier: String,
+    @SerialName("display_name") val displayName: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    val plan: String = "free",
+    @SerialName("plan_tier") val planTier: String = "free",
+    @SerialName("plan_expires_at") val planExpiresAt: String? = null,
+    @SerialName("balance_cents") val balanceCents: Int = 0,
+    @SerialName("created_at") val createdAt: String = "",
+) {
+    val tierName: String
+        get() = when (planTier) {
+            "premium" -> "高级会员"
+            "basic" -> "基础会员"
+            else -> "免费用户"
+        }
+}
+
+@Serializable
+data class AuthResponse(val token: String, val user: AppUser)
+
+@Serializable
+data class ErrorResponse(val detail: String = "请求失败")
+
+@Serializable
+data class TranscriptItem(val id: String, val timestamp: String, val text: String)
+
+@Serializable
+data class TranscriptUploadRequest(val items: List<TranscriptItem>)
+
+@Serializable
+data class TranscriptUploadResponse(
+    val uploaded: Int,
+    @SerialName("retention_days") val retentionDays: Int,
+)
+
+@Serializable
+data class ScenarioRole(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    @SerialName("is_user_candidate") val isUserCandidate: Boolean = true,
+)
+
+@Serializable
+data class SceneLine(
+    val index: Int,
+    val speaker: String,
+    @SerialName("target_role") val targetRole: String,
+    @SerialName("source_text") val sourceText: String,
+    val english: String,
+    val intent: String = "",
+)
+
+@Serializable
+data class ExpressionCard(val phrase: String, val meaning: String, val example: String)
+
+@Serializable
+data class Scenario(
+    @SerialName("scene_id") val sceneId: String,
+    val title: String,
+    val summary: String,
+    val roles: List<ScenarioRole>,
+    val lines: List<SceneLine>,
+    val expressions: List<ExpressionCard> = emptyList(),
+)
+
+@Serializable
+data class ScenarioSummary(
+    @SerialName("scene_id") val sceneId: String,
+    val title: String,
+    val summary: String,
+    val roles: List<ScenarioRole>,
+    @SerialName("line_count") val lineCount: Int,
+    @SerialName("source_start") val sourceStart: String,
+    @SerialName("source_end") val sourceEnd: String,
+    @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+data class ScenarioListResponse(val items: List<ScenarioSummary>, val generated: Boolean = false)
+
+@Serializable
+data class RoleplayStartRequest(
+    val start: String,
+    val end: String,
+    @SerialName("selected_role") val selectedRole: String,
+    @SerialName("scene_id") val sceneId: String? = null,
+    val items: List<TranscriptItem> = emptyList(),
+)
+
+@Serializable
+data class RoleplayMessageRequest(@SerialName("session_id") val sessionId: String, val message: String)
+
+@Serializable
+data class RoleplayMessage(
+    val id: String,
+    val speaker: String,
+    val role: String,
+    val content: String,
+    val translation: String? = null,
+    val feedback: String? = null,
+    @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+data class RoleplayState(
+    @SerialName("session_id") val sessionId: String,
+    val scenario: Scenario,
+    @SerialName("selected_role") val selectedRole: String,
+    @SerialName("ai_role") val aiRole: String,
+    @SerialName("next_line") val nextLine: SceneLine? = null,
+    val progress: Int,
+    val total: Int,
+    val score: Double,
+    val completed: Boolean,
+    val messages: List<RoleplayMessage>,
+    @SerialName("latest_feedback") val latestFeedback: String? = null,
+    @SerialName("latest_accepted") val latestAccepted: Boolean? = null,
+)
+
+@Serializable
+data class AIChatMessage(val role: String, val content: String)
+
+@Serializable
+data class AIChatRequest(
+    val message: String,
+    val messages: List<AIChatMessage> = emptyList(),
+    @SerialName("scene_id") val sceneId: String? = null,
+    @SerialName("session_id") val sessionId: String? = null,
+)
+
+@Serializable
+data class AIChatResponse(val reply: String)
+
+@Serializable
+data class TokenUsageInfo(
+    @SerialName("today_tokens") val todayTokens: Int,
+    @SerialName("daily_limit") val dailyLimit: Int,
+    @SerialName("remaining_tokens") val remainingTokens: Int,
+    @SerialName("over_limit") val overLimit: Boolean,
+)
+
+@Serializable
+data class LedgerItem(
+    val id: String,
+    val type: String,
+    val title: String,
+    @SerialName("amount_cents") val amountCents: Int,
+    @SerialName("balance_after_cents") val balanceAfterCents: Int,
+    @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+data class BillingAccount(
+    val user: AppUser,
+    val ledger: List<LedgerItem> = emptyList(),
+    val usage: TokenUsageInfo? = null,
+)
+
+@Serializable
+data class PlanItem(
+    val id: String,
+    val tier: String,
+    val months: Int,
+    @SerialName("price_cents") val priceCents: Int,
+    @SerialName("per_month_cents") val perMonthCents: Int,
+    val title: String,
+)
+
+@Serializable
+data class PlanCatalog(val items: List<PlanItem>, @SerialName("trial_days") val trialDays: Int = 30)
+
+@Serializable
+data class SubscribeRequest(@SerialName("plan_id") val planId: String)
+
+@Serializable
+data class RechargeCreateRequest(@SerialName("amount_cents") val amountCents: Int, val method: String)
+
+@Serializable
+data class RechargeOrder(
+    @SerialName("order_id") val orderId: String,
+    val method: String,
+    @SerialName("amount_cents") val amountCents: Int,
+    val status: String,
+    @SerialName("payment_url") val paymentUrl: String? = null,
+    @SerialName("qr_code_text") val qrCodeText: String? = null,
+    @SerialName("qr_code_url") val qrCodeUrl: String? = null,
+    @SerialName("receiver_name") val receiverName: String? = null,
+    @SerialName("receiver_account") val receiverAccount: String? = null,
+    val message: String,
+    @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+data class RechargeConfirmRequest(@SerialName("order_id") val orderId: String)
+
+@Serializable
+data class AudioJob(
+    val id: String,
+    val filename: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val status: String,
+    val error: String? = null,
+    @SerialName("scene_id") val sceneId: String? = null,
+    @SerialName("transcript_chars") val transcriptChars: Int = 0,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+) {
+    val statusText: String
+        get() = when (status) {
+            "completed" -> "已完成"
+            "failed" -> "失败"
+            "pending" -> "排队中"
+            "transcribing" -> "转写中"
+            "generating" -> "生成场景中"
+            else -> status
+        }
+}
+
+@Serializable
+data class AudioJobList(val items: List<AudioJob>)
+
+@Serializable
+data class WeChatLoginRequest(
+    val code: String,
+    val nickname: String? = null,
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+)
+
+/** 主界面聊天消息（本地 UI 模型） */
+data class ChatMessage(
+    val id: Long,
+    val sender: Sender,
+    val text: String,
+) {
+    enum class Sender { USER, ASSISTANT, SYSTEM }
+}
