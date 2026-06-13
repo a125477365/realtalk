@@ -79,7 +79,14 @@ if $DEPLOY_BACKEND; then
     ask "PostgreSQL 数据目录" "./data/postgres"
     ENV_LINES+=("POSTGRES_DATA_DIR=$REPLY_VALUE")
     ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
-    ENV_LINES+=("POSTGRES_USER=realtalk" "POSTGRES_PASSWORD=$REPLY_VALUE" "POSTGRES_DB=realtalk" "DATABASE_URL=")
+    PG_PW="$REPLY_VALUE"
+    # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）
+    ENV_LINES+=(
+      "POSTGRES_USER=realtalk"
+      "POSTGRES_PASSWORD=$PG_PW"
+      "POSTGRES_DB=realtalk"
+      "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
+    )
   else
     note "示例：postgresql+psycopg://user:pass@db.example.com:5432/realtalk?sslmode=require"
     ask "数据库连接串 DATABASE_URL" ""

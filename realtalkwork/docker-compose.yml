@@ -33,8 +33,10 @@ services:
     env_file:
       - .env
     environment:
-      # 外部数据库：在 .env 设 DATABASE_URL 即覆盖；留空连内置 postgres
-      DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@postgres:5432/${POSTGRES_DB:-realtalk}?sslmode=disable}"
+      # 由 .env 提供完整 DATABASE_URL（setup.sh 会写入，含内置库密码）；
+      # 手动运行且未设置时，用与内置 postgres 默认账号一致的连接串兜底。
+      # 注意：compose 插值不支持嵌套 ${}，默认值必须是字面量。
+      DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://realtalk:realtalk@postgres:5432/realtalk?sslmode=disable}"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
