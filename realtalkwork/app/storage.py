@@ -339,7 +339,26 @@ class Database:
         self.url = _database_url(database_url or settings.database_url, path or settings.database_path)
         self.backend = _backend_name(self.url)
         self.engine = self._create_engine()
+        self._wait_until_ready()
         self.initialize()
+
+    def _wait_until_ready(self, attempts: int = 30, delay: float = 2.0) -> None:
+        """等待数据库可连接（容器编排下 API 可能先于 DB 启动）。SQLite 直接跳过。"""
+        if self.backend == "sqlite":
+            return
+        import time as _time
+
+        last_err: Exception | None = None
+        for i in range(attempts):
+            try:
+                with self.engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                return
+            except Exception as exc:  # noqa: BLE001 — 启动期任何连接错误都重试
+                last_err = exc
+                print(f"[storage] 等待数据库就绪（{i + 1}/{attempts}）：{str(exc)[:120]}", flush=True)
+                _time.sleep(delay)
+        raise RuntimeError(f"数据库连接失败，已重试 {attempts} 次：{last_err}")
 
     def initialize(self) -> None:
         metadata.create_all(self.engine)

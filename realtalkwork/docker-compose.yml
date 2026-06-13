@@ -41,10 +41,8 @@ services:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ${UPLOAD_DATA_DIR:-./data/uploads}:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false
+    # 不用 depends_on：内置库场景 postgres 同时启动，外部库场景 postgres 服务不存在。
+    # API 若先于数据库就绪而退出，靠 restart 策略自动重连（postgres 有健康检查）。
     restart: unless-stopped
 
   admin-frontend:
