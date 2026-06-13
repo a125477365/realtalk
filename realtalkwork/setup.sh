@@ -77,9 +77,41 @@ if $DEPLOY_BACKEND; then
   if [ "$REPLY_VALUE" = "yes" ]; then
     PROFILES+=("backend-db")
     ask "PostgreSQL 数据目录" "./data/postgres"
-    ENV_LINES+=("POSTGRES_DATA_DIR=$REPLY_VALUE")
-    ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
-    PG_PW="$REPLY_VALUE"
+    PG_DATA_DIR="$REPLY_VALUE"
+    ENV_LINES+=("POSTGRES_DATA_DIR=$PG_DATA_DIR")
+
+    # 关键：PostgreSQL 只在数据目录为空时用 POSTGRES_PASSWORD 初始化密码。
+    # 若目录已初始化（存在 PG_VERSION），新密码不会生效，必须沿用旧密码或清空目录。
+    PG_INITED=false
+    [ -f "$PG_DATA_DIR/PG_VERSION" ] && PG_INITED=true
+
+    if $PG_INITED; then
+      echo
+      note "检测到 $PG_DATA_DIR 已是一个已初始化的 PostgreSQL 数据目录。"
+      note "PostgreSQL 不会用新密码覆盖已有目录，否则后端会因密码不一致连不上库。"
+      ask "如何处理？(keep=沿用原密码 / reset=清空目录重新初始化)" "keep"
+      if [ "$REPLY_VALUE" = "reset" ]; then
+        ask "确认清空 $PG_DATA_DIR 中的全部数据库数据？此操作不可恢复 (yes/no)" "no"
+        if [ "$REPLY_VALUE" = "yes" ]; then
+          rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null || true
+          PG_INITED=false
+          note "已清空，将重新初始化。"
+        else
+          note "未清空，按沿用原密码处理。"
+          PG_INITED=true
+        fi
+      fi
+    fi
+
+    if $PG_INITED; then
+      note "请输入该数据目录原本的 PostgreSQL 密码（最初部署设置的，老版本默认为 realtalk）。"
+      ask "原 PostgreSQL 密码" "realtalk"
+      PG_PW="$REPLY_VALUE"
+    else
+      ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
+      PG_PW="$REPLY_VALUE"
+    fi
+
     # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）
     ENV_LINES+=(
       "POSTGRES_USER=realtalk"

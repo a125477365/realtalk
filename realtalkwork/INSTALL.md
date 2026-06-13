@@ -345,6 +345,23 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### 6.3 Docker 下数据库连接失败
 
+**`password authentication failed for user "realtalk"`**：这是数据目录里残留了旧密码，
+不是地址问题。PostgreSQL 只在数据目录**为空**时才用 `POSTGRES_PASSWORD` 初始化密码；
+如果该目录之前已被初始化过（换过密码、或用过旧版本），新密码不会生效。
+
+- 全新部署、目录里没有要保留的数据 → 清空后重启：
+  ```bash
+  docker compose down
+  rm -rf <你的POSTGRES_DATA_DIR>/*   # 例如 /mnt/data_md0/DB/realtalk/*
+  docker compose up -d --build
+  ```
+- 想保留已有数据 → 把 `.env` 里的 `POSTGRES_PASSWORD` 和 `DATABASE_URL` 改回该目录
+  **原本的密码**（旧版本默认为 `realtalk`）。
+
+重新运行 `bash setup.sh` 时，若检测到数据目录已初始化，会主动询问"沿用原密码 / 清空重建"。
+
+其他连接问题排查：
+
 - 确认 `postgres` 服务已 healthy：
   ```bash
   docker compose ps
