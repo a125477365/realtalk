@@ -27,18 +27,26 @@ _SEGMENT_SECONDS = 600
 
 
 def resolve_asr_config() -> dict[str, Any]:
-    overrides = db.get_app_settings_map(["asr_base_url", "asr_api_key", "asr_model"])
+    overrides = db.get_app_settings_map(
+        ["asr_mode", "asr_base_url", "asr_api_key", "asr_model", "asr_local_command"]
+    )
     return {
+        "mode": overrides.get("asr_mode") or settings.asr_mode,
         "base_url": overrides.get("asr_base_url") or settings.asr_base_url,
         "api_key": overrides.get("asr_api_key") or settings.asr_api_key,
         "model": overrides.get("asr_model") or settings.asr_model,
+        "local_command": overrides.get("asr_local_command") or settings.asr_local_command,
         "dev_mode": settings.asr_dev_mode,
     }
 
 
 def asr_configured() -> bool:
     config = resolve_asr_config()
-    return bool(config["dev_mode"] or (config["base_url"] and config["api_key"]))
+    if config["dev_mode"]:
+        return True
+    if config["mode"] == "local":
+        return bool(config["local_command"])
+    return bool(config["base_url"] and config["api_key"])
 
 
 def _ffmpeg_path() -> str | None:
@@ -91,17 +99,45 @@ async def _transcribe_chunk(client: httpx.AsyncClient, config: dict[str, Any], p
     return str(response.json().get("text", "")).strip()
 
 
+def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path) -> str:
+    """用服务器本地命令行工具转写。命令模板支持 {input}/{dir}，
+    文本优先取 stdout；若 stdout 为空则读取 {dir} 下生成的 .txt。"""
+    template = config["local_command"]
+    if not template:
+        raise RuntimeError("本地转写命令未配置")
+    cmd = template.replace("{input}", str(path)).replace("{dir}", str(workdir))
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=settings.audio_max_seconds + 600)
+    if proc.returncode != 0:
+        raise RuntimeError(f"本地转写命令失败（{proc.returncode}）：{(proc.stderr or proc.stdout)[:300]}")
+    text = proc.stdout.strip()
+    if text:
+        return text
+    txts = sorted(workdir.glob("*.txt"))
+    if txts:
+        return "\n".join(p.read_text(encoding="utf-8", errors="ignore").strip() for p in txts)
+    raise RuntimeError("本地转写未产生文本输出")
+
+
 async def transcribe_file(path: Path) -> str:
     config = resolve_asr_config()
-    if config["dev_mode"] and not (config["base_url"] and config["api_key"]):
+    is_cloud_ready = bool(config["base_url"] and config["api_key"])
+    is_local_ready = bool(config["mode"] == "local" and config["local_command"])
+
+    if config["dev_mode"] and not is_cloud_ready and not is_local_ready:
         # 开发模式：无 ASR 服务时返回示例文本，保证管线可端到端联调
         return "今天上午我们开了项目例会。这个版本周五之前要提测。测试环境今天下午给你。辛苦大家了。"
-    if not config["base_url"] or not config["api_key"]:
-        raise RuntimeError("语音转写服务未配置，请在管理台「系统设置」中配置 ASR")
 
     workdir = path.parent / f"{path.stem}_segs"
     workdir.mkdir(exist_ok=True)
     try:
+        if config["mode"] == "local":
+            if not is_local_ready:
+                raise RuntimeError("本地转写命令未配置，请在管理台「系统设置 → 语音转写」中配置")
+            # 本地工具自行处理整段音频，无需切片
+            return await asyncio.to_thread(_transcribe_local, config, path, workdir)
+
+        if not is_cloud_ready:
+            raise RuntimeError("语音转写服务未配置，请在管理台「系统设置」中配置 ASR")
         segments = await asyncio.to_thread(_split_audio, path, workdir)
         texts: list[str] = []
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
@@ -154,3 +190,48 @@ async def process_audio_job(job_id: str, user_id: str, path: Path) -> None:
         db.update_audio_job(job_id, "failed", error=str(exc))
     finally:
         path.unlink(missing_ok=True)
+
+
+# ============================================================
+# 分布式：入口节点把文件转发给某个 worker 节点处理
+# ============================================================
+
+def worker_nodes() -> list[str]:
+    raw = db.get_app_setting_str("audio_worker_nodes") or settings.audio_worker_nodes or ""
+    return [n.strip().rstrip("/") for n in raw.split(",") if n.strip()]
+
+
+def _pick_worker(nodes: list[str], user_id: str) -> str:
+    """按用户哈希稳定选节点：同一用户的任务总落在同一 worker。"""
+    import hashlib
+
+    idx = int(hashlib.sha256(user_id.encode()).hexdigest(), 16) % len(nodes)
+    return nodes[idx]
+
+
+async def dispatch_or_process(job_id: str, user_id: str, path: Path) -> None:
+    """有 worker 节点则转发给它处理（共享数据库，结果各节点可见）；否则本机处理。"""
+    nodes = worker_nodes()
+    if not nodes:
+        await process_audio_job(job_id, user_id, path)
+        return
+
+    target = _pick_worker(nodes, user_id)
+    token = settings.internal_token or ""
+    try:
+        db.update_audio_job(job_id, "transcribing")  # 标记已派发
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800, connect=30)) as client:
+            with path.open("rb") as fh:
+                resp = await client.post(
+                    target + "/audio/internal/ingest",
+                    params={"job_id": job_id, "user_id": user_id},
+                    headers={"X-Internal-Token": token},
+                    files={"file": (path.name, fh, "audio/mpeg")},
+                )
+            resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 — 转发失败兜底为本机处理，避免任务卡死
+        db.update_audio_job(job_id, "transcribing", error=f"转发到 {target} 失败，改由本机处理：{str(exc)[:200]}")
+        await process_audio_job(job_id, user_id, path)
+        return
+    # 转发成功，本机不再保留文件（worker 已落盘处理）
+    path.unlink(missing_ok=True)

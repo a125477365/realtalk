@@ -231,6 +231,20 @@ data class AudioJob(
 data class AudioJobList(val items: List<AudioJob>)
 
 @Serializable
+data class AudioUploadInitRequest(val filename: String, @SerialName("size_bytes") val sizeBytes: Long)
+
+@Serializable
+data class AudioUploadInitResponse(@SerialName("upload_id") val uploadId: String, @SerialName("received_bytes") val receivedBytes: Long = 0)
+
+@Serializable
+data class AudioUploadStatusResponse(
+    @SerialName("upload_id") val uploadId: String,
+    @SerialName("received_bytes") val receivedBytes: Long,
+    @SerialName("size_bytes") val sizeBytes: Long = 0,
+    val completed: Boolean = false,
+)
+
+@Serializable
 data class WeChatLoginRequest(
     val code: String,
     val nickname: String? = null,

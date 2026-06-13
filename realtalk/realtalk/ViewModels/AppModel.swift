@@ -614,7 +614,12 @@ final class AppModel: ObservableObject {
         isUploadingAudio = true
         defer { isUploadingAudio = false }
         do {
-            _ = try await api.uploadAudio(fileURL: fileURL, token: token)
+            // 断点续传上传，网络波动自动续传，适合大文件
+            _ = try await api.uploadAudioResumable(fileURL: fileURL, token: token) { [weak self] fraction in
+                Task { @MainActor in
+                    self?.statusMessage = "上传中 \(Int(fraction * 100))%"
+                }
+            }
             statusMessage = "上传成功，正在转写生成场景"
             await loadAudioJobs()
             // 处理是异步的，轮询直到完成

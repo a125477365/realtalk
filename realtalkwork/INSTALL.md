@@ -24,6 +24,18 @@ COMPOSE_PROFILES=backend,backend-db docker compose up -d --build
 COMPOSE_PROFILES=admin,web API_UPSTREAM=http://<机器A>:8000 docker compose up -d --build
 ```
 
+**音频转写分布式**：高级会员上传的录音默认在收到文件的后端就地转写；若想把转写/场景生成
+压力分到其他机器，在 `setup.sh` 的「音频转写 worker 节点地址」填入 worker 后端地址
+（逗号分隔），并为入口与所有 worker 设置相同的 `INTERNAL_TOKEN`。入口会按用户哈希把文件
+转发到固定 worker 处理，结果写入共享数据库，用户在任意节点都能看到生成的场景。worker
+机器同样用 `setup.sh` 部署后端、连同一个数据库即可。
+
+**语音转写方式**可在管理台「系统设置 → 语音转写」二选一：云端 OpenAI 兼容 API，或服务器
+本地命令行工具（如 whisper.cpp / faster-whisper，命令模板用 `{input}` 代表音频路径）。
+
+**上传支持断点续传**：Web 与 App 大文件分块上传，网络中断后自动从已传字节续传。
+
+
 完成后：
 
 | 入口 | 地址 | 说明 |

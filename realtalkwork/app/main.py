@@ -92,6 +92,9 @@ from .schemas import (
     AsrSettingsRequest,
     AudioJobListResponse,
     AudioJobOut,
+    AudioUploadInitRequest,
+    AudioUploadInitResponse,
+    AudioUploadStatusResponse,
     PlanCatalogResponse,
     PlanItem,
     QuotaSettingsRequest,
@@ -478,8 +481,10 @@ def admin_get_asr(admin: dict = Depends(current_admin)) -> dict:
 
     config = resolve_asr_config()
     return {
+        "mode": config["mode"],
         "base_url": config["base_url"],
         "model": config["model"],
+        "local_command": config["local_command"],
         "api_key_masked": _masked_key(config["api_key"]),
         "api_key_configured": bool(config["api_key"]),
         "dev_mode": config["dev_mode"],
@@ -493,12 +498,16 @@ def admin_set_asr(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if request.mode is not None:
+        db.set_app_setting("asr_mode", request.mode if request.mode in ("cloud", "local") else "cloud")
     if request.base_url is not None:
         db.set_app_setting("asr_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
         db.set_app_setting("asr_api_key", request.api_key.strip())
     if request.model is not None:
         db.set_app_setting("asr_model", request.model.strip())
+    if request.local_command is not None:
+        db.set_app_setting("asr_local_command", request.local_command.strip())
     return admin_get_asr(admin)
 
 
@@ -1175,15 +1184,10 @@ def upload_transcripts(
 _ALLOWED_AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a"}
 
 
-@app.post("/audio/upload", response_model=AudioJobOut)
-async def audio_upload(
-    file: UploadFile = File(...),
-    user: UserOut = Depends(current_user),
-) -> AudioJobOut:
+def _require_audio_ready(user: UserOut) -> None:
     require_premium(user)
     require_ai_access(user)
-
-    from .audio_pipeline import asr_configured, process_audio_job
+    from .audio_pipeline import asr_configured
 
     if not asr_configured():
         raise HTTPException(
@@ -1191,9 +1195,30 @@ async def audio_upload(
             detail="语音转写服务未配置，请联系管理员在管理台「系统设置」中配置 ASR",
         )
 
-    suffix = os.path.splitext(file.filename or "")[1].lower()
+
+def _audio_suffix(filename: str | None) -> str:
+    suffix = os.path.splitext(filename or "")[1].lower()
     if suffix not in _ALLOWED_AUDIO_SUFFIXES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅支持 mp3 / wav / m4a 格式")
+    return suffix
+
+
+async def _start_audio_job(user_id: str, filename: str, dest, size: int) -> dict:
+    from .audio_pipeline import dispatch_or_process
+
+    job = db.create_audio_job(user_id, filename, size)
+    asyncio.create_task(dispatch_or_process(job["id"], user_id, dest))
+    return job
+
+
+@app.post("/audio/upload", response_model=AudioJobOut)
+async def audio_upload(
+    file: UploadFile = File(...),
+    user: UserOut = Depends(current_user),
+) -> AudioJobOut:
+    """一次性上传（适合较小文件或不需要断点续传的客户端）。"""
+    _require_audio_ready(user)
+    suffix = _audio_suffix(file.filename)
 
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
@@ -1215,9 +1240,127 @@ async def audio_upload(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件为空")
 
-    job = db.create_audio_job(user.id, file.filename or dest.name, size)
-    asyncio.create_task(process_audio_job(job["id"], user.id, dest))
+    job = await _start_audio_job(user.id, file.filename or dest.name, dest, size)
     return AudioJobOut(**job)
+
+
+# ---- 断点续传：init → chunk(可重试/续传) → complete ----
+
+def _upload_session_path(user_id: str, upload_id: str):
+    safe = "".join(c for c in upload_id if c.isalnum() or c in "-_")
+    return settings.upload_dir / "incomplete" / f"{user_id}__{safe}.part"
+
+
+@app.post("/audio/upload/init", response_model=AudioUploadInitResponse)
+def audio_upload_init(
+    request: AudioUploadInitRequest,
+    user: UserOut = Depends(current_user),
+) -> AudioUploadInitResponse:
+    _require_audio_ready(user)
+    _audio_suffix(request.filename)
+    if request.size_bytes > settings.audio_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
+        )
+    upload_id = f"{uuid.uuid4().hex}{os.path.splitext(request.filename)[1].lower()}"
+    part = _upload_session_path(user.id, upload_id)
+    part.parent.mkdir(parents=True, exist_ok=True)
+    part.touch()
+    return AudioUploadInitResponse(upload_id=upload_id, received_bytes=0)
+
+
+@app.get("/audio/upload/status", response_model=AudioUploadStatusResponse)
+def audio_upload_status(
+    upload_id: str = Query(...),
+    size_bytes: int = Query(default=0, ge=0),
+    user: UserOut = Depends(current_user),
+) -> AudioUploadStatusResponse:
+    part = _upload_session_path(user.id, upload_id)
+    received = part.stat().st_size if part.exists() else 0
+    return AudioUploadStatusResponse(
+        upload_id=upload_id,
+        received_bytes=received,
+        size_bytes=size_bytes,
+        completed=size_bytes > 0 and received >= size_bytes,
+    )
+
+
+@app.put("/audio/upload/chunk")
+async def audio_upload_chunk(
+    request: Request,
+    upload_id: str = Query(...),
+    offset: int = Query(..., ge=0),
+    user: UserOut = Depends(current_user),
+) -> dict:
+    """从 offset 写入一段数据；客户端断线后用 /status 查到 received_bytes 再续传。"""
+    _require_audio_ready(user)
+    part = _upload_session_path(user.id, upload_id)
+    if not part.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新发起")
+    current = part.stat().st_size
+    if offset > current:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"偏移不连续，当前已接收 {current} 字节")
+
+    # 用 r+b 定位到 offset 覆盖写（幂等：重发同一段不会损坏文件）
+    with part.open("r+b") as fh:
+        fh.seek(offset)
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            fh.seek(offset)
+            fh.write(chunk)
+            offset += len(chunk)
+            if offset > settings.audio_max_bytes:
+                fh.truncate(settings.audio_max_bytes)
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
+                )
+    return {"upload_id": upload_id, "received_bytes": part.stat().st_size}
+
+
+@app.post("/audio/upload/complete", response_model=AudioJobOut)
+async def audio_upload_complete(
+    upload_id: str = Query(...),
+    filename: str = Query(default=""),
+    user: UserOut = Depends(current_user),
+) -> AudioJobOut:
+    _require_audio_ready(user)
+    part = _upload_session_path(user.id, upload_id)
+    if not part.exists() or part.stat().st_size == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传未完成或文件为空")
+    suffix = os.path.splitext(upload_id)[1].lower() or ".mp3"
+    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
+    part.rename(dest)
+    size = dest.stat().st_size
+    job = await _start_audio_job(user.id, filename or dest.name, dest, size)
+    return AudioJobOut(**job)
+
+
+# ---- 节点间内部接口：入口转发来的文件由本 worker 处理 ----
+
+@app.post("/audio/internal/ingest")
+async def audio_internal_ingest(
+    request: Request,
+    job_id: str = Query(...),
+    user_id: str = Query(...),
+    file: UploadFile = File(...),
+) -> dict:
+    expected = settings.internal_token or ""
+    if not expected or request.headers.get("x-internal-token") != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="内部令牌无效")
+
+    from .audio_pipeline import process_audio_job
+
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".mp3"
+    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
+    with dest.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            out.write(chunk)
+    asyncio.create_task(process_audio_job(job_id, user_id, dest))
+    return {"accepted": True, "job_id": job_id}
 
 
 @app.get("/audio/jobs", response_model=AudioJobListResponse)

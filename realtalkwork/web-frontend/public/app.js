@@ -421,31 +421,79 @@ function bindPage() {
   }
 }
 
-function uploadAudio(file) {
-  if (file.size > 300 * 1024 * 1024) { toast("文件超过 300MB 上限", "error"); return; }
-  var form = new FormData();
-  form.append("file", file);
-  var xhr = new XMLHttpRequest();
-  xhr.open("POST", API + "/audio/upload");
-  xhr.setRequestHeader("Authorization", "Bearer " + state.token);
+// 断点续传：init → 分块 PUT（失败自动重试/续传）→ complete
+var CHUNK_SIZE = 4 * 1024 * 1024; // 4MB/块
+
+function setUpProgress(loaded, total, label) {
+  var pct = total ? Math.round(loaded / total * 100) : 0;
   $("up-progress").style.display = "block";
-  xhr.upload.onprogress = function (e) {
-    if (e.lengthComputable) {
-      var pct = Math.round(e.loaded / e.total * 100);
-      $("up-bar").style.width = pct + "%";
-      $("up-text").textContent = "上传中 " + pct + "%（" + (e.loaded / 1024 / 1024).toFixed(1) + " / " + (e.total / 1024 / 1024).toFixed(1) + " MB）";
+  $("up-bar").style.width = pct + "%";
+  $("up-text").textContent = (label || "上传中 ") + pct + "%（" + (loaded / 1048576).toFixed(1) + " / " + (total / 1048576).toFixed(1) + " MB）";
+}
+
+function authHeaders(extra) {
+  var h = { Authorization: "Bearer " + state.token };
+  if (extra) for (var k in extra) h[k] = extra[k];
+  return h;
+}
+
+async function uploadAudio(file) {
+  if (file.size > 300 * 1024 * 1024) { toast("文件超过 300MB 上限", "error"); return; }
+  try {
+    setUpProgress(0, file.size, "准备上传 ");
+    // 1) init
+    var init = await fetch(API + "/audio/upload/init", {
+      method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ filename: file.name, size_bytes: file.size }),
+    });
+    if (!init.ok) { toast((await init.json().catch(function () { return {}; })).detail || "上传初始化失败", "error"); $("up-progress").style.display = "none"; return; }
+    var uploadId = (await init.json()).upload_id;
+
+    // 2) 分块上传，失败重试并按服务端已收字节续传
+    var offset = 0;
+    while (offset < file.size) {
+      var end = Math.min(offset + CHUNK_SIZE, file.size);
+      var blob = file.slice(offset, end);
+      var ok = false, attempt = 0;
+      while (!ok) {
+        attempt++;
+        try {
+          var put = await fetch(API + "/audio/upload/chunk?upload_id=" + encodeURIComponent(uploadId) + "&offset=" + offset, {
+            method: "PUT", headers: authHeaders(), body: blob,
+          });
+          if (put.ok) { ok = true; break; }
+          if (put.status === 409) {
+            // 偏移不连续：以服务端为准重新对齐
+            var st = await fetch(API + "/audio/upload/status?upload_id=" + encodeURIComponent(uploadId) + "&size_bytes=" + file.size, { headers: authHeaders() });
+            offset = (await st.json()).received_bytes; ok = true; break;
+          }
+          throw new Error("HTTP " + put.status);
+        } catch (e) {
+          if (attempt >= 5) { throw e; }
+          $("up-text").textContent = "网络波动，重试中（" + attempt + "/5）…";
+          await new Promise(function (r) { setTimeout(r, 1500 * attempt); });
+          // 续传前查实际进度
+          try {
+            var st2 = await fetch(API + "/audio/upload/status?upload_id=" + encodeURIComponent(uploadId) + "&size_bytes=" + file.size, { headers: authHeaders() });
+            if (st2.ok) offset = (await st2.json()).received_bytes;
+          } catch (_) {}
+        }
+      }
+      if (offset < end) offset = end;
+      setUpProgress(offset, file.size);
     }
-  };
-  xhr.onload = function () {
+
+    // 3) complete
+    var done = await fetch(API + "/audio/upload/complete?upload_id=" + encodeURIComponent(uploadId) + "&filename=" + encodeURIComponent(file.name), {
+      method: "POST", headers: authHeaders(),
+    });
     $("up-progress").style.display = "none";
-    try {
-      var d = JSON.parse(xhr.responseText);
-      if (xhr.status >= 200 && xhr.status < 300) { toast("上传成功，正在转写…", "success"); loadJobs(true); }
-      else toast(d.detail || "上传失败", "error");
-    } catch (e) { toast("上传失败", "error"); }
-  };
-  xhr.onerror = function () { $("up-progress").style.display = "none"; toast("网络错误，上传失败", "error"); };
-  xhr.send(form);
+    if (done.ok) { toast("上传成功，正在转写生成场景…", "success"); loadJobs(true); }
+    else toast((await done.json().catch(function () { return {}; })).detail || "完成上传失败", "error");
+  } catch (e) {
+    $("up-progress").style.display = "none";
+    toast("上传失败：" + (e.message || "网络错误") + "（可重新选择同一文件自动续传）", "error");
+  }
 }
 
 /* ---------- 全局导出 & 启动 ---------- */

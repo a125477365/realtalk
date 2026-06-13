@@ -148,6 +148,73 @@ if $DEPLOY_BACKEND; then
   ask "worker 进程数（建议=CPU核数）" "4"
   ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
 
+  # ---- 音频转写处理节点（分布式可选）----
+  note "高级会员上传的录音由谁转写：默认本机；也可把文件转发到其他 worker 节点处理。"
+  ask "音频转写 worker 节点地址（逗号分隔，回车=本机处理）" ""
+  AUDIO_WORKERS="$REPLY_VALUE"
+  INTERNAL_TOKEN_VAL=""
+  if [ -n "$AUDIO_WORKERS" ]; then
+    note "示例：http://10.0.0.6:8000,http://10.0.0.7:8000（这些节点须连同一个数据库，且各自也用本脚本部署后端）。"
+    ask "节点间内部令牌（入口与所有 worker 必须一致，回车自动生成）" "$(rand 40)"
+    INTERNAL_TOKEN_VAL="$REPLY_VALUE"
+  fi
+  ENV_LINES+=("AUDIO_WORKER_NODES=$AUDIO_WORKERS" "INTERNAL_TOKEN=$INTERNAL_TOKEN_VAL")
+
+  # ---- 微信登录（高级，可选）----
+  echo
+  note "微信登录：默认开发模拟模式（任意设备直接登录，便于联调）。"
+  ask "现在配置正式微信登录凭据吗？(yes/no)" "no"
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    ask "移动应用 AppID（微信开放平台 · 移动应用）" ""
+    WX_APPID="$REPLY_VALUE"
+    ask_secret "移动应用 AppSecret"; WX_SECRET="$REPLY_VALUE"
+    ask "网站应用 AppID（用于 Web 扫码登录，可留空）" ""
+    WX_WEB_APPID="$REPLY_VALUE"
+    WX_WEB_SECRET=""
+    [ -n "$WX_WEB_APPID" ] && { ask_secret "网站应用 AppSecret"; WX_WEB_SECRET="$REPLY_VALUE"; }
+    ENV_LINES+=(
+      "WECHAT_AUTH_DEV_MODE=false"
+      "WECHAT_APP_ID=$WX_APPID" "WECHAT_APP_SECRET=$WX_SECRET"
+      "WECHAT_WEB_APP_ID=$WX_WEB_APPID" "WECHAT_WEB_APP_SECRET=$WX_WEB_SECRET"
+    )
+  else
+    ENV_LINES+=(
+      "WECHAT_AUTH_DEV_MODE=true"
+      "WECHAT_APP_ID=" "WECHAT_APP_SECRET="
+      "WECHAT_WEB_APP_ID=" "WECHAT_WEB_APP_SECRET="
+    )
+  fi
+
+  # ---- 支付（高级，可选）----
+  echo
+  note "支付：默认开发模式（下单后可手动确认到账，便于联调）。正式收款需商户资质。"
+  ask "现在配置正式支付参数吗？(yes/no)" "no"
+  PAY_DEV_CONFIRM=true
+  WX_MCHID=""; WX_APIKEY=""; WX_NOTIFY=""
+  ALI_APPID=""; ALI_PRIV=""; ALI_PUB=""; ALI_NOTIFY=""
+  RECV_NAME="RealTalk"; WX_RECV=""; ALI_RECV=""
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    PAY_DEV_CONFIRM=false
+    ask "收款主体名称（显示给用户）" "RealTalk"
+    RECV_NAME="$REPLY_VALUE"
+    ask "配置微信支付商户？(yes/no)" "no"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      ask "微信支付商户号 MCHID" ""; WX_MCHID="$REPLY_VALUE"
+      ask_secret "微信支付 APIv3 密钥"; WX_APIKEY="$REPLY_VALUE"
+      ask "微信支付回调地址 NOTIFY_URL" "https://your-domain.com/payment/wechat/webhook"; WX_NOTIFY="$REPLY_VALUE"
+    fi
+    ask "配置支付宝当面付？(yes/no)" "no"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      ask "支付宝 AppID" ""; ALI_APPID="$REPLY_VALUE"
+      ask_secret "支付宝应用私钥"; ALI_PRIV="$REPLY_VALUE"
+      ask_secret "支付宝公钥"; ALI_PUB="$REPLY_VALUE"
+      ask "支付宝回调地址 NOTIFY_URL" "https://your-domain.com/payment/alipay/webhook"; ALI_NOTIFY="$REPLY_VALUE"
+    fi
+    note "未接入官方支付时，可填个人收款码账号，用户转账后在管理台「充值订单」人工确认。"
+    ask "微信收款账号/备注（可留空）" ""; WX_RECV="$REPLY_VALUE"
+    ask "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
+  fi
+
   ENV_LINES+=(
     "REALTALK_REGION=prod"
     "TRIAL_DAYS=30"
@@ -155,19 +222,18 @@ if $DEPLOY_BACKEND; then
     "DAILY_TOKEN_LIMIT_BASIC=120000"
     "DAILY_TOKEN_LIMIT_PREMIUM=400000"
     "UPLOAD_DATA_DIR=./data/uploads"
-    "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_DEV_MODE=false"
-    "# 登录：生产接入微信开放平台后改 false 并填写凭据（App 与网站应用分开申请）"
-    "WECHAT_AUTH_DEV_MODE=true"
-    "WECHAT_APP_ID=" "WECHAT_APP_SECRET="
-    "WECHAT_WEB_APP_ID=" "WECHAT_WEB_APP_SECRET="
-    "# 邮箱注册默认关闭（防垃圾邮箱薅取免费试用），仅微信认证"
+    "AUDIO_MAX_BYTES=314572800"
+    "AUDIO_MAX_SECONDS=21600"
+    "ASR_MODE=cloud"
+    "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_LOCAL_COMMAND=" "ASR_DEV_MODE=false"
+    "# 邮箱注册默认关闭，仅微信认证"
     "EMAIL_AUTH_ENABLED=false"
-    "PAYMENT_RECEIVER_NAME=RealTalk"
-    "WECHAT_RECEIVER_ACCOUNT=" "ALIPAY_RECEIVER_ACCOUNT="
-    "PAYMENT_DEV_AUTO_CONFIRM=true"
-    "WECHAT_MCHID=" "WECHAT_API_KEY=" "WECHAT_NOTIFY_URL="
-    "ALIPAY_APP_ID=" "ALIPAY_PRIVATE_KEY=" "ALIPAY_PUBLIC_KEY=" "ALIPAY_NOTIFY_URL="
     "EMAIL_DEV_MODE=true"
+    "PAYMENT_RECEIVER_NAME=$RECV_NAME"
+    "WECHAT_RECEIVER_ACCOUNT=$WX_RECV" "ALIPAY_RECEIVER_ACCOUNT=$ALI_RECV"
+    "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
+    "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
+    "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
   )
 fi
 

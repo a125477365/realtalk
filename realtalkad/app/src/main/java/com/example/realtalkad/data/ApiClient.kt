@@ -115,4 +115,78 @@ class ApiClient(private val baseUrlProvider: () -> String) {
             .build()
         return json.decodeFromString(execute(request))
     }
+
+    /** 断点续传：init → 分块 PUT（失败按服务端已收字节续传）→ complete。progress 回调 0f..1f。 */
+    suspend fun uploadAudioResumable(
+        file: File,
+        token: String,
+        onProgress: (Float) -> Unit = {},
+    ): AudioJob = withContext(Dispatchers.IO) {
+        val total = file.length()
+        require(total > 0) { "文件为空" }
+        val octet = "application/octet-stream".toMediaType()
+
+        // 1) init
+        val initBody = json.encodeToString(AudioUploadInitRequest(file.name, total)).toRequestBody(jsonMedia)
+        val initReq = Request.Builder().url(url("/audio/upload/init"))
+            .header("Authorization", "Bearer $token").post(initBody).build()
+        val uploadId = json.decodeFromString<AudioUploadInitResponse>(execute(initReq)).uploadId
+
+        // 2) 分块上传
+        val chunk = ByteArray(4 * 1024 * 1024)
+        var offset = 0L
+        file.inputStream().use { input ->
+            while (offset < total) {
+                input.channel.position(offset)
+                val read = input.read(chunk)
+                if (read <= 0) break
+                val slice = chunk.copyOf(read)
+                var attempt = 0
+                while (true) {
+                    attempt++
+                    try {
+                        val put = Request.Builder()
+                            .url(url("/audio/upload/chunk?upload_id=$uploadId&offset=$offset"))
+                            .header("Authorization", "Bearer $token")
+                            .put(slice.toRequestBody(octet))
+                            .build()
+                        client.newCall(put).execute().use { resp ->
+                            if (resp.code == 409) {
+                                offset = queryUploadOffset(uploadId, total, token)
+                                throw ResumeSignal()
+                            }
+                            if (!resp.isSuccessful) throw ApiException("分块上传失败 HTTP ${resp.code}")
+                        }
+                        offset += read
+                        onProgress(offset.toFloat() / total)
+                        break
+                    } catch (_: ResumeSignal) {
+                        break // 已对齐 offset，外层重新定位
+                    } catch (e: Exception) {
+                        if (attempt >= 5) throw e
+                        kotlinx.coroutines.delay(1000L * attempt)
+                        offset = runCatching { queryUploadOffset(uploadId, total, token) }.getOrDefault(offset)
+                    }
+                }
+            }
+        }
+
+        // 3) complete
+        val name = java.net.URLEncoder.encode(file.name, "UTF-8")
+        val completeReq = Request.Builder()
+            .url(url("/audio/upload/complete?upload_id=$uploadId&filename=$name"))
+            .header("Authorization", "Bearer $token")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        json.decodeFromString(execute(completeReq))
+    }
+
+    private class ResumeSignal : Exception()
+
+    private suspend fun queryUploadOffset(uploadId: String, total: Long, token: String): Long {
+        val req = Request.Builder()
+            .url(url("/audio/upload/status?upload_id=$uploadId&size_bytes=$total"))
+            .header("Authorization", "Bearer $token").get().build()
+        return json.decodeFromString<AudioUploadStatusResponse>(execute(req)).receivedBytes
+    }
 }

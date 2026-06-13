@@ -370,8 +370,7 @@ function loadOverview() {
         g(d.paid_orders, "\u5df2\u652f\u4ed8\u8ba2\u5355") +
         g(d.roleplay_session_count, "\u53e3\u8bed\u4f1a\u8bdd") +
         g(d.practice_result_count, "\u7ec3\u4e60\u8bb0\u5f55") +
-        g(d.transcript_count, "\u5bf9\u8bdd\u8bb0\u5f55") +
-        g(fmtYuan(d.monthly_price_cents), "\u5f53\u524d\u6708\u8d39");
+        g(d.transcript_count, "\u5bf9\u8bdd\u8bb0\u5f55");
     });
   }).catch(function() {
     var el = getEl("overview-stats");
@@ -869,16 +868,34 @@ function renderPlanQuotaCards() {
     '  <button class="btn btn-primary" onclick="saveQuota()">保存限额</button>',
     "</div>",
     '<div class="card">',
-    "  <h2>语音转写（ASR）<span class=\"subtitle\">高级会员上传录音转文字所用的 OpenAI 兼容 /audio/transcriptions 服务</span></h2>",
-    '  <div class="form-grid">',
+    "  <h2>语音转写（ASR）<span class=\"subtitle\">高级会员上传录音转文字的方式</span></h2>",
+    '  <div class="form-group" style="max-width:320px">',
+    '    <label>转写方式</label>',
+    '    <select id="asr-mode" onchange="toggleAsrMode()">',
+    '      <option value="cloud">云端语音模型（OpenAI 兼容 API）</option>',
+    '      <option value="local">服务器本地工具（whisper 等命令行）</option>',
+    "    </select>",
+    "  </div>",
+    '  <div id="asr-cloud-fields" class="form-grid">',
     '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="https://api.openai.com/v1" /></div>',
     '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label>',
     '      <input type="password" id="asr-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
     "  </div>",
-    '  <button class="btn btn-primary" onclick="saveAsr()">保存 ASR 配置</button>',
+    '  <div id="asr-local-fields" style="display:none">',
+    '    <div class="form-group"><label>本地转写命令 <span class="hint">用 {input} 代表音频文件路径，命令需把识别文本打印到标准输出</span></label>',
+    '      <input type="text" id="asr-local-command" placeholder="whisper {input} --model small --language zh --output_format txt --output_dir {dir}" /></div>',
+    '    <div class="hint">示例：faster-whisper / whisper.cpp / openai-whisper CLI。服务器需自行安装对应工具与模型，并确保 API 容器内可执行。</div>',
+    "  </div>",
+    '  <button class="btn btn-primary" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
     "</div>",
   ].join("");
+}
+
+function toggleAsrMode() {
+  var mode = (getEl("asr-mode") || { value: "cloud" }).value;
+  if (getEl("asr-cloud-fields")) getEl("asr-cloud-fields").style.display = mode === "cloud" ? "" : "none";
+  if (getEl("asr-local-fields")) getEl("asr-local-fields").style.display = mode === "local" ? "" : "none";
 }
 
 function loadPlanQuotaAsr() {
@@ -918,10 +935,13 @@ function loadPlanQuotaAsr() {
   apiGet("/admin/api/settings/asr").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
+      if (getEl("asr-mode")) getEl("asr-mode").value = d.mode || "cloud";
       if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
       if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
+      if (getEl("asr-local-command")) getEl("asr-local-command").value = d.local_command || "";
       var ks = getEl("asr-key-status");
       if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
+      toggleAsrMode();
     });
   });
 }
@@ -957,8 +977,10 @@ function saveQuota() {
 
 function saveAsr() {
   var body = {
+    mode: (getEl("asr-mode") || { value: "cloud" }).value,
     base_url: (getEl("asr-base-url") || { value: "" }).value.trim(),
     model: (getEl("asr-model") || { value: "" }).value.trim(),
+    local_command: (getEl("asr-local-command") || { value: "" }).value.trim(),
   };
   var key = (getEl("asr-api-key") || { value: "" }).value.trim();
   if (key) body.api_key = key;
@@ -1075,19 +1097,6 @@ function renderSettingsPage() {
     "  </div>",
     "</div>",
 
-    '<div class="card">',
-    "  <h2>\u6708\u8d39\u8ba2\u9605\u4ef7\u683c <span class=\"subtitle\">\u8bbe\u7f6e\u540e\u7528\u6237\u7aef\u8ba2\u9605\u4ef7\u683c\u5c06\u7acb\u5373\u66f4\u65b0</span></h2>",
-    '  <div class="price-form">',
-    '    <input type="number" id="price-cents" placeholder="\u5982 3000" min="100" max="1000000" step="1" />',
-    '    <span class="unit">\u5206 (= \u00a5<span id="price-yuan">30.00</span>)</span>',
-    '    <button class="btn btn-primary" onclick="updatePrice()">\u4fdd\u5b58</button>',
-    "  </div>",
-    '  <div class="hint" style="margin-top:6px">\u5355\u4f4d\u4e3a\u300c\u5206\u300d\uff0c\u5982 3000 = 30.00 \u5143</div>',
-    "</div>",
-    '<div class="card">',
-    "  <h2>\u5f53\u524d\u8ba2\u9605\u4ef7\u683c</h2>",
-    '  <div id="current-price-display">' + loadingHTML() + "</div>",
-    "</div>",
     renderPlanQuotaCards(),
   ].join("");
 }
@@ -1170,52 +1179,6 @@ function testModelSettings() {
 function loadSettings() {
   loadModelSettings();
   loadPlanQuotaAsr();
-  var display = getEl("current-price-display");
-  if (!display) return;
-  display.innerHTML = loadingHTML();
-
-  apiGet("/billing/prices").then(function(r) {
-    if (!r) return;
-    if (!r.ok) { display.innerHTML = emptyHTML("\u52a0\u8f7d\u5931\u8d25"); return; }
-    r.json().then(function(d) {
-      display.innerHTML = [
-        '<div class="current-price-display">',
-        '  <div class="amount">' + fmtYuan(d.monthly_price_cents) + '</div>',
-        "  <div>",
-        '    <div style="font-size:12px;color:var(--text-muted)">\u5f53\u524d\u6708\u8d39</div>',
-        '    <div class="product-id">' + esc(d.product_id) + "</div>",
-        "  </div>",
-        "</div>",
-      ].join("");
-
-      var input = getEl("price-cents");
-      var yuanEl = getEl("price-yuan");
-      if (input) input.value = d.monthly_price_cents;
-      if (yuanEl) yuanEl.textContent = d.monthly_price_yuan.toFixed(2);
-    });
-  }).catch(function() {
-    if (display) display.innerHTML = emptyHTML("\u52a0\u8f7d\u5931\u8d25");
-  });
-}
-
-function updatePrice() {
-  var cents = parseInt((getEl("price-cents") || { value: "" }).value);
-  if (isNaN(cents) || cents < 100 || cents > 1000000) {
-    toast("\u4ef7\u683c\u5fc5\u987b\u5728 100 ~ 1000000 \u5206\u4e4b\u95f4", "error");
-    return;
-  }
-  apiPost("/admin/api/settings/price", { monthly_price_cents: cents }).then(function(r) {
-    if (!r) return;
-    if (!r.ok) { handleApiError(r); return; }
-    r.json().then(function(d) {
-      toast("\u4ef7\u683c\u5df2\u66f4\u65b0\u4e3a " + fmtYuan(d.monthly_price_cents), "success");
-      loadSettings();
-      var overviewStats = getEl("overview-stats");
-      if (overviewStats && overviewStats.innerHTML.indexOf("loading") === -1) {
-        loadOverview();
-      }
-    });
-  });
 }
 
 // ============================================================
@@ -1614,7 +1577,7 @@ window.openUserDetail = openUserDetail;
 window.openEditModal = openEditModal;
 window.closeEditModal = closeEditModal;
 window.submitEdit = submitEdit;
-window.updatePrice = updatePrice;
+window.toggleAsrMode = toggleAsrMode;
 window.toggleBan = toggleBan;
 window.loadAdminList = loadAdminList;
 window.resetAdminSearch = resetAdminSearch;

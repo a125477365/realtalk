@@ -270,6 +270,84 @@ final class APIClient {
         return try decoder.decode(AudioJob.self, from: data)
     }
 
+    /// 断点续传上传：init → 分块 PUT（失败按服务端已收字节续传）→ complete。
+    /// progress 回调返回 0...1，便于 UI 显示进度。
+    func uploadAudioResumable(
+        fileURL: URL,
+        token: String,
+        progress: @escaping (Double) -> Void = { _ in }
+    ) async throws -> AudioJob {
+        let filename = fileURL.lastPathComponent
+        let total = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0 ?? 0
+        guard total > 0 else { throw APIClientError.server("文件为空") }
+
+        // 1) init
+        struct InitReq: Encodable { let filename: String; let size_bytes: Int }
+        struct InitResp: Decodable { let upload_id: String; let received_bytes: Int }
+        struct StatusResp: Decodable { let received_bytes: Int }
+        let initResp: InitResp = try await post("/audio/upload/init", body: InitReq(filename: filename, size_bytes: total), token: token)
+        let uploadId = initResp.upload_id
+
+        // 2) 分块上传
+        let chunkSize = 4 * 1024 * 1024
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var offset = 0
+        while offset < total {
+            try handle.seek(toOffset: UInt64(offset))
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            var attempt = 0
+            while true {
+                attempt += 1
+                do {
+                    try await putChunk(uploadId: uploadId, offset: offset, body: chunk, token: token)
+                    offset += chunk.count
+                    progress(Double(offset) / Double(total))
+                    break
+                } catch {
+                    if attempt >= 5 { throw error }
+                    // 断点续传：查服务端已收字节后重试
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                    if let st: StatusResp = try? await get(
+                        "/audio/upload/status",
+                        token: token,
+                        queryItems: [URLQueryItem(name: "upload_id", value: uploadId),
+                                     URLQueryItem(name: "size_bytes", value: String(total))]
+                    ) {
+                        offset = st.received_bytes
+                    }
+                }
+            }
+        }
+
+        // 3) complete
+        var comps = URLComponents(url: url(for: "/audio/upload/complete"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "upload_id", value: uploadId),
+                             URLQueryItem(name: "filename", value: filename)]
+        guard let completeURL = comps?.url else { throw APIClientError.invalidResponse }
+        var request = URLRequest(url: completeURL)
+        request.httpMethod = "POST"
+        addDefaultHeaders(to: &request, token: token)
+        return try await send(request)
+    }
+
+    private func putChunk(uploadId: String, offset: Int, body: Data, token: String) async throws {
+        var comps = URLComponents(url: url(for: "/audio/upload/chunk"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "upload_id", value: uploadId),
+                             URLQueryItem(name: "offset", value: String(offset))]
+        guard let u = comps?.url else { throw APIClientError.invalidResponse }
+        var request = URLRequest(url: u)
+        request.httpMethod = "PUT"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 300
+        let (_, response) = try await session.upload(for: request, from: body)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIClientError.server("分块上传失败")
+        }
+    }
+
     private func get<Response: Decodable>(
         _ path: String,
         token: String?,

@@ -308,9 +308,28 @@ class QuotaSettingsRequest(BaseModel):
 
 
 class AsrSettingsRequest(BaseModel):
+    mode: str | None = Field(default=None, max_length=20)  # cloud | local
     base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=200)
+    local_command: str | None = Field(default=None, max_length=1000)
+
+
+class AudioUploadInitRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1, le=2 * 1024 * 1024 * 1024)
+
+
+class AudioUploadInitResponse(BaseModel):
+    upload_id: str
+    received_bytes: int = 0  # 已接收字节数，断点续传从此处继续
+
+
+class AudioUploadStatusResponse(BaseModel):
+    upload_id: str
+    received_bytes: int
+    size_bytes: int
+    completed: bool = False
 
 
 class RechargeCreateRequest(BaseModel):

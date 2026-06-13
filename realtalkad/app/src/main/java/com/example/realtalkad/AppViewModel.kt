@@ -373,7 +373,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             isUploadingAudio.value = true
-            runCatching { api.uploadAudio(file, token) }
+            runCatching {
+                api.uploadAudioResumable(file, token) { fraction ->
+                    statusMessage.value = "上传中 ${(fraction * 100).toInt()}%"
+                }
+            }
                 .onSuccess {
                     statusMessage.value = "上传成功，正在转写生成场景"
                     for (attempt in 0 until 60) {

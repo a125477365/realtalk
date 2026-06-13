@@ -59,11 +59,20 @@ class Settings:
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     audio_max_bytes: int = int(os.getenv("AUDIO_MAX_BYTES", str(300 * 1024 * 1024)))
     audio_max_seconds: int = int(os.getenv("AUDIO_MAX_SECONDS", str(6 * 3600)))
-    # OpenAI 兼容语音转写服务（/audio/transcriptions），管理台可覆盖
+    # 语音转写：cloud=OpenAI 兼容 API，local=服务器本地命令行工具
+    asr_mode: str = os.getenv("ASR_MODE", "cloud")
     asr_base_url: str | None = os.getenv("ASR_BASE_URL")
     asr_api_key: str | None = os.getenv("ASR_API_KEY")
     asr_model: str = os.getenv("ASR_MODEL", "whisper-1")
+    # 本地转写命令模板：{input}=音频路径，{dir}=可写目录；命令需把文本打到 stdout 或在 {dir} 生成同名 .txt
+    asr_local_command: str | None = os.getenv("ASR_LOCAL_COMMAND")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
+
+    # 音频分布式：入口节点把上传文件转发给某个 worker 节点处理（共享同一数据库）
+    # 逗号分隔的 worker 内部地址，如 "http://10.0.0.6:8000,http://10.0.0.7:8000"；留空=本机处理
+    audio_worker_nodes: str | None = os.getenv("AUDIO_WORKER_NODES")
+    # 节点间内部调用令牌（入口与 worker 必须一致）
+    internal_token: str | None = os.getenv("INTERNAL_TOKEN")
 
     # 数据库连接池（PostgreSQL 生效）
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "10"))
