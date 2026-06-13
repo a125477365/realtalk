@@ -1553,15 +1553,6 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "usage") loadUsage();
   else if (state.currentTab === "admins") loadAdminList();
   else if (state.currentTab === "settings") loadSettings();
-
-  // Price input live update
-  var priceInput = getEl("price-cents");
-  if (priceInput) {
-    priceInput.oninput = function() {
-      var yuanEl = getEl("price-yuan");
-      if (yuanEl) yuanEl.textContent = ((parseInt(priceInput.value) || 0) / 100).toFixed(2);
-    };
-  }
 }
 
 // ============================================================
