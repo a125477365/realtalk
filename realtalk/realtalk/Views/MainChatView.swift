@@ -37,6 +37,12 @@ struct MainChatView: View {
                     composer
                 }
             }
+            .task {
+                // 登录后进入主界面时加载数据（bootstrap 在登录前已跑过、那时无 token 被跳过）
+                await model.loadBillingAccount()
+                await model.loadTodayScenarios()
+                await model.loadPracticeHistory()
+            }
             .sheet(isPresented: $showingAccount) {
                 AccountPanelView()
                     .presentationDetents([.large])
