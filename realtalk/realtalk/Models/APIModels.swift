@@ -314,10 +314,12 @@ struct BillingAccountResponse: Codable, Equatable {
 struct RechargeCreateRequest: Codable {
     let amountCents: Int
     let method: String
+    let planId: String?
 
     enum CodingKeys: String, CodingKey {
         case amountCents = "amount_cents"
         case method
+        case planId = "plan_id"
     }
 }
 
@@ -328,6 +330,7 @@ struct RechargeOrderResponse: Codable, Equatable {
     let status: String
     let paymentUrl: String?
     let qrCodeText: String?
+    let qrCodeUrl: String?
     let receiverName: String?
     let receiverAccount: String?
     let message: String
@@ -340,6 +343,7 @@ struct RechargeOrderResponse: Codable, Equatable {
         case status
         case paymentUrl = "payment_url"
         case qrCodeText = "qr_code_text"
+        case qrCodeUrl = "qr_code_url"
         case receiverName = "receiver_name"
         case receiverAccount = "receiver_account"
         case message

@@ -165,12 +165,29 @@ fun MainChatScreen(model: AppViewModel) {
         }
 
         // 今日场景
-        if (scenarios.isNotEmpty()) {
-            Text(
-                "今日场景",
-                fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
+        Text(
+            "今日场景",
+            fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
+        if (scenarios.isEmpty()) {
+            // 空态：引导先采集真实对话生成场景
+            Column(
+                Modifier.fillMaxWidth().padding(16.dp, 8.dp)
+                    .background(RT.Surface, RoundedCornerShape(14.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
+                    .clickable { model.toggleRecording() }
+                    .padding(12.dp),
+            ) {
+                Text(
+                    "今天还没有场景",
+                    fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = RT.TextPrimary,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text("点这里采集今天的真实对话，自动生成练习场景",
+                    fontSize = 12.sp, color = RT.TextSecondary)
+            }
+        } else {
             LazyRow(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),

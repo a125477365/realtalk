@@ -205,10 +205,10 @@ final class APIClient {
         try await get("/billing/account", token: token, queryItems: [])
     }
 
-    func createRecharge(amountCents: Int, method: String, token: String) async throws -> RechargeOrderResponse {
+    func createRecharge(amountCents: Int, method: String, planId: String? = nil, token: String) async throws -> RechargeOrderResponse {
         try await post(
             "/billing/recharge",
-            body: RechargeCreateRequest(amountCents: amountCents, method: method),
+            body: RechargeCreateRequest(amountCents: amountCents, method: method, planId: planId),
             token: token
         )
     }

@@ -184,7 +184,7 @@ data class PlanCatalog(val items: List<PlanItem>, @SerialName("trial_days") val 
 data class SubscribeRequest(@SerialName("plan_id") val planId: String)
 
 @Serializable
-data class RechargeCreateRequest(@SerialName("amount_cents") val amountCents: Int, val method: String)
+data class RechargeCreateRequest(@SerialName("amount_cents") val amountCents: Int, val method: String, @SerialName("plan_id") val planId: String? = null)
 
 @Serializable
 data class RechargeOrder(

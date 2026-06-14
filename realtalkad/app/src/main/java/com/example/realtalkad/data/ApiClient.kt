@@ -93,8 +93,8 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun subscribe(planId: String, token: String): BillingAccount =
         post("/billing/subscribe", SubscribeRequest(planId), token)
 
-    suspend fun createRecharge(amountCents: Int, method: String, token: String): RechargeOrder =
-        post("/billing/recharge", RechargeCreateRequest(amountCents, method), token)
+    suspend fun createRecharge(amountCents: Int, method: String, token: String, planId: String? = null): RechargeOrder =
+        post("/billing/recharge", RechargeCreateRequest(amountCents, method, planId), token)
 
     suspend fun confirmRecharge(orderId: String, token: String): BillingAccount =
         post("/billing/recharge/confirm", RechargeConfirmRequest(orderId), token)

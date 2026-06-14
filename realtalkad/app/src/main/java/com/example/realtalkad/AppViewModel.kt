@@ -335,15 +335,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun subscribe(planId: String) {
+    /** 开通会员：生成套餐支付订单（微信/支付宝），支付成功后激活会员 */
+    fun subscribe(planId: String, method: String) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             isWorking.value = true
-            runCatching { api.subscribe(planId, token) }
-                .onSuccess {
-                    billing.value = it; user.value = it.user
-                    statusMessage.value = "开通成功，当前为${it.user.tierName}"
-                }
+            runCatching { api.createRecharge(0, method, token, planId) }
+                .onSuccess { rechargeOrder.value = it; statusMessage.value = it.message }
                 .onFailure { statusMessage.value = it.message ?: "开通失败" }
             isWorking.value = false
         }
@@ -365,7 +363,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { api.confirmRecharge(order.orderId, token) }
                 .onSuccess {
                     billing.value = it; user.value = it.user; rechargeOrder.value = null
-                    statusMessage.value = "充值已到账"
+                    statusMessage.value = "支付成功，当前为${it.user.tierName}"
                 }
                 .onFailure { statusMessage.value = it.message ?: "确认失败" }
         }

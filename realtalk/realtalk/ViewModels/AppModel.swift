@@ -443,11 +443,8 @@ final class AppModel: ObservableObject {
     func toggleVoiceConversation() async {
         if roleplay == nil {
             guard scenario != nil else {
-                // 引导放进聊天流，主界面随处可见（statusMessage 只在账户面板展示）
-                chatMessages.append(ChatMessage(
-                    sender: .assistant,
-                    text: "先选一个练习场景：点上方「今日场景」卡片，或点右上角按钮采集今天的真实对话。"
-                ))
+                // 引导放进聊天流（appendChat 会去重连续相同消息，避免反复点击堆叠）
+                appendChat(.assistant, "先选一个练习场景：点上方「今日场景」卡片，或点右上角按钮采集今天的真实对话。")
                 return
             }
             await startRoleplay()
@@ -579,7 +576,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func subscribe(planId: String) async {
+    /// 开通会员：生成套餐支付订单（微信/支付宝），支付成功后激活会员
+    func subscribe(planId: String, method: String) async {
         guard let token = auth.token else {
             statusMessage = "请先登录"
             return
@@ -587,10 +585,8 @@ final class AppModel: ObservableObject {
         isWorking = true
         defer { isWorking = false }
         do {
-            let account = try await api.subscribe(planId: planId, token: token)
-            billingAccount = account
-            auth.applyBillingUser(account.user)
-            statusMessage = "开通成功，当前为\(account.user.tierName)"
+            rechargeOrder = try await api.createRecharge(amountCents: 0, method: method, planId: planId, token: token)
+            statusMessage = rechargeOrder?.message ?? "订单已创建，请完成支付"
         } catch {
             statusMessage = error.localizedDescription
         }
@@ -662,7 +658,7 @@ final class AppModel: ObservableObject {
             billingAccount = account
             auth.applyBillingUser(account.user)
             self.rechargeOrder = nil
-            statusMessage = "充值已入账"
+            statusMessage = "支付成功，当前为\(account.user.tierName)"
         } catch {
             statusMessage = error.localizedDescription
         }

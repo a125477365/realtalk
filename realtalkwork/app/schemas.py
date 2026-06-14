@@ -333,8 +333,9 @@ class AudioUploadStatusResponse(BaseModel):
 
 
 class RechargeCreateRequest(BaseModel):
-    amount_cents: int = Field(ge=100, le=1000000)
+    amount_cents: int = Field(default=0, ge=0, le=1000000)
     method: Literal["wechat", "alipay", "admin"]  # Added "admin" for manual
+    plan_id: str | None = Field(default=None, max_length=40)  # 非空=购买会员套餐，金额取套餐价
 
 
 class RechargeOrderResponse(BaseModel):

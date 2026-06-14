@@ -53,7 +53,6 @@ fun AccountSheet(model: AppViewModel) {
     val plans by model.plans.collectAsState()
     val order by model.rechargeOrder.collectAsState()
     val status by model.statusMessage.collectAsState()
-    var amount by remember { mutableStateOf(3000) }
     var method by remember { mutableStateOf("wechat") }
     var showUpload by remember { mutableStateOf(false) }
 
@@ -128,6 +127,19 @@ fun AccountSheet(model: AppViewModel) {
             Text("会员套餐 · 会员每日有 token 限额", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
         item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("wechat" to "微信支付", "alipay" to "支付宝").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { method = key },
+                        modifier = Modifier.weight(1f),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp, if (method == key) RT.Accent else RT.Hairline,
+                        ),
+                    ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+        }
+        item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(plans, key = { it.id }) { plan ->
                     Column(
@@ -151,7 +163,7 @@ fun AccountSheet(model: AppViewModel) {
                         )
                         Spacer(Modifier.height(8.dp))
                         Button(
-                            onClick = { model.subscribe(plan.id) },
+                            onClick = { model.subscribe(plan.id, method) },
                             modifier = Modifier.fillMaxWidth().height(34.dp),
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -163,60 +175,26 @@ fun AccountSheet(model: AppViewModel) {
             }
         }
 
-        // 充值
-        item {
-            Column(
-                Modifier.fillMaxWidth()
-                    .background(RT.Surface, RoundedCornerShape(16.dp))
-                    .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
-                    .padding(16.dp),
-            ) {
-                Text("充值", fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(1000, 3000, 5000, 10000).forEach { value ->
-                        OutlinedButton(
-                            onClick = { amount = value },
-                            modifier = Modifier.weight(1f),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(4.dp),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp, if (amount == value) RT.Accent else RT.Hairline,
-                            ),
-                        ) { Text(money(value), fontSize = 12.sp, color = if (amount == value) RT.Accent else RT.TextSecondary) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("wechat" to "微信", "alipay" to "支付宝").forEach { (key, label) ->
-                        OutlinedButton(
-                            onClick = { method = key },
-                            modifier = Modifier.weight(1f),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp, if (method == key) RT.Accent else RT.Hairline,
-                            ),
-                        ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                Button(
-                    onClick = { model.createRecharge(amount, method) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
-                ) { Text("生成付款单") }
-
-                order?.let { o ->
-                    Spacer(Modifier.height(10.dp))
-                    Column(
-                        Modifier.fillMaxWidth().background(RT.Background, RoundedCornerShape(12.dp)).padding(12.dp),
-                    ) {
-                        Text(o.message, fontSize = 13.sp)
-                        o.receiverAccount?.let { Text("收款账号：$it", fontSize = 12.sp, color = RT.TextSecondary) }
-                        Text("订单号：${o.orderId}", fontSize = 10.sp, color = RT.TextSecondary)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedButton(onClick = { model.confirmRecharge() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("我已付款")
-                        }
-                    }
+        // 待支付订单（开通会员后出现）
+        order?.let { o ->
+            item {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(16.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
+                        .padding(16.dp),
+                ) {
+                    Text("待支付", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(o.message, fontSize = 13.sp)
+                    o.receiverAccount?.let { Text("收款账号：$it", fontSize = 12.sp, color = RT.TextSecondary) }
+                    Text("订单号：${o.orderId}", fontSize = 10.sp, color = RT.TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { model.confirmRecharge() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
+                    ) { Text("我已完成支付") }
                 }
             }
         }

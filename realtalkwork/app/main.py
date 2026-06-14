@@ -909,6 +909,20 @@ async def create_recharge(
     if request.method == "admin":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效支付方式")
 
+    # 会员套餐订单：金额取套餐价、带 plan_id（支付成功后激活会员而非加余额）
+    plan_id = request.plan_id
+    if plan_id:
+        plan = next((p for p in db.get_plan_catalog() if p.get("id") == plan_id), None)
+        if plan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套餐不存在")
+        amount_cents = int(plan["price_cents"])
+        order_desc = f"开通{plan.get('title', '会员')}"
+    else:
+        amount_cents = request.amount_cents
+        order_desc = f"RealTalk充值{amount_cents / 100:.0f}元"
+        if amount_cents < 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="充值金额不能小于 1 元")
+
     # 三种到账方式（按优先级）：官方支付（商户号）→ 收款码人工确认 → 开发模式自动确认。
     wechat_official = bool(settings.wechat_mchid and settings.wechat_notify_url)
     alipay_official = bool(settings.alipay_app_id and settings.alipay_notify_url)
@@ -929,8 +943,8 @@ async def create_recharge(
         try:
             result = await wechat_pay.create_unified_order(
                 out_trade_no=str(uuid.uuid4()),
-                total_fee=request.amount_cents,
-                description=f"RealTalk充值{request.amount_cents / 100:.0f}元",
+                total_fee=amount_cents,
+                description=order_desc,
                 notify_url=settings.wechat_notify_url,
                 client_ip=client_ip,
             )
@@ -938,11 +952,12 @@ async def create_recharge(
             order = db.create_recharge_order(
                 user.id,
                 request.method,
-                request.amount_cents,
+                amount_cents,
                 payment_url=result.get("code_url"),
                 qr_code_text=result.get("code_url"),
                 receiver_name=settings.payment_receiver_name,
                 receiver_account=settings.wechat_receiver_account,
+                plan_id=plan_id,
             )
             return RechargeOrderResponse(
                 order_id=order.order_id,
@@ -964,19 +979,20 @@ async def create_recharge(
         try:
             result = await alipay.create_trade_precreate(
                 out_trade_no=str(uuid.uuid4()),
-                total_amount=request.amount_cents / 100.0,
-                subject=f"RealTalk充值{request.amount_cents / 100:.0f}元",
+                total_amount=amount_cents / 100.0,
+                subject=order_desc,
                 notify_url=settings.alipay_notify_url,
             )
             
             order = db.create_recharge_order(
                 user.id,
                 request.method,
-                request.amount_cents,
+                amount_cents,
                 payment_url=result.get("qr_code"),
                 qr_code_text=result.get("qr_code"),
                 receiver_name=settings.payment_receiver_name,
                 receiver_account=settings.alipay_receiver_account,
+                plan_id=plan_id,
             )
             return RechargeOrderResponse(
                 order_id=order.order_id,
@@ -999,13 +1015,15 @@ async def create_recharge(
     order = db.create_recharge_order(
         user.id,
         request.method,
-        request.amount_cents,
+        amount_cents,
         payment_url=method_settings["payment_url"],
         qr_code_text=method_settings["qr_code_text"],
         receiver_name=settings.payment_receiver_name,
         receiver_account=method_settings["receiver_account"],
+        plan_id=plan_id,
     )
-    order.message = "请使用" + method_settings["title"] + "向收款账号支付 " + money_text(request.amount_cents) + "，付款备注订单号。"
+    order.message = ("请使用" + method_settings["title"] + "支付 " + money_text(amount_cents)
+                     + ("（" + order_desc + "）" if plan_id else "") + "，付款备注订单号。")
     return order
 
 

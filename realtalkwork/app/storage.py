@@ -239,6 +239,7 @@ payment_orders = Table(
     Column("qr_code_text", Text),
     Column("receiver_name", Text),
     Column("receiver_account", Text),
+    Column("plan_id", Text),  # 非空表示这是「会员套餐」订单，支付成功后激活会员而非加余额
     Column("created_at", Text, nullable=False),
     Column("paid_at", Text),
 )
@@ -371,6 +372,7 @@ class Database:
             self._ensure_column(conn, "users", "admin_notes", "TEXT")
             self._ensure_column(conn, "users", "last_seen_at", "TEXT")
             self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
+            self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
                 "idx_users_login_identifier",
@@ -919,6 +921,7 @@ class Database:
         qr_code_text: str | None,
         receiver_name: str | None,
         receiver_account: str | None,
+        plan_id: str | None = None,
     ) -> RechargeOrderResponse:
         order_id = str(uuid.uuid4())
         now = _now()
@@ -934,6 +937,7 @@ class Database:
                     qr_code_text=qr_code_text,
                     receiver_name=receiver_name,
                     receiver_account=receiver_account,
+                    plan_id=plan_id,
                     created_at=_iso(now),
                 )
             )
@@ -946,9 +950,38 @@ class Database:
             qr_code_text=qr_code_text,
             receiver_name=receiver_name,
             receiver_account=receiver_account,
-            message="充值订单已创建",
+            message="订单已创建",
             created_at=now,
         )
+
+    def _grant_plan_in_conn(self, conn, user_id: str, plan: dict[str, Any], now: datetime) -> None:
+        """在已开启的事务里激活/续费会员（不扣余额，用于支付成功后）。"""
+        tier = str(plan["tier"])
+        months = int(plan["months"])
+        row = conn.execute(select(users).where(users.c.id == user_id)).mappings().fetchone()
+        current_expiry = _parse_dt(row["plan_expires_at"]) if row and row.get("plan_expires_at") else None
+        same_tier_active = row and row["plan"] == tier and current_expiry is not None and current_expiry > now
+        base = current_expiry if same_tier_active else now
+        new_expiry = base + timedelta(days=30 * months)
+        conn.execute(
+            update(users).where(users.c.id == user_id)
+            .values(plan=tier, plan_expires_at=_iso(new_expiry))
+        )
+        balance_after = int(conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one() or 0)
+        conn.execute(
+            insert(billing_ledger).values(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                type="subscription",
+                title=f"开通{plan.get('title', tier)}（{months} 个月）",
+                amount_cents=-int(plan["price_cents"]),
+                balance_after_cents=balance_after,
+                created_at=_iso(now),
+            )
+        )
+
+    def _plan_by_id(self, plan_id: str) -> dict[str, Any] | None:
+        return next((p for p in self.get_plan_catalog() if p.get("id") == plan_id), None)
 
     def mark_recharge_paid(self, user_id: str, order_id: str) -> tuple[RechargeOrderResponse, UserOut]:
         now = _now()
@@ -976,26 +1009,31 @@ class Database:
                 .values(status="paid", paid_at=_iso(now))
             )
             if result.rowcount:
-                amount_cents = int(order["amount_cents"])
-                conn.execute(
-                    update(users)
-                    .where(users.c.id == user_id)
-                    .values(balance_cents=users.c.balance_cents + amount_cents)
-                )
-                balance_after = int(
-                    conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one()
-                )
-                conn.execute(
-                    insert(billing_ledger).values(
-                        id=str(uuid.uuid4()),
-                        user_id=user_id,
-                        type="recharge",
-                        title=f"{_payment_method_title(order['method'])}充值",
-                        amount_cents=amount_cents,
-                        balance_after_cents=balance_after,
-                        created_at=_iso(now),
+                plan = self._plan_by_id(order["plan_id"]) if order.get("plan_id") else None
+                if plan is not None:
+                    # 会员套餐订单：激活会员，不加余额
+                    self._grant_plan_in_conn(conn, user_id, plan, now)
+                else:
+                    amount_cents = int(order["amount_cents"])
+                    conn.execute(
+                        update(users)
+                        .where(users.c.id == user_id)
+                        .values(balance_cents=users.c.balance_cents + amount_cents)
                     )
-                )
+                    balance_after = int(
+                        conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one()
+                    )
+                    conn.execute(
+                        insert(billing_ledger).values(
+                            id=str(uuid.uuid4()),
+                            user_id=user_id,
+                            type="recharge",
+                            title=f"{_payment_method_title(order['method'])}充值",
+                            amount_cents=amount_cents,
+                            balance_after_cents=balance_after,
+                            created_at=_iso(now),
+                        )
+                    )
 
             order = (
                 conn.execute(
@@ -1010,7 +1048,7 @@ class Database:
         user = self.get_user(user_id)
         if user is None:
             raise ValueError("user not found")
-        return _payment_order_from_row(order, "充值成功"), user
+        return _payment_order_from_row(order, "支付成功"), user
 
     def mark_recharge_paid_by_order_id(self, order_id: str, paid_amount_cents: int) -> tuple[RechargeOrderResponse, UserOut]:
         """Mark a recharge order as paid using only the order_id. Used by payment webhooks."""
@@ -1041,25 +1079,29 @@ class Database:
                 .values(status="paid", paid_at=_iso(now))
             )
             if result.rowcount:
-                conn.execute(
-                    update(users)
-                    .where(users.c.id == order["user_id"])
-                    .values(balance_cents=users.c.balance_cents + amount_cents)
-                )
-                balance_after = int(
-                    conn.execute(select(users.c.balance_cents).where(users.c.id == order["user_id"])).scalar_one()
-                )
-                conn.execute(
-                    insert(billing_ledger).values(
-                        id=str(uuid.uuid4()),
-                        user_id=order["user_id"],
-                        type="recharge",
-                        title=f"{_payment_method_title(order['method'])}充值",
-                        amount_cents=amount_cents,
-                        balance_after_cents=balance_after,
-                        created_at=_iso(now),
+                plan = self._plan_by_id(order["plan_id"]) if order.get("plan_id") else None
+                if plan is not None:
+                    self._grant_plan_in_conn(conn, order["user_id"], plan, now)
+                else:
+                    conn.execute(
+                        update(users)
+                        .where(users.c.id == order["user_id"])
+                        .values(balance_cents=users.c.balance_cents + amount_cents)
                     )
-                )
+                    balance_after = int(
+                        conn.execute(select(users.c.balance_cents).where(users.c.id == order["user_id"])).scalar_one()
+                    )
+                    conn.execute(
+                        insert(billing_ledger).values(
+                            id=str(uuid.uuid4()),
+                            user_id=order["user_id"],
+                            type="recharge",
+                            title=f"{_payment_method_title(order['method'])}充值",
+                            amount_cents=amount_cents,
+                            balance_after_cents=balance_after,
+                            created_at=_iso(now),
+                        )
+                    )
 
             order = (
                 conn.execute(

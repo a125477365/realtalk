@@ -13,12 +13,9 @@ struct AccountPanelView: View {
     @EnvironmentObject private var auth: AuthStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var amountCents = 3000
     @State private var method = "wechat"
     @State private var showingSettings = false
     @State private var showingUpload = false
-
-    private let amounts = [1000, 3000, 5000, 10000]
 
     var body: some View {
         NavigationStack {
@@ -26,7 +23,7 @@ struct AccountPanelView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     memberCard
                     plans
-                    recharge
+                    if model.rechargeOrder != nil { orderPanel }
                     uploadEntry
                     ledger
                     StatusBanner(text: model.statusMessage)
@@ -134,6 +131,12 @@ struct AccountPanelView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Picker("支付方式", selection: $method) {
+                Text("微信支付").tag("wechat")
+                Text("支付宝").tag("alipay")
+            }
+            .pickerStyle(.segmented)
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(model.planCatalog) { plan in
@@ -147,7 +150,7 @@ struct AccountPanelView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             Button {
-                                Task { await model.subscribe(planId: plan.id) }
+                                Task { await model.subscribe(planId: plan.id, method: method) }
                             } label: {
                                 Text("开通")
                                     .font(.caption.weight(.semibold))
@@ -169,70 +172,42 @@ struct AccountPanelView: View {
         }
     }
 
-    // MARK: 充值
+    // MARK: 待支付订单（开通会员后出现）
 
-    private var recharge: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("充值")
-                .font(.headline)
-
-            Picker("支付方式", selection: $method) {
-                Text("微信").tag("wechat")
-                Text("支付宝").tag("alipay")
-            }
-            .pickerStyle(.segmented)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(amounts, id: \.self) { amount in
-                    Button {
-                        amountCents = amount
-                    } label: {
-                        Text(money(amount))
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(amount == amountCents ? RTTheme.accent : .gray)
+    @ViewBuilder
+    private var orderPanel: some View {
+        if let order = model.rechargeOrder {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("待支付")
+                    .font(.headline)
+                Text(order.message)
+                    .font(.subheadline)
+                if let url = order.qrCodeUrl, let u = URL(string: url) {
+                    AsyncImage(url: u) { img in img.resizable().scaledToFit() } placeholder: { ProgressView() }
+                        .frame(width: 180, height: 180)
+                        .frame(maxWidth: .infinity)
                 }
-            }
-
-            Button {
-                Task { await model.createRecharge(amountCents: amountCents, method: method) }
-            } label: {
-                Label("生成付款单", systemImage: "creditcard")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(RTTheme.accent)
-
-            if let order = model.rechargeOrder {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(order.message)
-                        .font(.subheadline)
-                    Text("订单号：\(order.orderId)")
-                        .font(.caption.monospaced())
+                Text("订单号：\(order.orderId)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                if let account = order.receiverAccount, account.isEmpty == false {
+                    Text("收款账号：\(account)")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let account = order.receiverAccount, account.isEmpty == false {
-                        Text("收款账号：\(account)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        Task { await model.confirmRecharge() }
-                    } label: {
-                        Text("我已付款")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
                 }
-                .padding(12)
-                .background(RTTheme.background, in: RoundedRectangle(cornerRadius: 12))
+                Button {
+                    Task { await model.confirmRecharge() }
+                } label: {
+                    Text("我已完成支付")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(RTTheme.accent)
             }
+            .padding(16)
+            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
         }
-        .padding(16)
-        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
     }
 
     // MARK: 上传录音入口

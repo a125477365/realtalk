@@ -30,9 +30,7 @@ struct MainChatView: View {
 
                 VStack(spacing: 0) {
                     topBar
-                    if model.todayScenarios.isEmpty == false {
-                        scenarioStrip
-                    }
+                    scenarioStrip
                     messages
                     composer
                 }
@@ -135,34 +133,61 @@ struct MainChatView: View {
             }
             .padding(.horizontal, 16)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(model.todayScenarios) { summary in
-                        Button {
-                            roleDialogScenario = summary
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(summary.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(RTTheme.textPrimary)
-                                    .lineLimit(1)
-                                Text(summary.summary)
-                                    .font(.caption)
-                                    .foregroundStyle(RTTheme.textSecondary)
-                                    .lineLimit(2)
-                                Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
-                                    .font(.caption2)
-                                    .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
-                            }
-                            .padding(12)
-                            .frame(width: 200, alignment: .leading)
-                            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+            if model.todayScenarios.isEmpty {
+                // 空态：引导用户先采集真实对话或上传录音（场景只能来自真实对话）
+                Button {
+                    Task { await model.sendMainChatMessage(speech.isRecording ? "停止录音" : "开始录音") }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform.badge.plus")
+                            .foregroundStyle(RTTheme.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(model.isLoadingScenarios ? "正在加载今日场景…" : "今天还没有场景")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(RTTheme.textPrimary)
+                            Text("点这里采集今天的真实对话，自动生成练习场景")
+                                .font(.caption)
+                                .foregroundStyle(RTTheme.textSecondary)
                         }
-                        .buttonStyle(.plain)
+                        Spacer()
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
+                .buttonStyle(.plain)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(model.todayScenarios) { summary in
+                            Button {
+                                roleDialogScenario = summary
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(summary.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(RTTheme.textPrimary)
+                                        .lineLimit(1)
+                                    Text(summary.summary)
+                                        .font(.caption)
+                                        .foregroundStyle(RTTheme.textSecondary)
+                                        .lineLimit(2)
+                                    Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
+                                        .font(.caption2)
+                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                                }
+                                .padding(12)
+                                .frame(width: 200, alignment: .leading)
+                                .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
             }
         }
         .padding(.bottom, 8)

@@ -11,8 +11,6 @@ var state = {
   tab: "overview",
   authTab: "login",
   plans: [],
-  rechargeAmount: 3000,
-  rechargeMethod: "wechat",
   order: null,
   scenes: [],
   jobs: [],
@@ -121,7 +119,6 @@ function render() {
     renderNav(),
     state.tab === "overview" ? renderOverview() : "",
     state.tab === "plans" ? renderPlans() : "",
-    state.tab === "recharge" ? renderRecharge() : "",
     state.tab === "scenes" ? renderScenes() : "",
     state.tab === "upload" ? renderUpload() : "",
     "</div>",
@@ -165,7 +162,6 @@ function renderNav() {
     "  <nav>",
     item("overview", "账户概览"),
     item("plans", "会员套餐"),
-    item("recharge", "充值"),
     item("scenes", "我的场景"),
     item("upload", "上传录音"),
     "  </nav>",
@@ -247,37 +243,15 @@ function renderPlans() {
       "</div>",
     ].join("");
   }).join("");
-  return [
-    '<div class="card"><h3>会员套餐 <span class="sub">从余额中扣费开通；会员每日有 token 用量限额，超出后当天暂停 AI 功能</span></h3>',
-    '<div class="plan-grid">' + cards + "</div></div>",
-  ].join("");
-}
-
-function subscribe(planId, title, price) {
-  if (!confirm("确认花费 " + yuan(price) + " 开通「" + title + "」？将从账户余额中扣除。")) return;
-  api("/billing/subscribe", { method: "POST", body: { plan_id: planId } })
-    .then(function (d) {
-      state.user = d.user; state.usage = d.usage; state.ledger = d.ledger || [];
-      toast("开通成功！", "success");
-      go("overview");
-    })
-    .catch(function (e) { toast(e.message, "error"); });
-}
-
-/* ---------- 充值 ---------- */
-function renderRecharge() {
-  var amounts = [1000, 3000, 5000, 10000, 20000, 50000];
+  var method = state.payMethod || "wechat";
   var order = state.order;
   return [
-    '<div class="card"><h3>账户充值 <span class="sub">余额用于开通会员套餐</span></h3>',
-    '<div class="amount-grid">' + amounts.map(function (a) {
-      return '<button class="' + (state.rechargeAmount === a ? "sel" : "") + '" onclick="setAmount(' + a + ')">' + yuan(a) + "</button>";
-    }).join("") + "</div>",
+    '<div class="card"><h3>会员套餐 <span class="sub">直接付款开通；会员每日有 token 用量限额，超出后当天暂停 AI 功能</span></h3>',
     '<div class="pay-methods">',
-    '  <button class="' + (state.rechargeMethod === "wechat" ? "sel" : "") + '" onclick="setMethod(\'wechat\')">💚 微信支付</button>',
-    '  <button class="' + (state.rechargeMethod === "alipay" ? "sel" : "") + '" onclick="setMethod(\'alipay\')">💙 支付宝</button>',
+    '  <button class="' + (method === "wechat" ? "sel" : "") + '" onclick="setMethod(\'wechat\')">💚 微信支付</button>',
+    '  <button class="' + (method === "alipay" ? "sel" : "") + '" onclick="setMethod(\'alipay\')">💙 支付宝</button>',
     "</div>",
-    '<button class="btn btn-primary" onclick="createOrder()">生成付款单</button>',
+    '<div class="plan-grid">' + cards + "</div>",
     order ? [
       '<div class="order-panel">',
       "  <div><b>" + esc(order.message) + "</b></div>",
@@ -294,11 +268,11 @@ function renderRecharge() {
   ].join("");
 }
 
-function setAmount(a) { state.rechargeAmount = a; render(); }
-function setMethod(m) { state.rechargeMethod = m; render(); }
+function setMethod(m) { state.payMethod = m; render(); }
 
-function createOrder() {
-  api("/billing/recharge", { method: "POST", body: { amount_cents: state.rechargeAmount, method: state.rechargeMethod } })
+function subscribe(planId, title, price) {
+  // 直接生成套餐支付订单，支付成功后激活会员
+  api("/billing/recharge", { method: "POST", body: { plan_id: planId, method: state.payMethod || "wechat" } })
     .then(function (d) { state.order = d; render(); })
     .catch(function (e) { toast(e.message, "error"); });
 }
@@ -308,7 +282,7 @@ function confirmOrder() {
   api("/billing/recharge/confirm", { method: "POST", body: { order_id: state.order.order_id } })
     .then(function (d) {
       state.user = d.user; state.usage = d.usage; state.ledger = d.ledger || []; state.order = null;
-      toast("充值已到账", "success"); render();
+      toast("支付成功，会员已开通！", "success"); go("overview");
     })
     .catch(function (e) { toast(e.message, "error"); });
 }
@@ -500,9 +474,7 @@ async function uploadAudio(file) {
 window.go = go;
 window.loginWithWeChat = loginWithWeChat;
 window.doLogout = doLogout;
-window.setAmount = setAmount;
 window.setMethod = setMethod;
-window.createOrder = createOrder;
 window.confirmOrder = confirmOrder;
 window.subscribe = subscribe;
 window.openScene = openScene;
