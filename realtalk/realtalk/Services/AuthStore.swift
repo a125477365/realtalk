@@ -58,6 +58,12 @@ final class AuthStore: ObservableObject {
 
     func loginWithWeChat() async {
         await authenticate {
+            if await WeChatAuthManager.shared.isAvailable {
+                // 真实微信一键登录：拉起微信授权拿 code，交后端用移动应用凭据换 openid
+                let code = try await WeChatAuthManager.shared.authorize()
+                return try await api.wechatLogin(code: code, nickname: nil, avatarUrl: nil)
+            }
+            // 未集成 SDK 或未配置 AppID：开发模拟登录
             let key = "RealTalk.devWeChatCode"
             let deviceSeed: String
             if let saved = UserDefaults.standard.string(forKey: key) {

@@ -21,6 +21,13 @@ struct realtalkApp: App {
                 .environmentObject(model.subscription)
                 .environmentObject(model.practiceSpeech)
                 .environmentObject(model.voice)
+                .onAppear { WeChatAuthManager.shared.registerIfNeeded() }
+                .onOpenURL { url in
+                    _ = WeChatAuthManager.shared.handleOpen(url: url)
+                }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    _ = WeChatAuthManager.shared.handleUniversalLink(activity)
+                }
         }
     }
 }

@@ -98,7 +98,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun loginWithWeChat() {
         viewModelScope.launch {
             isWorking.value = true
-            runCatching { api.wechatLogin(auth.devWeChatCode, "微信用户") }
+            runCatching {
+                val ctx = getApplication<Application>()
+                if (com.example.realtalkad.wechat.WeChatAuth.isAvailable(ctx)) {
+                    // 真实微信一键登录：拉起微信授权拿 code，交后端用移动应用凭据换 openid
+                    statusMessage.value = "正在打开微信…"
+                    val code = com.example.realtalkad.wechat.WeChatAuth.authorize(ctx)
+                    api.wechatLogin(code, null)
+                } else {
+                    // 未配置 AppID 或未装微信：开发模拟登录
+                    api.wechatLogin(auth.devWeChatCode, "微信用户")
+                }
+            }
                 .onSuccess {
                     auth.token = it.token
                     user.value = it.user
