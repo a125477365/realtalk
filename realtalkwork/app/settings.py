@@ -66,6 +66,8 @@ class Settings:
     asr_model: str = os.getenv("ASR_MODEL", "whisper-1")
     # 本地转写命令模板：{input}=音频路径，{dir}=可写目录；命令需把文本打到 stdout 或在 {dir} 生成同名 .txt
     asr_local_command: str | None = os.getenv("ASR_LOCAL_COMMAND")
+    # 本地 whisper 模型大小（faster-whisper：tiny/base/small/medium/large-v3）
+    asr_local_model: str = os.getenv("ASR_LOCAL_MODEL", "small")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
 
     # 音频分布式：入口节点把上传文件转发给某个 worker 节点处理（共享同一数据库）

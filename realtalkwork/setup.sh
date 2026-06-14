@@ -148,6 +148,40 @@ if $DEPLOY_BACKEND; then
   ask "worker 进程数（建议=CPU核数）" "4"
   ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
 
+  # ---- 语音转写 ASR（高级会员上传录音转文字）----
+  echo
+  note "高级会员上传录音的转文字方式："
+  echo "    1) 云端语音模型（OpenAI 兼容 API，需密钥，质量稳定）"
+  echo "    2) 服务器本地 whisper（自动安装，免密钥，占用本机算力）"
+  echo "    3) 暂不配置（之后在管理台或重跑本脚本再设）"
+  ask "选择 ASR 方式" "3"
+  ASR_CHOICE="$REPLY_VALUE"
+  WITH_LOCAL_ASR=false
+  ASR_MODE_VAL="cloud"; ASR_BASE=""; ASR_KEY=""; ASR_MODEL_VAL="whisper-1"
+  ASR_LOCAL_CMD=""; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="false"
+  if [ "$ASR_CHOICE" = "1" ]; then
+    ask "ASR Base URL" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
+    ask_secret "ASR API Key"; ASR_KEY="$REPLY_VALUE"
+    ask "ASR 模型名称" "whisper-1"; ASR_MODEL_VAL="$REPLY_VALUE"
+  elif [ "$ASR_CHOICE" = "2" ]; then
+    note "将自动在后端镜像中安装 faster-whisper（CPU），首次转写会下载模型到 ./data/whisper-models。"
+    note "模型越大越准也越慢：tiny/base/small/medium（小机器建议 small）。"
+    ask "本地 whisper 模型大小" "small"; ASR_LOCAL_MODEL_VAL="$REPLY_VALUE"
+    WITH_LOCAL_ASR=true
+    ASR_MODE_VAL="local"
+    ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"
+  else
+    ASR_DEV="false"
+  fi
+  ENV_LINES+=(
+    "WITH_LOCAL_ASR=$WITH_LOCAL_ASR"
+    "WHISPER_MODEL_DIR=./data/whisper-models"
+    "ASR_MODE=$ASR_MODE_VAL"
+    "ASR_BASE_URL=$ASR_BASE" "ASR_API_KEY=$ASR_KEY" "ASR_MODEL=$ASR_MODEL_VAL"
+    "ASR_LOCAL_COMMAND=$ASR_LOCAL_CMD" "ASR_LOCAL_MODEL=$ASR_LOCAL_MODEL_VAL"
+    "ASR_DEV_MODE=$ASR_DEV"
+  )
+
   # ---- 音频转写处理节点（分布式可选）----
   note "高级会员上传的录音由谁转写：默认本机；也可把文件转发到其他 worker 节点处理。"
   ask "音频转写 worker 节点地址（逗号分隔，回车=本机处理）" ""
@@ -224,8 +258,6 @@ if $DEPLOY_BACKEND; then
     "UPLOAD_DATA_DIR=./data/uploads"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
-    "ASR_MODE=cloud"
-    "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_LOCAL_COMMAND=" "ASR_DEV_MODE=false"
     "# 邮箱注册默认关闭，仅微信认证"
     "EMAIL_AUTH_ENABLED=false"
     "EMAIL_DEV_MODE=true"

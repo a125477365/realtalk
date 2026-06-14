@@ -16,11 +16,16 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 RUN pip install python-multipart
 
+# 本地语音转写（faster-whisper，CPU int8）。仅当 setup.sh 选择「本地转写」时安装，
+# 避免云端 ASR 部署也背上这份依赖。
+ARG WITH_LOCAL_ASR=false
+RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3; fi
+
 COPY app ./app
 COPY docs ./docs
 COPY web-frontend ./web-frontend
 
-RUN mkdir -p /app/uploads && chown realtalk:realtalk /app/uploads
+RUN mkdir -p /app/uploads /app/models && chown -R realtalk:realtalk /app/uploads /app/models
 
 USER realtalk
 EXPOSE 8000

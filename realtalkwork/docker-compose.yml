@@ -29,7 +29,11 @@ services:
 
   api:
     profiles: ["backend"]
-    build: .
+    build:
+      context: .
+      args:
+        # 选了本地转写时 setup.sh 会把它设为 true，镜像里装 faster-whisper
+        WITH_LOCAL_ASR: ${WITH_LOCAL_ASR:-false}
     env_file:
       - .env
     environment:
@@ -41,6 +45,7 @@ services:
       - "${API_PORT:-8000}:8000"
     volumes:
       - ${UPLOAD_DATA_DIR:-./data/uploads}:/app/uploads
+      - ${WHISPER_MODEL_DIR:-./data/whisper-models}:/app/models
     # 不用 depends_on：内置库场景 postgres 同时启动，外部库场景 postgres 服务不存在。
     # API 若先于数据库就绪而退出，靠 restart 策略自动重连（postgres 有健康检查）。
     restart: unless-stopped

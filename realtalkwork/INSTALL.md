@@ -30,8 +30,11 @@ COMPOSE_PROFILES=admin,web API_UPSTREAM=http://<机器A>:8000 docker compose up 
 转发到固定 worker 处理，结果写入共享数据库，用户在任意节点都能看到生成的场景。worker
 机器同样用 `setup.sh` 部署后端、连同一个数据库即可。
 
-**语音转写方式**可在管理台「系统设置 → 语音转写」二选一：云端 OpenAI 兼容 API，或服务器
-本地命令行工具（如 whisper.cpp / faster-whisper，命令模板用 `{input}` 代表音频路径）。
+**语音转写方式**在 `setup.sh` 部署时选择：
+- 云端 OpenAI 兼容 API（之后可在管理台「系统设置 → 语音转写」改 base_url/key/model）；
+- 服务器本地 whisper：脚本自动在后端镜像安装 faster-whisper（CPU int8），选模型大小
+  （tiny/base/small/medium），首次转写自动下载模型到 `./data/whisper-models`（持久化）。
+  本地模式由部署控制，管理台只读展示，不需要也不能在线改命令。
 
 **上传支持断点续传**：Web 与 App 大文件分块上传，网络中断后自动从已传字节续传。
 

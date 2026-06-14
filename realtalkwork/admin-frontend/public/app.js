@@ -387,9 +387,14 @@ function fmtTokens(n) {
 }
 
 function loadOverviewCharts() {
+  var ids = ["chart-money", "chart-users", "chart-sessions", "chart-calls"];
+  function fail(msg) {
+    ids.forEach(function(id) { var el = getEl(id); if (el) el.innerHTML = emptyHTML(msg); });
+  }
   var days = parseInt((getEl("ts-days") || { value: "30" }).value) || 30;
   apiGet("/admin/api/stats/timeseries?days=" + days).then(function(r) {
-    if (!r || !r.ok) { return; }
+    if (!r) { fail("\u52a0\u8f7d\u5931\u8d25"); return; }
+    if (!r.ok) { handleApiError(r); fail("\u52a0\u8f7d\u5931\u8d25"); return; }
     r.json().then(function(d) {
       var items = d.items || [];
       var labels = items.map(function(it) { return it.date.slice(5); });
@@ -406,8 +411,8 @@ function loadOverviewCharts() {
       drawChart("chart-calls", labels, [
         { name: "AI \u8c03\u7528", color: "#ea580c", values: items.map(function(it) { return it.ai_calls; }) },
       ]);
-    });
-  });
+    }).catch(function() { fail("\u6570\u636e\u89e3\u6790\u5931\u8d25"); });
+  }).catch(function() { fail("\u7f51\u7edc\u9519\u8bef"); });
 }
 
 // \u8f7b\u91cf SVG \u6298\u7ebf\u56fe\uff08\u65e0\u5916\u90e8\u4f9d\u8d56\uff0c\u79bb\u7ebf\u53ef\u7528\uff09
@@ -869,33 +874,16 @@ function renderPlanQuotaCards() {
     "</div>",
     '<div class="card">',
     "  <h2>语音转写（ASR）<span class=\"subtitle\">高级会员上传录音转文字的方式</span></h2>",
-    '  <div class="form-group" style="max-width:320px">',
-    '    <label>转写方式</label>',
-    '    <select id="asr-mode" onchange="toggleAsrMode()">',
-    '      <option value="cloud">云端语音模型（OpenAI 兼容 API）</option>',
-    '      <option value="local">服务器本地工具（whisper 等命令行）</option>',
-    "    </select>",
-    "  </div>",
+    '  <div id="asr-mode-banner"></div>',
     '  <div id="asr-cloud-fields" class="form-grid">',
     '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="https://api.openai.com/v1" /></div>',
     '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label>',
     '      <input type="password" id="asr-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
     "  </div>",
-    '  <div id="asr-local-fields" style="display:none">',
-    '    <div class="form-group"><label>本地转写命令 <span class="hint">用 {input} 代表音频文件路径，命令需把识别文本打印到标准输出</span></label>',
-    '      <input type="text" id="asr-local-command" placeholder="whisper {input} --model small --language zh --output_format txt --output_dir {dir}" /></div>',
-    '    <div class="hint">示例：faster-whisper / whisper.cpp / openai-whisper CLI。服务器需自行安装对应工具与模型，并确保 API 容器内可执行。</div>',
-    "  </div>",
-    '  <button class="btn btn-primary" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
+    '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
     "</div>",
   ].join("");
-}
-
-function toggleAsrMode() {
-  var mode = (getEl("asr-mode") || { value: "cloud" }).value;
-  if (getEl("asr-cloud-fields")) getEl("asr-cloud-fields").style.display = mode === "cloud" ? "" : "none";
-  if (getEl("asr-local-fields")) getEl("asr-local-fields").style.display = mode === "local" ? "" : "none";
 }
 
 function loadPlanQuotaAsr() {
@@ -935,13 +923,27 @@ function loadPlanQuotaAsr() {
   apiGet("/admin/api/settings/asr").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
-      if (getEl("asr-mode")) getEl("asr-mode").value = d.mode || "cloud";
-      if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
-      if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
-      if (getEl("asr-local-command")) getEl("asr-local-command").value = d.local_command || "";
-      var ks = getEl("asr-key-status");
-      if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
-      toggleAsrMode();
+      var local = d.mode === "local";
+      var banner = getEl("asr-mode-banner");
+      var cloud = getEl("asr-cloud-fields");
+      var saveBtn = getEl("asr-save-btn");
+      if (local) {
+        // 本地转写由部署时（setup.sh）安装并配置，管理台只读展示
+        if (banner) banner.innerHTML =
+          '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
+          '当前为<b>服务器本地转写</b>模式，由部署脚本（setup.sh）自动安装 whisper 并配置，' +
+          '无需在此设置。如需改用云端模型，请在服务器重新运行 setup.sh 并选择云端方式。</div>';
+        if (cloud) cloud.style.display = "none";
+        if (saveBtn) saveBtn.style.display = "none";
+      } else {
+        if (banner) banner.innerHTML = "";
+        if (cloud) cloud.style.display = "";
+        if (saveBtn) saveBtn.style.display = "";
+        if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
+        if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
+        var ks = getEl("asr-key-status");
+        if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
+      }
     });
   });
 }
@@ -976,11 +978,11 @@ function saveQuota() {
 }
 
 function saveAsr() {
+  // 管理台只管理云端方式；本地方式由部署脚本配置
   var body = {
-    mode: (getEl("asr-mode") || { value: "cloud" }).value,
+    mode: "cloud",
     base_url: (getEl("asr-base-url") || { value: "" }).value.trim(),
     model: (getEl("asr-model") || { value: "" }).value.trim(),
-    local_command: (getEl("asr-local-command") || { value: "" }).value.trim(),
   };
   var key = (getEl("asr-api-key") || { value: "" }).value.trim();
   if (key) body.api_key = key;
@@ -1568,7 +1570,6 @@ window.openUserDetail = openUserDetail;
 window.openEditModal = openEditModal;
 window.closeEditModal = closeEditModal;
 window.submitEdit = submitEdit;
-window.toggleAsrMode = toggleAsrMode;
 window.toggleBan = toggleBan;
 window.loadAdminList = loadAdminList;
 window.resetAdminSearch = resetAdminSearch;

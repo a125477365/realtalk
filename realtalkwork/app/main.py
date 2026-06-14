@@ -498,16 +498,13 @@ def admin_set_asr(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    if request.mode is not None:
-        db.set_app_setting("asr_mode", request.mode if request.mode in ("cloud", "local") else "cloud")
+    # 转写方式（cloud/local）与本地命令由部署脚本控制，管理台只配置云端服务参数
     if request.base_url is not None:
         db.set_app_setting("asr_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
         db.set_app_setting("asr_api_key", request.api_key.strip())
     if request.model is not None:
         db.set_app_setting("asr_model", request.model.strip())
-    if request.local_command is not None:
-        db.set_app_setting("asr_local_command", request.local_command.strip())
     return admin_get_asr(admin)
 
 

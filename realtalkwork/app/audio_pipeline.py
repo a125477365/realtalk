@@ -27,15 +27,15 @@ _SEGMENT_SECONDS = 600
 
 
 def resolve_asr_config() -> dict[str, Any]:
-    overrides = db.get_app_settings_map(
-        ["asr_mode", "asr_base_url", "asr_api_key", "asr_model", "asr_local_command"]
-    )
+    # mode 与本地命令由部署（env / setup.sh）控制，管理台不可改；
+    # 云端服务的 base_url / api_key / model 允许管理台在线配置。
+    overrides = db.get_app_settings_map(["asr_base_url", "asr_api_key", "asr_model"])
     return {
-        "mode": overrides.get("asr_mode") or settings.asr_mode,
+        "mode": settings.asr_mode,
         "base_url": overrides.get("asr_base_url") or settings.asr_base_url,
         "api_key": overrides.get("asr_api_key") or settings.asr_api_key,
         "model": overrides.get("asr_model") or settings.asr_model,
-        "local_command": overrides.get("asr_local_command") or settings.asr_local_command,
+        "local_command": settings.asr_local_command,
         "dev_mode": settings.asr_dev_mode,
     }
 
