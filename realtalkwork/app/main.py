@@ -1702,35 +1702,44 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
     if not app_id or not app_secret:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信登录未配置")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        token_response = await client.get(
-            "https://api.weixin.qq.com/sns/oauth2/access_token",
-            params={
-                "appid": app_id,
-                "secret": app_secret,
-                "code": request.code,
-                "grant_type": "authorization_code",
-            },
-        )
-        token_response.raise_for_status()
-        token_payload = token_response.json()
-        if "errcode" in token_payload:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="微信授权失败")
-        access_token = token_payload["access_token"]
-        openid = token_payload["openid"]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_response = await client.get(
+                "https://api.weixin.qq.com/sns/oauth2/access_token",
+                params={
+                    "appid": app_id,
+                    "secret": app_secret,
+                    "code": request.code,
+                    "grant_type": "authorization_code",
+                },
+            )
+            token_response.raise_for_status()
+            token_payload = token_response.json()
+            if "errcode" in token_payload:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="微信授权失败")
+            access_token = token_payload["access_token"]
+            openid = token_payload["openid"]
 
-        user_response = await client.get(
-            "https://api.weixin.qq.com/sns/userinfo",
-            params={
-                "access_token": access_token,
-                "openid": openid,
-                "lang": "zh_CN",
-            },
-        )
-        user_response.raise_for_status()
-        user_payload = user_response.json()
-        if "errcode" in user_payload:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="微信用户信息获取失败")
+            user_response = await client.get(
+                "https://api.weixin.qq.com/sns/userinfo",
+                params={
+                    "access_token": access_token,
+                    "openid": openid,
+                    "lang": "zh_CN",
+                },
+            )
+            user_response.raise_for_status()
+            user_payload = user_response.json()
+            if "errcode" in user_payload:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="微信用户信息获取失败")
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        # 服务器连不上微信（无外网/DNS/被墙）等：返回清晰错误而非 500
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="无法连接微信服务器，请检查服务器外网访问；如未接入正式微信，请将 WECHAT_AUTH_DEV_MODE 设为 true",
+        ) from exc
 
     return {
         "openid": openid,
