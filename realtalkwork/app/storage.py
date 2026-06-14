@@ -1632,43 +1632,48 @@ class Database:
     def admin_stats_timeseries(self, days: int = 30) -> dict[str, Any]:
         start = (_now() - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
         start_iso = _iso(start)
-        day_of = lambda column: func.substr(column, 1, 10)  # noqa: E731 — ISO 时间串前 10 位即日期
-        with self.engine.connect() as conn:
-            new_users = dict(
-                conn.execute(
-                    select(day_of(users.c.created_at), func.count())
-                    .where(users.c.created_at >= start_iso)
-                    .group_by(day_of(users.c.created_at))
-                ).fetchall()
-            )
-            revenue = dict(
-                conn.execute(
-                    select(day_of(payment_orders.c.paid_at), func.coalesce(func.sum(payment_orders.c.amount_cents), 0))
+        # 在 Python 里按天分桶，避免依赖任何数据库方言的日期函数（跨 SQLite/PostgreSQL 一致）
+        new_users: dict[str, int] = {}
+        revenue: dict[str, int] = {}
+        ai_cost: dict[str, float] = {}
+        ai_calls: dict[str, int] = {}
+        sessions_created: dict[str, int] = {}
+
+        def bucket_count(target: dict, value: str | None) -> None:
+            if not value:
+                return
+            day = str(value)[:10]
+            target[day] = target.get(day, 0) + 1
+
+        def bucket_sum(target: dict, value: str | None, amount) -> None:
+            if not value:
+                return
+            day = str(value)[:10]
+            target[day] = target.get(day, 0) + (amount or 0)
+
+        try:
+            with self.engine.connect() as conn:
+                for (created_at,) in conn.execute(
+                    select(users.c.created_at).where(users.c.created_at >= start_iso)
+                ):
+                    bucket_count(new_users, created_at)
+                for paid_at, amount in conn.execute(
+                    select(payment_orders.c.paid_at, payment_orders.c.amount_cents)
                     .where(payment_orders.c.status == "paid", payment_orders.c.paid_at >= start_iso)
-                    .group_by(day_of(payment_orders.c.paid_at))
-                ).fetchall()
-            )
-            ai_cost = dict(
-                conn.execute(
-                    select(day_of(ai_usage.c.created_at), func.coalesce(func.sum(ai_usage.c.cost_cents), 0))
-                    .where(ai_usage.c.created_at >= start_iso)
-                    .group_by(day_of(ai_usage.c.created_at))
-                ).fetchall()
-            )
-            ai_calls = dict(
-                conn.execute(
-                    select(day_of(ai_usage.c.created_at), func.count())
-                    .where(ai_usage.c.created_at >= start_iso)
-                    .group_by(day_of(ai_usage.c.created_at))
-                ).fetchall()
-            )
-            sessions_created = dict(
-                conn.execute(
-                    select(day_of(roleplay_sessions.c.created_at), func.count())
-                    .where(roleplay_sessions.c.created_at >= start_iso)
-                    .group_by(day_of(roleplay_sessions.c.created_at))
-                ).fetchall()
-            )
+                ):
+                    bucket_sum(revenue, paid_at, int(amount or 0))
+                for created_at, cost in conn.execute(
+                    select(ai_usage.c.created_at, ai_usage.c.cost_cents).where(ai_usage.c.created_at >= start_iso)
+                ):
+                    bucket_count(ai_calls, created_at)
+                    bucket_sum(ai_cost, created_at, float(cost or 0))
+                for (created_at,) in conn.execute(
+                    select(roleplay_sessions.c.created_at).where(roleplay_sessions.c.created_at >= start_iso)
+                ):
+                    bucket_count(sessions_created, created_at)
+        except Exception as exc:  # noqa: BLE001 — 仪表盘不能因统计异常而 500，返回零序列并记日志
+            print(f"[stats] admin_stats_timeseries 失败：{exc}", flush=True)
+
         items = []
         for offset in range(days):
             day = (start + timedelta(days=offset)).date().isoformat()
