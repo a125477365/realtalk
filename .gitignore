@@ -27,3 +27,4 @@ DerivedData/
 # Build outputs
 build/
 dist/
+.smbdelete*
