@@ -55,13 +55,14 @@ import com.example.realtalkad.data.ScenarioSummary
 
 /* Claude 风格主题色（与 iOS RTTheme 对应） */
 object RT {
-    val Background = Color(0xFFF6F4EF)
+    val Background = Color(0xFFF7F8FB)
     val Surface = Color.White
-    val UserBubble = Color(0xFFEBE8E0)
-    val Accent = Color(0xFFC76B42)
-    val TextPrimary = Color(0xFF211F1C)
-    val TextSecondary = Color(0xFF73706A)
-    val Hairline = Color(0x14000000)
+    val UserBubble = Color(0xFFEEF0FB)
+    val Accent = Color(0xFF4F46E5)
+    val Success = Color(0xFF16A34A)
+    val TextPrimary = Color(0xFF16181D)
+    val TextSecondary = Color(0xFF5B616E)
+    val Hairline = Color(0x12000000)
 }
 
 @Composable

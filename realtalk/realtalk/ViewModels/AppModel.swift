@@ -23,7 +23,7 @@ final class AppModel: ObservableObject {
     @Published var chatMessages: [ChatMessage] = [
         ChatMessage(
             sender: .assistant,
-            text: "今天想还原哪段真实对话？比如：我想练习今天中午订餐时与服务员的对话流程，你是服务员，我还是我。"
+            text: "今天想练哪段真实对话？选上方场景，或点右上角采集。"
         )
     ]
     @Published var billingAccount: BillingAccountResponse?
@@ -115,7 +115,7 @@ final class AppModel: ObservableObject {
             let response = try await api.todayScenarios(token: token)
             todayScenarios = response.items
             if response.generated {
-                appendChat(.assistant, "我已根据你今天的真实对话生成了新的英语场景，点上方卡片就能开练。")
+                appendChat(.assistant, "今日场景已生成，点卡片开练。")
             }
         } catch {
             if statusMessage.isEmpty {
@@ -169,7 +169,7 @@ final class AppModel: ObservableObject {
             if speech.isRecording == false {
                 await speech.start()
             }
-            appendChat(.assistant, "我已开始采集真实世界对话。之后你可以说“练习今天中午订餐”，我会只用已转写的真实内容来还原场景。")
+            appendChat(.assistant, "开始采集，请开口说话。")
             return
         }
 
@@ -179,13 +179,13 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 400_000_000)
             let uploaded = await uploadPending()
             if uploaded > 0 {
-                appendChat(.assistant, "已采集并上传 \(uploaded) 句真实对话，正在生成今日场景…")
+                appendChat(.assistant, "已采集 \(uploaded) 句，生成场景中…")
                 await loadTodayScenarios()
             } else if uploaded == 0 {
                 let hint = speech.lastError.map { "（\($0)）" } ?? ""
-                appendChat(.assistant, "这次没有采集到语音内容\(hint)。模拟器麦克风常不可用，建议用真机；现在你也可以直接把今天说过的话发给我，例如：录入对话 老板来一份牛肉面；不要香菜。")
+                appendChat(.assistant, "没采到声音\(hint)。可改用真机，或发「录入对话 …」。")
             } else {
-                appendChat(.assistant, "采集到的内容上传失败，请检查网络后重试。")
+                appendChat(.assistant, "上传失败，请重试。")
             }
             return
         }
@@ -197,13 +197,13 @@ final class AppModel: ObservableObject {
 
         if prompt.contains("显示台词") || prompt.contains("显示字幕") {
             showDialogueContent = true
-            appendChat(.assistant, "已显示台词。练习时会看到中文提示和英文参考。")
+            appendChat(.assistant, "已显示字幕。")
             return
         }
 
         if prompt.contains("隐藏台词") || prompt.contains("隐藏字幕") {
             showDialogueContent = false
-            appendChat(.assistant, "已隐藏完整台词；轮到你说时仍会保留中文提示。")
+            appendChat(.assistant, "已隐藏字幕。")
             return
         }
 
@@ -237,7 +237,7 @@ final class AppModel: ObservableObject {
                 selectedRoleID = scenario?.roles.first(where: { $0.id == "self" && $0.isUserCandidate })?.id
                     ?? scenario?.roles.first(where: { $0.isUserCandidate })?.id
                     ?? ""
-                appendChat(.assistant, "我会按你选的真实时间段还原场景。我来扮演对方，你说自己的英文；如果卡住，直接说“提示”。")
+                appendChat(.assistant, "场景已就绪，开始对练吧。")
                 await startRoleplay()
             }
             return
@@ -251,7 +251,7 @@ final class AppModel: ObservableObject {
         await askBackendAI(
             prompt,
             fallback: { [weak self] in
-                self?.appendChat(.assistant, "可以直接告诉我你想练哪段真实对话，也可以说“开始录音”先采集素材。")
+                self?.appendChat(.assistant, "想练哪段？选上方场景，或点右上角采集。")
             }
         )
     }
@@ -289,7 +289,7 @@ final class AppModel: ObservableObject {
             .replacingOccurrences(of: "录入", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "：: \n"))
         guard body.isEmpty == false else {
-            appendChat(.assistant, "把今天真实说过的话发给我即可，例如：录入对话 老板来一份牛肉面；不要香菜；加一瓶可乐。")
+            appendChat(.assistant, "发：录入对话 + 今天说过的话。")
             return
         }
         let parts = body
@@ -303,10 +303,10 @@ final class AppModel: ObservableObject {
         }
         let uploaded = await uploadPending()
         if uploaded > 0 {
-            appendChat(.assistant, "已录入 \(uploaded) 句真实对话，正在生成今日场景…")
+            appendChat(.assistant, "已录入 \(uploaded) 句，生成场景中…")
             await loadTodayScenarios()
         } else if uploaded == 0 {
-            appendChat(.assistant, "这些内容没能录入（可能被去重或过滤）。换一段今天真实说过的话再试试。")
+            appendChat(.assistant, "没能录入，换一段再试。")
         }
     }
 
@@ -491,7 +491,7 @@ final class AppModel: ObservableObject {
         if roleplay == nil {
             guard scenario != nil else {
                 // 引导放进聊天流（appendChat 会去重连续相同消息，避免反复点击堆叠）
-                appendChat(.assistant, "先选一个练习场景：点上方「今日场景」卡片，或点右上角按钮采集今天的真实对话。")
+                appendChat(.assistant, "先选个场景：点上方卡片，或右上角采集。")
                 return
             }
             await startRoleplay()
@@ -800,7 +800,7 @@ final class AppModel: ObservableObject {
             return
         }
         practiceSpeech.stop(emit: false)
-        appendChat(.assistant, "别紧张，我来帮你。\n中文提示：\(next.sourceText)\n可以这样说：\(next.english)")
+        appendChat(.assistant, "提示：\(next.sourceText)\n试着说：\(next.english)")
         voice.speak("Take your time. Try saying: \(next.english)") { [weak self] in
             Task { @MainActor in
                 await self?.listenForNextRoleplayTurn()

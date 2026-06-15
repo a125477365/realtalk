@@ -77,7 +77,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
         voice.onStateChange = { isSpeaking.value = it }
 
-        appendChat(ChatMessage.Sender.ASSISTANT, "今天想还原哪段真实对话？点上方「今日场景」卡片，或先点右上角开始采集。")
+        appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或点右上角采集。")
         bootstrap()
     }
 
@@ -136,7 +136,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             uploadPendingAndRefresh()
         } else {
             capture.start()
-            appendChat(ChatMessage.Sender.ASSISTANT, "我已开始采集真实对话（仅上传转写文字，不上传音频）。")
+            appendChat(ChatMessage.Sender.ASSISTANT, "开始采集，请开口说话。")
         }
     }
 
@@ -148,15 +148,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val copy = pendingTranscripts.toList(); pendingTranscripts.clear(); copy
             }
             if (items.isEmpty()) {
-                appendChat(ChatMessage.Sender.ASSISTANT, "这次没有采集到语音内容。模拟器麦克风常不可用，建议用真机；现在你也可以直接发「录入对话 老板来一份牛肉面；不要香菜」。")
+                appendChat(ChatMessage.Sender.ASSISTANT, "没采到声音。可改用真机，或发「录入对话 …」。")
                 return@launch
             }
             runCatching { api.uploadTranscripts(items, token) }
                 .onSuccess {
-                    appendChat(ChatMessage.Sender.ASSISTANT, "已采集并上传 ${it.uploaded} 句真实对话，正在生成今日场景…")
+                    appendChat(ChatMessage.Sender.ASSISTANT, "已采集 ${it.uploaded} 句，生成场景中…")
                     loadTodayScenarios()
                 }
-                .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "上传失败，请检查网络后重试。"); statusMessage.value = it.message ?: "" }
+                .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "上传失败，请重试。"); statusMessage.value = it.message ?: "" }
         }
     }
 
@@ -166,7 +166,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val token = auth.token ?: return@launch
             val body = raw.removePrefix("录入对话").removePrefix("录入").trim(' ', '：', ':', '\n')
             if (body.isEmpty()) {
-                appendChat(ChatMessage.Sender.ASSISTANT, "把今天真实说过的话发给我，例如：录入对话 老板来一份牛肉面；不要香菜。")
+                appendChat(ChatMessage.Sender.ASSISTANT, "发：录入对话 + 今天说过的话。")
                 return@launch
             }
             val sentences = body.split('。', '！', '？', '!', '?', '；', ';', '\n')
@@ -178,7 +178,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             runCatching { api.uploadTranscripts(items, token) }
                 .onSuccess {
-                    appendChat(ChatMessage.Sender.ASSISTANT, "已录入 ${it.uploaded} 句真实对话，正在生成今日场景…")
+                    appendChat(ChatMessage.Sender.ASSISTANT, "已录入 ${it.uploaded} 句，生成场景中…")
                     loadTodayScenarios()
                 }
                 .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "录入失败：${it.message ?: ""}") }
@@ -193,7 +193,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { api.todayScenarios(token) }
                 .onSuccess {
                     todayScenarios.value = it.items
-                    if (it.generated) appendChat(ChatMessage.Sender.ASSISTANT, "我根据你今天的真实对话生成了新的场景，点卡片开练。")
+                    if (it.generated) appendChat(ChatMessage.Sender.ASSISTANT, "今日场景已生成，点卡片开练。")
                 }
                 .onFailure { statusMessage.value = it.message ?: "" }
         }
@@ -228,7 +228,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             appendChat(
                 ChatMessage.Sender.ASSISTANT,
-                "先选一个练习场景：点上方「今日场景」卡片，或点右上角按钮采集今天的真实对话。",
+                "先选个场景：点上方卡片，或右上角采集。",
             )
         }
     }
@@ -340,7 +340,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val next = roleplay?.nextLine ?: return@launch
             if (partialSubtitle.value.isNotBlank()) { scheduleAnswerTimeout(); return@launch }
             practice.stop()
-            appendChat(ChatMessage.Sender.ASSISTANT, "别紧张，我来帮你。\n中文提示：${next.sourceText}\n可以这样说：${next.english}")
+            appendChat(ChatMessage.Sender.ASSISTANT, "提示：${next.sourceText}\n试着说：${next.english}")
             voice.speak("Take your time. Try saying: ${next.english}") { listenForNextTurn() }
         }
     }
