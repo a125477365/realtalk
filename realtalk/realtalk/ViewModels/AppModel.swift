@@ -175,9 +175,23 @@ final class AppModel: ObservableObject {
 
         if prompt.contains("停止录音") || prompt.contains("停止采集") {
             speech.stop(savePartial: true)
-            await uploadPending()
-            appendChat(.assistant, "已停止采集，并把待同步的文字转写上传到后台。")
-            await loadTodayScenarios()
+            // 等一拍让最后的识别结果落入待上传队列
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let uploaded = await uploadPending()
+            if uploaded > 0 {
+                appendChat(.assistant, "已采集并上传 \(uploaded) 句真实对话，正在生成今日场景…")
+                await loadTodayScenarios()
+            } else if uploaded == 0 {
+                let hint = speech.lastError.map { "（\($0)）" } ?? ""
+                appendChat(.assistant, "这次没有采集到语音内容\(hint)。模拟器麦克风常不可用，建议用真机；现在你也可以直接把今天说过的话发给我，例如：录入对话 老板来一份牛肉面；不要香菜。")
+            } else {
+                appendChat(.assistant, "采集到的内容上传失败，请检查网络后重试。")
+            }
+            return
+        }
+
+        if prompt.hasPrefix("录入") {
+            await ingestTypedConversation(prompt)
             return
         }
 
@@ -242,24 +256,57 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func uploadPending() async {
+    /// 上传待同步的转写，返回成功上传的条数（-1=出错，0=无内容）。
+    @discardableResult
+    func uploadPending() async -> Int {
         guard let token = auth.token else {
             statusMessage = "请先登录后同步"
-            return
+            return 0
         }
 
         let pending = transcripts.pendingUpload
         guard pending.isEmpty == false else {
             statusMessage = "没有待同步内容"
-            return
+            return 0
         }
 
         do {
             let response = try await api.uploadTranscripts(pending, token: token)
             transcripts.markUploaded(ids: pending.map(\.id))
             statusMessage = "已同步 \(response.uploaded) 条，对话云端保留 \(response.retentionDays) 天"
+            return response.uploaded
         } catch {
             statusMessage = error.localizedDescription
+            return -1
+        }
+    }
+
+    /// 把用户输入的文字当作"今天的真实对话"录入（模拟器无麦克风时的回退路径）。
+    /// 按中英文标点拆句后上传，再触发今日场景生成。
+    func ingestTypedConversation(_ raw: String) async {
+        let body = raw
+            .replacingOccurrences(of: "录入对话", with: "")
+            .replacingOccurrences(of: "录入", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "：: \n"))
+        guard body.isEmpty == false else {
+            appendChat(.assistant, "把今天真实说过的话发给我即可，例如：录入对话 老板来一份牛肉面；不要香菜；加一瓶可乐。")
+            return
+        }
+        let parts = body
+            .components(separatedBy: CharacterSet(charactersIn: "。！？!?；;\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.isEmpty == false }
+        let sentences = parts.isEmpty ? [body] : parts
+        let base = Date()
+        for (i, s) in sentences.enumerated() {
+            transcripts.addSegment(text: s, at: base.addingTimeInterval(Double(i)), source: "typed")
+        }
+        let uploaded = await uploadPending()
+        if uploaded > 0 {
+            appendChat(.assistant, "已录入 \(uploaded) 句真实对话，正在生成今日场景…")
+            await loadTodayScenarios()
+        } else if uploaded == 0 {
+            appendChat(.assistant, "这些内容没能录入（可能被去重或过滤）。换一段今天真实说过的话再试试。")
         }
     }
 

@@ -134,7 +134,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (capture.isRecording) {
             capture.stop()
             uploadPendingAndRefresh()
-            appendChat(ChatMessage.Sender.ASSISTANT, "已停止采集，转写内容已上传。稍后可在「今日场景」直接开练。")
         } else {
             capture.start()
             appendChat(ChatMessage.Sender.ASSISTANT, "我已开始采集真实对话（仅上传转写文字，不上传音频）。")
@@ -144,13 +143,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun uploadPendingAndRefresh() {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
+            kotlinx.coroutines.delay(400) // 等最后的识别结果落入队列
             val items = synchronized(pendingTranscripts) {
                 val copy = pendingTranscripts.toList(); pendingTranscripts.clear(); copy
             }
-            if (items.isEmpty()) return@launch
+            if (items.isEmpty()) {
+                appendChat(ChatMessage.Sender.ASSISTANT, "这次没有采集到语音内容。模拟器麦克风常不可用，建议用真机；现在你也可以直接发「录入对话 老板来一份牛肉面；不要香菜」。")
+                return@launch
+            }
             runCatching { api.uploadTranscripts(items, token) }
-                .onSuccess { loadTodayScenarios() }
-                .onFailure { statusMessage.value = it.message ?: "" }
+                .onSuccess {
+                    appendChat(ChatMessage.Sender.ASSISTANT, "已采集并上传 ${it.uploaded} 句真实对话，正在生成今日场景…")
+                    loadTodayScenarios()
+                }
+                .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "上传失败，请检查网络后重试。"); statusMessage.value = it.message ?: "" }
+        }
+    }
+
+    /** 文字录入真实对话（模拟器无麦克风时的回退路径）。 */
+    fun ingestTypedConversation(raw: String) {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            val body = raw.removePrefix("录入对话").removePrefix("录入").trim(' ', '：', ':', '\n')
+            if (body.isEmpty()) {
+                appendChat(ChatMessage.Sender.ASSISTANT, "把今天真实说过的话发给我，例如：录入对话 老板来一份牛肉面；不要香菜。")
+                return@launch
+            }
+            val sentences = body.split('。', '！', '？', '!', '?', '；', ';', '\n')
+                .map { it.trim() }.filter { it.isNotEmpty() }
+                .ifEmpty { listOf(body) }
+            val now = Instant.now()
+            val items = sentences.mapIndexed { i, s ->
+                TranscriptItem(UUID.randomUUID().toString(), now.plusSeconds(i.toLong()).toString(), s)
+            }
+            runCatching { api.uploadTranscripts(items, token) }
+                .onSuccess {
+                    appendChat(ChatMessage.Sender.ASSISTANT, "已录入 ${it.uploaded} 句真实对话，正在生成今日场景…")
+                    loadTodayScenarios()
+                }
+                .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "录入失败：${it.message ?: ""}") }
         }
     }
 
@@ -206,6 +237,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val prompt = text.trim()
         if (prompt.isEmpty()) return
         appendChat(ChatMessage.Sender.USER, prompt)
+        if (prompt.startsWith("录入")) {
+            ingestTypedConversation(prompt)
+            return
+        }
         val rp = roleplay
         if (rp != null && !rp.completed && rp.nextLine != null) {
             viewModelScope.launch { submitAnswer(prompt) }

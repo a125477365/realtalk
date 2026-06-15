@@ -145,7 +145,7 @@ struct MainChatView: View {
                             Text(model.isLoadingScenarios ? "正在加载今日场景…" : "今天还没有场景")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(RTTheme.textPrimary)
-                            Text("点这里采集今天的真实对话，自动生成练习场景")
+                            Text("点这里采集今天的真实对话；无麦克风可在下方输入「录入对话 …」")
                                 .font(.caption)
                                 .foregroundStyle(RTTheme.textSecondary)
                         }
