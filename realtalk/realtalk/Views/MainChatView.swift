@@ -24,6 +24,7 @@ struct MainChatView: View {
     @State private var draft = ""
     @State private var showingAccount = false
     @State private var roleDialogScenario: ScenarioSummary?
+    @State private var showImmersive = false
 
     var body: some View {
         NavigationStack {
@@ -36,6 +37,13 @@ struct MainChatView: View {
                     messages
                     composer
                 }
+            }
+            // 开始对练即进入沉浸式字幕；练习完成或退出回到聊天
+            .onChange(of: model.roleplay?.sessionId) { _, sid in
+                if sid != nil, model.roleplay?.completed == false { showImmersive = true }
+            }
+            .fullScreenCover(isPresented: $showImmersive) {
+                ImmersiveRoleplayView()
             }
             .task {
                 // 登录后进入主界面时加载数据（bootstrap 在登录前已跑过、那时无 token 被跳过）

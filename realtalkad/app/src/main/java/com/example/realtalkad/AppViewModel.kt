@@ -54,6 +54,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val audioJobs = MutableStateFlow<List<AudioJob>>(emptyList())
     val isUploadingAudio = MutableStateFlow(false)
     val showSubtitles = MutableStateFlow(true)
+    val roleplayState = MutableStateFlow<RoleplayState?>(null)
+    val showImmersive = MutableStateFlow(false)
 
     private var scenario: Scenario? = null
     private var roleplay: RoleplayState? = null
@@ -209,6 +211,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 appendChat(ChatMessage.Sender.USER, "练习：${summary.title}（扮演${roleName(roleId)}）")
                 val state = api.startRoleplay(summary.sceneId, roleId, token)
                 isVoiceActive.value = true
+                showImmersive.value = true   // 进入沉浸式字幕
                 handleRoleplayState(state)
             }.onFailure { statusMessage.value = it.message ?: "开始失败" }
             isWorking.value = false
@@ -292,6 +295,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun handleRoleplayState(state: RoleplayState, spokenPreface: String? = null) {
         roleplay = state
+        roleplayState.value = state
         scenario = state.scenario
         selectedRole = state.selectedRole
         if (state.completed) {
@@ -350,8 +354,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         answerTimeoutJob = null
     }
 
-    private fun roleName(roleId: String): String =
+    fun roleName(roleId: String): String =
         scenario?.roles?.firstOrNull { it.id == roleId }?.name ?: roleId
+
+    // ---- 沉浸式字幕控制 ----
+
+    /** 重听 AI 最近一句台词。 */
+    fun replayLastAi() {
+        val last = roleplay?.messages?.lastOrNull { it.speaker == "ai" } ?: return
+        voice.speak(last.content) {}
+    }
+
+    /** 给当前轮的英文提示并朗读，随后继续聆听。 */
+    fun requestHint() {
+        val next = roleplay?.nextLine ?: return
+        appendChat(ChatMessage.Sender.ASSISTANT, "提示：${next.sourceText}\n试着说：${next.english}")
+        cancelAnswerTimeout()
+        practice.stop()
+        voice.speak("Try saying: ${next.english}") { listenForNextTurn() }
+    }
+
+    /** 关闭沉浸式：先暂停语音对话，再退出全屏。 */
+    fun closeImmersive() {
+        if (isVoiceActive.value) toggleVoiceConversation()
+        showImmersive.value = false
+    }
 
     // ---- 账单 / 会员 / 充值 ----
 

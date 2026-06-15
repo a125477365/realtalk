@@ -115,6 +115,7 @@ fun MainChatScreen(model: AppViewModel) {
     val isSpeaking by model.isSpeaking.collectAsState()
     val isVoiceActive by model.isVoiceActive.collectAsState()
     val user by model.user.collectAsState()
+    val showImmersive by model.showImmersive.collectAsState()
 
     var draft by remember { mutableStateOf("") }
     var showAccount by remember { mutableStateOf(false) }
@@ -298,6 +299,9 @@ fun MainChatScreen(model: AppViewModel) {
             AccountSheet(model)
         }
     }
+
+    // 沉浸式对练字幕：开练后全屏覆盖在主界面之上
+    if (showImmersive) ImmersiveRoleplayScreen(model)
 }
 
 @Composable

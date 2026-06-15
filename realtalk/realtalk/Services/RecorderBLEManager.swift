@@ -30,7 +30,7 @@ final class RecorderBLEManager: NSObject, ObservableObject {
 
     static let serviceUUID = CBUUID(string: "7E400001-B5A3-F393-E0A9-E50E24DCCA9E")
     static let controlUUID = CBUUID(string: "7E400002-B5A3-F393-E0A9-E50E24DCCA9E")
-    static let dataUUID = CBUUID(string: "7E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+    nonisolated(unsafe) static let dataUUID = CBUUID(string: "7E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var files: [RecorderFile] = []

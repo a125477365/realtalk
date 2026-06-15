@@ -278,7 +278,7 @@ final class APIClient {
         progress: @escaping (Double) -> Void = { _ in }
     ) async throws -> AudioJob {
         let filename = fileURL.lastPathComponent
-        let total = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0 ?? 0
+        let total = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
         guard total > 0 else { throw APIClientError.server("文件为空") }
 
         // 1) init
