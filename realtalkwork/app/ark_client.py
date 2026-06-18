@@ -520,9 +520,9 @@ def _fallback_learning(items: list[TranscriptItem]) -> LearningResponse:
         DialogueLine(
             role="我",
             zh=item.text.strip(),
-            en=_template_english(item.text.strip(), index),
+            en=_offline_translate(item.text.strip()),
         )
-        for index, item in enumerate(sample)
+        for item in sample
     ]
     if not dialogue:
         dialogue = [
@@ -580,7 +580,7 @@ def _fallback_scenario(items: list[TranscriptItem]) -> ScenarioResponse:
                 speaker=speaker,
                 target_role=role,
                 source_text=source_text,
-                english=_template_english(source_text, index),
+                english=_offline_translate(source_text),
                 intent=_intent_for(source_text),
             )
         )
@@ -746,19 +746,121 @@ def _safe_timestamp(item: dict[str, Any]):
         return datetime.now(timezone.utc)
 
 
-def _template_english(text: str, index: int) -> str:
-    templates = [
-        "I need to follow up on this shortly.",
-        "Let's align on this before we move forward.",
-        "I will take care of it and get back to you.",
-        "Could we discuss the details later today?",
-        "That works for me. I will confirm the next step.",
-        "Please give me a moment to check the details.",
-    ]
-    if "开会" in text:
-        return "I am about to join a meeting."
-    if "确认" in text:
-        return "Let's confirm it later."
-    if "稍后" in text or "等一下" in text:
-        return "I will get back to you shortly."
-    return templates[index % len(templates)]
+# ---- 离线兜底翻译 ----
+# 未配置大模型时使用。必须让英文与中文“语义对应”，而不是输出通用商务套话——
+# 否则用户说出正确的英文翻译反而会被判错，整个练习逻辑被破坏。
+# 生产环境配置了大模型后走 _generate_scenario_with_model，不会用到这里。
+
+_OFFLINE_NAMES = {
+    "小明": "Xiaoming", "小红": "Xiaohong", "小李": "Xiao Li", "小王": "Xiao Wang",
+    "小张": "Xiao Zhang", "小刚": "Xiaogang", "小华": "Xiaohua",
+    "妈妈": "Mom", "爸爸": "Dad", "老婆": "my wife", "老公": "my husband",
+}
+
+# 含义对应的常见日常口语短句（用“包含匹配”，优先匹配更长的键）
+_OFFLINE_PHRASES: dict[str, str] = {
+    "今天天气真好": "The weather is really nice today!",
+    "今天天气很好": "The weather is really nice today!",
+    "天气真好": "The weather is so nice!",
+    "天气不错": "The weather is pretty nice.",
+    "好久没这么好": "It's been so long since the weather was this nice.",
+    "好久不见": "Long time no see!",
+    "公园走走": "Let's go for a walk in the park.",
+    "去公园": "Let's go to the park.",
+    "出去走走": "Let's go out for a walk.",
+    "散步": "Let's take a walk.",
+    "带上零食": "Let's bring some snacks.",
+    "带点零食": "Let's bring some snacks.",
+    "买点吃的": "Let's grab some food.",
+    "一起吃饭": "Let's grab a meal together.",
+    "吃饭了吗": "Have you eaten yet?",
+    "吃了吗": "Have you eaten?",
+    "我饿了": "I'm hungry.",
+    "渴了": "I'm thirsty.",
+    "喝点水": "Let's get some water.",
+    "喝咖啡": "Let's grab a coffee.",
+    "好主意": "That's a great idea!",
+    "好的没问题": "Sure, no problem.",
+    "没问题": "No problem.",
+    "听起来不错": "That sounds great.",
+    "可以啊": "Sure, that works.",
+    "当然可以": "Of course.",
+    "谢谢你": "Thank you so much.",
+    "太感谢了": "Thanks a lot.",
+    "不客气": "You're welcome.",
+    "对不起": "I'm sorry.",
+    "没关系": "It's okay.",
+    "稍等一下": "Hold on a second.",
+    "等我一下": "Wait for me a second.",
+    "我马上来": "I'll be right there.",
+    "我马上到": "I'll be there soon.",
+    "走吧": "Let's go.",
+    "我们出发吧": "Let's get going.",
+    "现在几点": "What time is it now?",
+    "几点了": "What time is it?",
+    "明天见": "See you tomorrow.",
+    "回头见": "See you later.",
+    "晚安": "Good night.",
+    "早上好": "Good morning.",
+    "你好吗": "How are you?",
+    "最近怎么样": "How have you been lately?",
+    "我有点累": "I'm a little tired.",
+    "好累啊": "I'm so tired.",
+    "天气好热": "It's so hot today.",
+    "天气好冷": "It's so cold today.",
+    "下雨了": "It's raining.",
+    "记得带伞": "Remember to bring an umbrella.",
+}
+
+# 关键词组合规则（全部命中才匹配），作为短句库的补充
+_OFFLINE_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("天气", "好"), "The weather is really nice today!"),
+    (("公园",), "Let's go for a walk in the park."),
+    (("零食",), "Let's bring some snacks."),
+    (("吃饭",), "Let's grab something to eat."),
+    (("咖啡",), "Let's grab a coffee."),
+    (("谢谢",), "Thank you so much."),
+    (("开会",), "I'm about to join a meeting."),
+    (("确认",), "Let's confirm it later."),
+    (("稍后",), "I'll get back to you shortly."),
+    (("等一下",), "Hold on a second."),
+]
+
+
+def _offline_name(zh: str) -> str:
+    return _OFFLINE_NAMES.get(zh.strip(), zh.strip() or "them")
+
+
+def _offline_translate(text: str) -> str:
+    """把一句中文日常对话翻成语义对应的简单英文（离线、无模型时使用）。"""
+    raw = text.strip()
+    if not raw:
+        return "Let's keep chatting."
+
+    prefix = "Great idea! " if "好主意" in raw else ""
+
+    # 1) 带人名/打电话的句式（最具体，优先）
+    invite = re.search(r"叫(他|她|大家|[一-龥]{2,3})", raw)
+    if invite and ("要不要" in raw or "叫" in raw):
+        who = invite.group(1)
+        who_en = {"他": "him", "她": "her", "大家": "everyone"}.get(who, _offline_name(who))
+        return f"{prefix}Should we invite {who_en}?"
+
+    call = re.search(r"给(他|她|[一-龥]{2,3})打(?:个)?电话", raw)
+    if call:
+        who = call.group(1)
+        who_en = {"他": "him", "她": "her"}.get(who, _offline_name(who))
+        return f"{prefix}Let's give {who_en} a call."
+
+    # 2) 短句库（含义对应），优先匹配更长更具体的键
+    for key in sorted(_OFFLINE_PHRASES, key=len, reverse=True):
+        if key in raw:
+            return prefix + _OFFLINE_PHRASES[key]
+
+    # 3) 关键词组合规则
+    for keys, english in _OFFLINE_RULES:
+        if all(k in raw for k in keys):
+            return prefix + english
+
+    # 4) 兜底：给一句简单自然、不会误导的日常英文（而非通用商务套话）
+    return prefix.strip() or "Let's keep the conversation going."
