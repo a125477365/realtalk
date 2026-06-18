@@ -1,7 +1,7 @@
 """高级会员 MP3 转写管线。
 
 流程：上传保存 → ffmpeg 按 10 分钟分段（无 ffmpeg 时整文件单次提交）→
-OpenAI 兼容 /audio/transcriptions 逐段转写 → 清洗 + 涉政过滤 → 写入 transcripts →
+OpenAI 兼容 /audio/transcriptions 逐段转写 → 清洗 + 涉政过滤 →
 大模型生成场景保存 → 删除音频文件。
 """
 from __future__ import annotations
@@ -24,6 +24,8 @@ from .storage import clean_transcript_items, db
 # 单段提交给 ASR 的大小上限（多数 whisper 接口限 25MB）
 _ASR_CHUNK_LIMIT_BYTES = 24 * 1024 * 1024
 _SEGMENT_SECONDS = 600
+_SCENARIO_BATCH_MAX_ITEMS = 80
+_SCENARIO_BATCH_MAX_CHARS = 18000
 
 
 def resolve_asr_config() -> dict[str, Any]:
@@ -166,6 +168,26 @@ def _text_to_items(text: str, base_time: datetime) -> list[TranscriptItem]:
     return items
 
 
+def _scenario_batches(items: list[TranscriptItem]) -> list[list[TranscriptItem]]:
+    batches: list[list[TranscriptItem]] = []
+    current: list[TranscriptItem] = []
+    current_chars = 0
+    for item in items:
+        item_chars = len(item.text)
+        if current and (
+            len(current) >= _SCENARIO_BATCH_MAX_ITEMS
+            or current_chars + item_chars > _SCENARIO_BATCH_MAX_CHARS
+        ):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
 async def process_audio_job(job_id: str, user_id: str, path: Path) -> None:
     """后台处理一个音频任务；任何失败都会把状态与原因写回任务表。"""
     try:
@@ -180,12 +202,13 @@ async def process_audio_job(job_id: str, user_id: str, path: Path) -> None:
         items = clean_transcript_items(_text_to_items(text, now))
         if not items:
             raise RuntimeError("转写结果为空或全部被内容过滤，未生成场景")
-        db.insert_transcripts(user_id, items)
-
         db.update_audio_job(job_id, "generating", transcript_chars=sum(len(item.text) for item in items))
-        scenario = await generate_scenario(items, user_id=user_id)
-        saved = db.create_scenario(user_id, now, now, scenario)
-        db.update_audio_job(job_id, "completed", scene_id=saved.scene_id)
+        saved_ids: list[str] = []
+        for batch in _scenario_batches(items):
+            scenario = await generate_scenario(batch, user_id=user_id)
+            saved = db.create_scenario(user_id, batch[0].timestamp, batch[-1].timestamp, scenario)
+            saved_ids.append(saved.scene_id)
+        db.update_audio_job(job_id, "completed", scene_id=saved_ids[0] if saved_ids else None)
     except Exception as exc:  # noqa: BLE001 — 必须把失败原因落库
         db.update_audio_job(job_id, "failed", error=str(exc))
     finally:

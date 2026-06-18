@@ -15,6 +15,30 @@ class AuthStore(context: Context) {
         get() = prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
         set(value) = prefs.edit().putString("base_url", value.trim().trimEnd('/')).apply()
 
+    var showSubtitles: Boolean
+        get() = prefs.getBoolean("show_subtitles", true)
+        set(value) = prefs.edit().putBoolean("show_subtitles", value).apply()
+
+    var guidanceMode: String
+        get() = prefs.getString("guidance_mode", "realtime") ?: "realtime"
+        set(value) = prefs.edit().putString("guidance_mode", if (value == "final") "final" else "realtime").apply()
+
+    var fontScale: Float
+        get() = prefs.getFloat("font_scale", 1f).coerceIn(0.85f, 1.35f)
+        set(value) = prefs.edit().putFloat("font_scale", value.coerceIn(0.85f, 1.35f)).apply()
+
+    var autoCaptureEnabled: Boolean
+        get() = prefs.getBoolean("auto_capture_enabled", false)
+        set(value) = prefs.edit().putBoolean("auto_capture_enabled", value).apply()
+
+    var autoCaptureStart: String
+        get() = prefs.getString("auto_capture_start", "09:00") ?: "09:00"
+        set(value) = prefs.edit().putString("auto_capture_start", value).apply()
+
+    var autoCaptureEnd: String
+        get() = prefs.getString("auto_capture_end", "18:00") ?: "18:00"
+        set(value) = prefs.edit().putString("auto_capture_end", value).apply()
+
     /** 开发模式微信登录：同一设备稳定复用一个 code，对应同一个账号 */
     val devWeChatCode: String
         get() {

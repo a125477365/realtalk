@@ -41,6 +41,52 @@ data class TranscriptUploadRequest(val items: List<TranscriptItem>)
 data class TranscriptUploadResponse(
     val uploaded: Int,
     @SerialName("retention_days") val retentionDays: Int,
+    val generated: Int = 0,
+    @SerialName("scenario_ids") val scenarioIds: List<String> = emptyList(),
+)
+
+@Serializable
+data class CaptureUploadInitRequest(
+    val start: String? = null,
+    val end: String? = null,
+    @SerialName("estimated_items") val estimatedItems: Int = 0,
+)
+
+@Serializable
+data class CaptureUploadInitResponse(
+    @SerialName("upload_id") val uploadId: String,
+    @SerialName("received_chunks") val receivedChunks: List<Int> = emptyList(),
+    @SerialName("max_items_per_chunk") val maxItemsPerChunk: Int = 80,
+)
+
+@Serializable
+data class CaptureUploadChunkRequest(
+    @SerialName("upload_id") val uploadId: String,
+    @SerialName("chunk_index") val chunkIndex: Int,
+    val items: List<TranscriptItem> = emptyList(),
+)
+
+@Serializable
+data class CaptureUploadChunkResponse(
+    @SerialName("upload_id") val uploadId: String,
+    @SerialName("chunk_index") val chunkIndex: Int,
+    @SerialName("accepted_items") val acceptedItems: Int,
+    @SerialName("received_chunks") val receivedChunks: List<Int> = emptyList(),
+)
+
+@Serializable
+data class CaptureUploadCompleteRequest(
+    @SerialName("upload_id") val uploadId: String,
+    val start: String? = null,
+    val end: String? = null,
+)
+
+@Serializable
+data class CaptureUploadCompleteResponse(
+    @SerialName("accepted_items") val acceptedItems: Int,
+    val generated: Int,
+    @SerialName("scenario_ids") val scenarioIds: List<String> = emptyList(),
+    val scenarios: List<Scenario> = emptyList(),
 )
 
 @Serializable
@@ -99,7 +145,11 @@ data class RoleplayStartRequest(
 )
 
 @Serializable
-data class RoleplayMessageRequest(@SerialName("session_id") val sessionId: String, val message: String)
+data class RoleplayMessageRequest(
+    @SerialName("session_id") val sessionId: String,
+    val message: String,
+    @SerialName("guidance_mode") val guidanceMode: String = "realtime",
+)
 
 @Serializable
 data class RoleplayMessage(

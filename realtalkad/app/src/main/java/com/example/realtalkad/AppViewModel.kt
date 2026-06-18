@@ -15,6 +15,7 @@ import com.example.realtalkad.data.RechargeOrder
 import com.example.realtalkad.data.RoleplayState
 import com.example.realtalkad.data.Scenario
 import com.example.realtalkad.data.ScenarioSummary
+import com.example.realtalkad.data.TranscriptFileStore
 import com.example.realtalkad.data.TranscriptItem
 import com.example.realtalkad.speech.PracticeSpeech
 import com.example.realtalkad.speech.SpeechCapture
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
+import java.time.LocalTime
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -37,6 +39,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val capture = SpeechCapture(application)
     val practice = PracticeSpeech(application)
     val voice = VoicePlayer(application)
+    private val transcriptStore = TranscriptFileStore(application)
 
     val user = MutableStateFlow<AppUser?>(null)
     val billing = MutableStateFlow<BillingAccount?>(null)
@@ -44,6 +47,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val todayScenarios = MutableStateFlow<List<ScenarioSummary>>(emptyList())
     val chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val partialSubtitle = MutableStateFlow("")
+    val practiceAudioLevel = MutableStateFlow(0f)
     val isRecording = MutableStateFlow(false)
     val isListening = MutableStateFlow(false)
     val isSpeaking = MutableStateFlow(false)
@@ -53,34 +57,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val rechargeOrder = MutableStateFlow<RechargeOrder?>(null)
     val audioJobs = MutableStateFlow<List<AudioJob>>(emptyList())
     val isUploadingAudio = MutableStateFlow(false)
-    val showSubtitles = MutableStateFlow(true)
+    val showSubtitles = MutableStateFlow(auth.showSubtitles)
+    val guidanceMode = MutableStateFlow(auth.guidanceMode)
+    val fontScale = MutableStateFlow(auth.fontScale)
+    val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
+    val autoCaptureStart = MutableStateFlow(auth.autoCaptureStart)
+    val autoCaptureEnd = MutableStateFlow(auth.autoCaptureEnd)
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
 
     private var scenario: Scenario? = null
     private var roleplay: RoleplayState? = null
     private var selectedRole = ""
-    private val pendingTranscripts = mutableListOf<TranscriptItem>()
     private val spokenMessageIds = mutableSetOf<String>()
     private var answerTimeoutJob: Job? = null
+    private var captureScheduleJob: Job? = null
+    private var autoCaptureRunning = false
     private val messageId = AtomicLong(0)
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
 
     init {
         capture.onSegment = { text ->
-            synchronized(pendingTranscripts) {
-                pendingTranscripts += TranscriptItem(UUID.randomUUID().toString(), Instant.now().toString(), text)
-            }
+            transcriptStore.add(TranscriptItem(UUID.randomUUID().toString(), Instant.now().toString(), text))
         }
         capture.onStateChange = { isRecording.value = it }
         practice.onPartial = { partialSubtitle.value = it }
+        practice.onLevel = { practiceAudioLevel.value = it }
         practice.onStateChange = { isListening.value = it }
         practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
         voice.onStateChange = { isSpeaking.value = it }
 
-        appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或点右上角采集。")
+        appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或用底部按钮采集。")
         bootstrap()
+        startCaptureScheduleLoop()
     }
 
     fun bootstrap() {
@@ -135,10 +145,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleRecording() {
         if (capture.isRecording) {
             capture.stop()
+            autoCaptureRunning = false
             uploadPendingAndRefresh()
         } else {
+            autoCaptureRunning = false
             capture.start()
-            appendChat(ChatMessage.Sender.ASSISTANT, "开始采集，请开口说话。")
+            statusMessage.value = "正在采集真实对话"
         }
     }
 
@@ -146,19 +158,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             kotlinx.coroutines.delay(400) // 等最后的识别结果落入队列
-            val items = synchronized(pendingTranscripts) {
-                val copy = pendingTranscripts.toList(); pendingTranscripts.clear(); copy
-            }
+            val items = transcriptStore.pending()
             if (items.isEmpty()) {
-                appendChat(ChatMessage.Sender.ASSISTANT, "没采到声音。可改用真机，或发「录入对话 …」。")
+                statusMessage.value = "没采到声音"
                 return@launch
             }
-            runCatching { api.uploadTranscripts(items, token) }
+            runCatching { api.uploadCaptureItems(items, token) }
                 .onSuccess {
-                    appendChat(ChatMessage.Sender.ASSISTANT, "已采集 ${it.uploaded} 句，生成场景中…")
+                    transcriptStore.remove(items.map { item -> item.id }.toSet())
+                    statusMessage.value = "已采集 ${it.acceptedItems} 条，生成 ${it.generated} 个场景"
                     loadTodayScenarios()
                 }
-                .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "上传失败，请重试。"); statusMessage.value = it.message ?: "" }
+                .onFailure { statusMessage.value = it.message ?: "上传失败，请重试" }
         }
     }
 
@@ -178,9 +189,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val items = sentences.mapIndexed { i, s ->
                 TranscriptItem(UUID.randomUUID().toString(), now.plusSeconds(i.toLong()).toString(), s)
             }
-            runCatching { api.uploadTranscripts(items, token) }
+            runCatching { api.uploadCaptureItems(items, token) }
                 .onSuccess {
-                    appendChat(ChatMessage.Sender.ASSISTANT, "已录入 ${it.uploaded} 句，生成场景中…")
+                    statusMessage.value = "已录入 ${it.acceptedItems} 句，生成 ${it.generated} 个场景"
                     loadTodayScenarios()
                 }
                 .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "录入失败：${it.message ?: ""}") }
@@ -197,6 +208,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     todayScenarios.value = it.items
                     if (it.generated) appendChat(ChatMessage.Sender.ASSISTANT, "今日场景已生成，点卡片开练。")
                 }
+                .onFailure { statusMessage.value = it.message ?: "" }
+        }
+    }
+
+    fun loadScenarioList() {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.scenarioList(token) }
+                .onSuccess { todayScenarios.value = it.items }
                 .onFailure { statusMessage.value = it.message ?: "" }
         }
     }
@@ -231,9 +251,46 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             appendChat(
                 ChatMessage.Sender.ASSISTANT,
-                "先选个场景：点上方卡片，或右上角采集。",
+                "先选个场景：点上方卡片，或用底部按钮采集。",
             )
         }
+    }
+
+    fun setGuidanceMode(mode: String) {
+        val normalized = if (mode == "final") "final" else "realtime"
+        guidanceMode.value = normalized
+        auth.guidanceMode = normalized
+    }
+
+    fun setShowSubtitles(value: Boolean) {
+        showSubtitles.value = value
+        auth.showSubtitles = value
+    }
+
+    fun setFontScale(value: Float) {
+        val normalized = value.coerceIn(0.85f, 1.35f)
+        fontScale.value = normalized
+        auth.fontScale = normalized
+    }
+
+    fun setAutoCaptureEnabled(value: Boolean) {
+        autoCaptureEnabled.value = value
+        auth.autoCaptureEnabled = value
+        if (!value && autoCaptureRunning && capture.isRecording) {
+            capture.stop()
+            autoCaptureRunning = false
+            uploadPendingAndRefresh()
+        }
+    }
+
+    fun setAutoCaptureStart(value: String) {
+        autoCaptureStart.value = value
+        auth.autoCaptureStart = value
+    }
+
+    fun setAutoCaptureEnd(value: String) {
+        autoCaptureEnd.value = value
+        auth.autoCaptureEnd = value
     }
 
     fun sendText(text: String) {
@@ -263,7 +320,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val token = auth.token ?: return
         val rp = roleplay ?: return
         isWorking.value = true
-        runCatching { api.sendRoleplayMessage(rp.sessionId, answer, token) }
+        runCatching { api.sendRoleplayMessage(rp.sessionId, answer, guidanceMode.value, token) }
             .onSuccess { state ->
                 state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
                     appendChat(ChatMessage.Sender.ASSISTANT, it)
@@ -335,6 +392,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         scheduleAnswerTimeout()
     }
 
+    private fun startCaptureScheduleLoop() {
+        if (captureScheduleJob != null) return
+        captureScheduleJob = viewModelScope.launch {
+            while (true) {
+                evaluateAutomaticCaptureWindow()
+                delay(30_000)
+            }
+        }
+    }
+
+    private fun evaluateAutomaticCaptureWindow() {
+        if (!autoCaptureEnabled.value || auth.token == null || isVoiceActive.value) return
+        val insideWindow = isNowInsideAutomaticCaptureWindow()
+        if (insideWindow && !capture.isRecording) {
+            autoCaptureRunning = true
+            capture.start()
+            statusMessage.value = "已按默认时间开始采集"
+        } else if (!insideWindow && autoCaptureRunning && capture.isRecording) {
+            capture.stop()
+            autoCaptureRunning = false
+            statusMessage.value = "已按默认时间结束采集"
+            uploadPendingAndRefresh()
+        }
+    }
+
+    private fun isNowInsideAutomaticCaptureWindow(now: LocalTime = LocalTime.now()): Boolean {
+        val start = parseCaptureTime(autoCaptureStart.value) ?: return false
+        val end = parseCaptureTime(autoCaptureEnd.value) ?: return false
+        if (start == end) return false
+        return if (start.isBefore(end)) {
+            !now.isBefore(start) && now.isBefore(end)
+        } else {
+            !now.isBefore(start) || now.isBefore(end)
+        }
+    }
+
+    private fun parseCaptureTime(value: String): LocalTime? {
+        val parts = value.trim().split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        return runCatching { LocalTime.of(hour, minute) }.getOrNull()
+    }
+
     /** 要求 12：超时未答 → AI 主动给指导再继续 */
     private fun scheduleAnswerTimeout() {
         cancelAnswerTimeout()
@@ -363,6 +464,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun replayLastAi() {
         val last = roleplay?.messages?.lastOrNull { it.speaker == "ai" } ?: return
         voice.speak(last.content) {}
+    }
+
+    fun interruptAiAndContinue() {
+        voice.stop()
+        listenForNextTurn()
     }
 
     /** 给当前轮的英文提示并朗读，随后继续聆听。 */

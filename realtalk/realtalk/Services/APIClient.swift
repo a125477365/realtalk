@@ -101,6 +101,35 @@ final class APIClient {
         return try await post("/transcript/upload", body: TranscriptUploadRequest(items: items), token: token)
     }
 
+    func uploadCaptureSegments(
+        _ segments: [TranscriptSegment],
+        token: String,
+        chunkSize: Int = 80
+    ) async throws -> CaptureUploadCompleteResponse {
+        let sorted = segments.sorted { $0.timestamp < $1.timestamp }
+        let start = sorted.first?.timestamp
+        let end = sorted.last?.timestamp
+        let initResponse: CaptureUploadInitResponse = try await post(
+            "/capture/upload/init",
+            body: CaptureUploadInitRequest(start: start, end: end, estimatedItems: sorted.count),
+            token: token
+        )
+        let serverChunkSize = max(1, min(chunkSize, initResponse.maxItemsPerChunk))
+        for (index, slice) in sorted.chunked(into: serverChunkSize).enumerated() {
+            let items = slice.map { TranscriptUploadItem(id: $0.id, timestamp: $0.timestamp, text: $0.text) }
+            let _: CaptureUploadChunkResponse = try await post(
+                "/capture/upload/chunk",
+                body: CaptureUploadChunkRequest(uploadId: initResponse.uploadId, chunkIndex: index, items: items),
+                token: token
+            )
+        }
+        return try await post(
+            "/capture/upload/complete",
+            body: CaptureUploadCompleteRequest(uploadId: initResponse.uploadId, start: start, end: end),
+            token: token
+        )
+    }
+
     func generateLearning(
         start: Date,
         end: Date,
@@ -177,10 +206,15 @@ final class APIClient {
         )
     }
 
-    func submitRoleplayMessage(sessionId: String, message: String, token: String) async throws -> RoleplayStateResponse {
+    func submitRoleplayMessage(
+        sessionId: String,
+        message: String,
+        guidanceMode: String,
+        token: String
+    ) async throws -> RoleplayStateResponse {
         try await post(
             "/roleplay/message",
-            body: RoleplayMessageRequest(sessionId: sessionId, message: message),
+            body: RoleplayMessageRequest(sessionId: sessionId, message: message, guidanceMode: guidanceMode),
             token: token
         )
     }
@@ -404,5 +438,19 @@ final class APIClient {
         }
 
         return try decoder.decode(Response.self, from: data)
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [self] }
+        var chunks: [[Element]] = []
+        var index = startIndex
+        while index < endIndex {
+            let next = self.index(index, offsetBy: size, limitedBy: endIndex) ?? endIndex
+            chunks.append(Array(self[index..<next]))
+            index = next
+        }
+        return chunks
     }
 }

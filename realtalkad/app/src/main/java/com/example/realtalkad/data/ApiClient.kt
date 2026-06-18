@@ -70,6 +70,30 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun uploadTranscripts(items: List<TranscriptItem>, token: String): TranscriptUploadResponse =
         post("/transcript/upload", TranscriptUploadRequest(items), token)
 
+    suspend fun uploadCaptureItems(items: List<TranscriptItem>, token: String, preferredChunkSize: Int = 80): CaptureUploadCompleteResponse {
+        val sorted = items.sortedBy { it.timestamp }
+        val start = sorted.firstOrNull()?.timestamp
+        val end = sorted.lastOrNull()?.timestamp
+        val init = post<CaptureUploadInitRequest, CaptureUploadInitResponse>(
+            "/capture/upload/init",
+            CaptureUploadInitRequest(start = start, end = end, estimatedItems = sorted.size),
+            token,
+        )
+        val chunkSize = preferredChunkSize.coerceIn(1, init.maxItemsPerChunk.coerceAtLeast(1))
+        sorted.chunked(chunkSize).forEachIndexed { index, chunk ->
+            post<CaptureUploadChunkRequest, CaptureUploadChunkResponse>(
+                "/capture/upload/chunk",
+                CaptureUploadChunkRequest(init.uploadId, index, chunk),
+                token,
+            )
+        }
+        return post(
+            "/capture/upload/complete",
+            CaptureUploadCompleteRequest(init.uploadId, start, end),
+            token,
+        )
+    }
+
     // ---- 场景 ----
     suspend fun todayScenarios(token: String): ScenarioListResponse = get("/scenario/today", token)
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)
@@ -81,8 +105,8 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         return post("/roleplay/start", RoleplayStartRequest(now, now, selectedRole, sceneId), token)
     }
 
-    suspend fun sendRoleplayMessage(sessionId: String, message: String, token: String): RoleplayState =
-        post("/roleplay/message", RoleplayMessageRequest(sessionId, message), token)
+    suspend fun sendRoleplayMessage(sessionId: String, message: String, guidanceMode: String, token: String): RoleplayState =
+        post("/roleplay/message", RoleplayMessageRequest(sessionId, message, guidanceMode), token)
 
     suspend fun aiChat(message: String, history: List<AIChatMessage>, sceneId: String?, sessionId: String?, token: String): AIChatResponse =
         post("/ai/chat", AIChatRequest(message, history, sceneId, sessionId), token)

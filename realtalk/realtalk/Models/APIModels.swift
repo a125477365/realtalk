@@ -206,10 +206,90 @@ struct TranscriptUploadRequest: Codable {
 struct TranscriptUploadResponse: Codable {
     let uploaded: Int
     let retentionDays: Int
+    let generated: Int?
+    let scenarioIds: [String]?
 
     enum CodingKeys: String, CodingKey {
         case uploaded
         case retentionDays = "retention_days"
+        case generated
+        case scenarioIds = "scenario_ids"
+    }
+}
+
+struct CaptureUploadInitRequest: Codable {
+    let start: Date?
+    let end: Date?
+    let estimatedItems: Int
+
+    enum CodingKeys: String, CodingKey {
+        case start
+        case end
+        case estimatedItems = "estimated_items"
+    }
+}
+
+struct CaptureUploadInitResponse: Codable {
+    let uploadId: String
+    let receivedChunks: [Int]
+    let maxItemsPerChunk: Int
+
+    enum CodingKeys: String, CodingKey {
+        case uploadId = "upload_id"
+        case receivedChunks = "received_chunks"
+        case maxItemsPerChunk = "max_items_per_chunk"
+    }
+}
+
+struct CaptureUploadChunkRequest: Codable {
+    let uploadId: String
+    let chunkIndex: Int
+    let items: [TranscriptUploadItem]
+
+    enum CodingKeys: String, CodingKey {
+        case uploadId = "upload_id"
+        case chunkIndex = "chunk_index"
+        case items
+    }
+}
+
+struct CaptureUploadChunkResponse: Codable {
+    let uploadId: String
+    let chunkIndex: Int
+    let acceptedItems: Int
+    let receivedChunks: [Int]
+
+    enum CodingKeys: String, CodingKey {
+        case uploadId = "upload_id"
+        case chunkIndex = "chunk_index"
+        case acceptedItems = "accepted_items"
+        case receivedChunks = "received_chunks"
+    }
+}
+
+struct CaptureUploadCompleteRequest: Codable {
+    let uploadId: String
+    let start: Date?
+    let end: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case uploadId = "upload_id"
+        case start
+        case end
+    }
+}
+
+struct CaptureUploadCompleteResponse: Codable {
+    let acceptedItems: Int
+    let generated: Int
+    let scenarioIds: [String]
+    let scenarios: [ScenarioResponse]
+
+    enum CodingKeys: String, CodingKey {
+        case acceptedItems = "accepted_items"
+        case generated
+        case scenarioIds = "scenario_ids"
+        case scenarios
     }
 }
 
@@ -250,10 +330,12 @@ struct RoleplayStartRequest: Codable {
 struct RoleplayMessageRequest: Codable {
     let sessionId: String
     let message: String
+    let guidanceMode: String
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case message
+        case guidanceMode = "guidance_mode"
     }
 }
 

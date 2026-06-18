@@ -3,6 +3,19 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
+    enum GuidanceMode: String, CaseIterable, Identifiable {
+        case realtime
+        case final
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .realtime: return "实时指导"
+            case .final: return "结束后指导"
+            }
+        }
+    }
+
     let transcripts: TranscriptStore
     let speech: SpeechCaptureManager
     let api: APIClient
@@ -23,7 +36,7 @@ final class AppModel: ObservableObject {
     @Published var chatMessages: [ChatMessage] = [
         ChatMessage(
             sender: .assistant,
-            text: "今天想练哪段真实对话？选上方场景，或点右上角采集。"
+            text: "今天想练哪段真实对话？选一个场景开始，或用底部按钮采集新的日常对话。"
         )
     ]
     @Published var billingAccount: BillingAccountResponse?
@@ -38,9 +51,11 @@ final class AppModel: ObservableObject {
     @Published var autoSpeakAI = true
     @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
+    @Published var guidanceMode: GuidanceMode = .realtime
     @Published var autoCaptureEnabled = false
     @Published var autoCaptureStart = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
     @Published var autoCaptureEnd = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
+    @Published var fontScale: Double = 1.0
     @Published var lastSpokenAnswer = ""
     @Published var trainingAnswer = ""
     @Published var isWorking = false
@@ -49,6 +64,7 @@ final class AppModel: ObservableObject {
     private var uploadLoop: Task<Void, Never>?
     private var captureScheduleLoop: Task<Void, Never>?
     private var answerTimeoutTask: Task<Void, Never>?
+    private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
     private var chattedRoleplayMessageIDs: Set<String> = []
     private let defaults = UserDefaults.standard
@@ -59,6 +75,8 @@ final class AppModel: ObservableObject {
         static let autoCaptureEnabled = "realtalk.autoCaptureEnabled"
         static let autoCaptureStart = "realtalk.autoCaptureStart"
         static let autoCaptureEnd = "realtalk.autoCaptureEnd"
+        static let fontScale = "realtalk.fontScale"
+        static let guidanceMode = "realtalk.guidanceMode"
     }
 
     init() {
@@ -72,6 +90,14 @@ final class AppModel: ObservableObject {
         autoCaptureEnabled = defaults.bool(forKey: DefaultsKey.autoCaptureEnabled)
         autoCaptureStart = defaults.object(forKey: DefaultsKey.autoCaptureStart) as? Date ?? autoCaptureStart
         autoCaptureEnd = defaults.object(forKey: DefaultsKey.autoCaptureEnd) as? Date ?? autoCaptureEnd
+        let savedFontScale = defaults.double(forKey: DefaultsKey.fontScale)
+        if savedFontScale > 0 {
+            fontScale = min(max(savedFontScale, 0.85), 1.35)
+        }
+        if let rawMode = defaults.string(forKey: DefaultsKey.guidanceMode),
+           let savedMode = GuidanceMode(rawValue: rawMode) {
+            guidanceMode = savedMode
+        }
 
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
@@ -81,12 +107,27 @@ final class AppModel: ObservableObject {
                 await self?.submitRoleplayUtterance(text)
             }
         }
+        shortcutObserver = NotificationCenter.default.addObserver(
+            forName: RealTalkShortcutAction.notification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let raw = note.object as? String,
+                  let action = RealTalkShortcutAction(rawValue: raw)
+            else { return }
+            Task { @MainActor in
+                await self?.handleShortcutAction(action)
+            }
+        }
     }
 
     deinit {
         uploadLoop?.cancel()
         captureScheduleLoop?.cancel()
         answerTimeoutTask?.cancel()
+        if let shortcutObserver {
+            NotificationCenter.default.removeObserver(shortcutObserver)
+        }
     }
 
     var visibleSegments: [TranscriptSegment] {
@@ -101,9 +142,32 @@ final class AppModel: ObservableObject {
         await loadPracticeHistory()
         await loadTodayScenarios()
         await loadPlanCatalog()
-        startUploadLoop()
         startCaptureScheduleLoop()
+        await handlePendingShortcutAction()
         await evaluateAutomaticCaptureWindow()
+    }
+
+    func handlePendingShortcutAction() async {
+        guard let action = RealTalkShortcutAction.consumePending() else { return }
+        await handleShortcutAction(action)
+    }
+
+    private func handleShortcutAction(_ action: RealTalkShortcutAction) async {
+        switch action {
+        case .startCapture:
+            if speech.isRecording == false {
+                await toggleRecording()
+            }
+        case .stopCapture:
+            if speech.isRecording {
+                await toggleRecording()
+            } else {
+                let uploaded = await uploadPending()
+                if uploaded > 0 {
+                    await loadTodayScenarios()
+                }
+            }
+        }
     }
 
     /// 拉取今天的场景列表；服务端在已有当天对话却没有场景时会自动生成
@@ -117,6 +181,19 @@ final class AppModel: ObservableObject {
             if response.generated {
                 appendChat(.assistant, "今日场景已生成，点卡片开练。")
             }
+        } catch {
+            if statusMessage.isEmpty {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func loadScenarioList() async {
+        guard let token = auth.token else { return }
+        isLoadingScenarios = true
+        defer { isLoadingScenarios = false }
+        do {
+            todayScenarios = try await api.scenarioList(token: token).items
         } catch {
             if statusMessage.isEmpty {
                 statusMessage = error.localizedDescription
@@ -147,8 +224,14 @@ final class AppModel: ObservableObject {
     func toggleRecording() async {
         if speech.isRecording {
             speech.stop(savePartial: true)
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let uploaded = await uploadPending()
+            if uploaded > 0 {
+                await loadTodayScenarios()
+            }
         } else {
             await speech.start()
+            statusMessage = "正在采集真实对话"
         }
     }
 
@@ -159,6 +242,11 @@ final class AppModel: ObservableObject {
         Task { await evaluateAutomaticCaptureWindow() }
     }
 
+    func savePracticePreferences() {
+        defaults.set(fontScale, forKey: DefaultsKey.fontScale)
+        defaults.set(guidanceMode.rawValue, forKey: DefaultsKey.guidanceMode)
+    }
+
     func sendMainChatMessage(_ text: String) async {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard prompt.isEmpty == false else { return }
@@ -166,27 +254,12 @@ final class AppModel: ObservableObject {
         appendChat(.user, prompt)
 
         if prompt.contains("开始录音") || prompt.contains("开始采集") {
-            if speech.isRecording == false {
-                await speech.start()
-            }
-            appendChat(.assistant, "开始采集，请开口说话。")
+            if speech.isRecording == false { await toggleRecording() }
             return
         }
 
         if prompt.contains("停止录音") || prompt.contains("停止采集") {
-            speech.stop(savePartial: true)
-            // 等一拍让最后的识别结果落入待上传队列
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            let uploaded = await uploadPending()
-            if uploaded > 0 {
-                appendChat(.assistant, "已采集 \(uploaded) 句，生成场景中…")
-                await loadTodayScenarios()
-            } else if uploaded == 0 {
-                let hint = speech.lastError.map { "（\($0)）" } ?? ""
-                appendChat(.assistant, "没采到声音\(hint)。可改用真机，或发「录入对话 …」。")
-            } else {
-                appendChat(.assistant, "上传失败，请重试。")
-            }
+            if speech.isRecording { await toggleRecording() }
             return
         }
 
@@ -251,7 +324,7 @@ final class AppModel: ObservableObject {
         await askBackendAI(
             prompt,
             fallback: { [weak self] in
-                self?.appendChat(.assistant, "想练哪段？选上方场景，或点右上角采集。")
+                self?.appendChat(.assistant, "想练哪段？选上方场景，或用底部按钮采集。")
             }
         )
     }
@@ -271,10 +344,10 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let response = try await api.uploadTranscripts(pending, token: token)
+            let response = try await api.uploadCaptureSegments(pending, token: token)
             transcripts.markUploaded(ids: pending.map(\.id))
-            statusMessage = "已同步 \(response.uploaded) 条，对话云端保留 \(response.retentionDays) 天"
-            return response.uploaded
+            statusMessage = "已采集 \(response.acceptedItems) 条，生成 \(response.generated) 个场景"
+            return response.acceptedItems
         } catch {
             statusMessage = error.localizedDescription
             return -1
@@ -491,7 +564,7 @@ final class AppModel: ObservableObject {
         if roleplay == nil {
             guard scenario != nil else {
                 // 引导放进聊天流（appendChat 会去重连续相同消息，避免反复点击堆叠）
-                appendChat(.assistant, "先选个场景：点上方卡片，或右上角采集。")
+                appendChat(.assistant, "先选个场景：点上方卡片，或用底部按钮采集。")
                 return
             }
             await startRoleplay()
@@ -573,12 +646,15 @@ final class AppModel: ObservableObject {
             let state = try await api.submitRoleplayMessage(
                 sessionId: roleplay.sessionId,
                 message: answer,
+                guidanceMode: guidanceMode.rawValue,
                 token: token
             )
             let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let feedback, feedback.isEmpty == false {
                 statusMessage = feedback
-                appendChat(.assistant, feedback)
+                if guidanceMode == .realtime || state.completed {
+                    appendChat(.assistant, feedback)
+                }
                 handleRoleplayState(state, spokenPreface: feedback)
             } else {
                 statusMessage = "继续对话"
@@ -714,6 +790,11 @@ final class AppModel: ObservableObject {
     func replayLastAI() {
         guard let message = roleplay?.messages.last(where: { $0.speaker == "ai" }) else { return }
         voice.speak(message.content)
+    }
+
+    func interruptAIAndContinue() {
+        voice.stop()
+        Task { await listenForNextRoleplayTurn() }
     }
 
     private func handleRoleplayState(_ state: RoleplayStateResponse, spokenPreface: String? = nil) {
@@ -960,7 +1041,10 @@ final class AppModel: ObservableObject {
         } else if speech.isRecording {
             speech.stop(savePartial: true)
             statusMessage = "已按默认时间结束采集"
-            await uploadPending()
+            let uploaded = await uploadPending()
+            if uploaded > 0 {
+                await loadTodayScenarios()
+            }
         }
     }
 

@@ -4,11 +4,14 @@ import asyncio
 import hashlib
 import hmac
 import json as _json
-import secrets
 import os
+import re
+import secrets
+import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
@@ -51,6 +54,12 @@ from .schemas import (
     AIChatResponse,
     BillingAccountResponse,
     BillingResponse,
+    CaptureUploadChunkRequest,
+    CaptureUploadChunkResponse,
+    CaptureUploadCompleteRequest,
+    CaptureUploadCompleteResponse,
+    CaptureUploadInitRequest,
+    CaptureUploadInitResponse,
     EmailCodeRequest,
     EmailCodeResponse,
     EmailRegisterRequest,
@@ -82,6 +91,7 @@ from .schemas import (
     TrainingAnswerRequest,
     TrainingStartRequest,
     TrainingStateResponse,
+    TranscriptItem,
     TranscriptQueryResponse,
     TranscriptUploadRequest,
     TranscriptUploadResponse,
@@ -1184,14 +1194,179 @@ async def query_payment_status(
     return {"order_id": order_id, "status": order_status, "provider_status": provider_status}
 
 
+_CAPTURE_MAX_ITEMS_PER_CHUNK = 80
+_CAPTURE_BATCH_MAX_ITEMS = 80
+_CAPTURE_BATCH_MAX_CHARS = 18000
+
+
+def _capture_root() -> Path:
+    root = settings.upload_dir / "capture_text"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _safe_upload_id(upload_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "", upload_id)
+    if not safe or safe != upload_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传会话无效")
+    return safe
+
+
+def _capture_session_dir(user_id: str, upload_id: str) -> Path:
+    return _capture_root() / user_id / _safe_upload_id(upload_id)
+
+
+def _capture_chunk_path(user_id: str, upload_id: str, chunk_index: int) -> Path:
+    return _capture_session_dir(user_id, upload_id) / "chunks" / f"{chunk_index:06d}.json"
+
+
+def _received_capture_chunks(user_id: str, upload_id: str) -> list[int]:
+    chunks_dir = _capture_session_dir(user_id, upload_id) / "chunks"
+    if not chunks_dir.exists():
+        return []
+    indexes: list[int] = []
+    for path in chunks_dir.glob("*.json"):
+        try:
+            indexes.append(int(path.stem))
+        except ValueError:
+            continue
+    return sorted(indexes)
+
+
+def _load_capture_items(user_id: str, upload_id: str) -> list[TranscriptItem]:
+    session_dir = _capture_session_dir(user_id, upload_id)
+    chunks_dir = session_dir / "chunks"
+    if not chunks_dir.exists():
+        return []
+    items: list[TranscriptItem] = []
+    for path in sorted(chunks_dir.glob("*.json")):
+        try:
+            payload = _json.loads(path.read_text(encoding="utf-8"))
+            raw_items = payload.get("items", [])
+            items.extend(TranscriptItem.model_validate(item) for item in raw_items)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"采集分块损坏：{path.name}") from exc
+    return sorted(clean_transcript_items(items), key=lambda item: item.timestamp)
+
+
+def _scenario_batches(items: list[TranscriptItem]) -> list[list[TranscriptItem]]:
+    batches: list[list[TranscriptItem]] = []
+    current: list[TranscriptItem] = []
+    current_chars = 0
+    for item in items:
+        item_chars = len(item.text)
+        if current and (
+            len(current) >= _CAPTURE_BATCH_MAX_ITEMS
+            or current_chars + item_chars > _CAPTURE_BATCH_MAX_CHARS
+        ):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+async def _generate_and_save_capture_scenarios(user_id: str, items: list[TranscriptItem]) -> list[ScenarioResponse]:
+    saved: list[ScenarioResponse] = []
+    for batch in _scenario_batches(items):
+        scenario = await generate_scenario(batch, user_id=user_id)
+        saved.append(db.create_scenario(user_id, batch[0].timestamp, batch[-1].timestamp, scenario))
+    return saved
+
+
+@app.post("/capture/upload/init", response_model=CaptureUploadInitResponse)
+def capture_upload_init(
+    request: CaptureUploadInitRequest,
+    user: UserOut = Depends(current_user),
+) -> CaptureUploadInitResponse:
+    require_ai_access(user)
+    upload_id = uuid.uuid4().hex
+    session_dir = _capture_session_dir(user.id, upload_id)
+    (session_dir / "chunks").mkdir(parents=True, exist_ok=True)
+    meta = {
+        "user_id": user.id,
+        "start": request.start.isoformat() if request.start else None,
+        "end": request.end.isoformat() if request.end else None,
+        "estimated_items": request.estimated_items,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (session_dir / "meta.json").write_text(_json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return CaptureUploadInitResponse(
+        upload_id=upload_id,
+        received_chunks=[],
+        max_items_per_chunk=_CAPTURE_MAX_ITEMS_PER_CHUNK,
+    )
+
+
+@app.post("/capture/upload/chunk", response_model=CaptureUploadChunkResponse)
+def capture_upload_chunk(
+    request: CaptureUploadChunkRequest,
+    user: UserOut = Depends(current_user),
+) -> CaptureUploadChunkResponse:
+    require_ai_access(user)
+    session_dir = _capture_session_dir(user.id, request.upload_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
+    items = clean_transcript_items(request.items)
+    path = _capture_chunk_path(user.id, request.upload_id, request.chunk_index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "chunk_index": request.chunk_index,
+        "items": [item.model_dump(mode="json") for item in items],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return CaptureUploadChunkResponse(
+        upload_id=request.upload_id,
+        chunk_index=request.chunk_index,
+        accepted_items=len(items),
+        received_chunks=_received_capture_chunks(user.id, request.upload_id),
+    )
+
+
+@app.post("/capture/upload/complete", response_model=CaptureUploadCompleteResponse)
+async def capture_upload_complete(
+    request: CaptureUploadCompleteRequest,
+    user: UserOut = Depends(current_user),
+) -> CaptureUploadCompleteResponse:
+    require_ai_access(user)
+    session_dir = _capture_session_dir(user.id, request.upload_id)
+    if not session_dir.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
+    items = _load_capture_items(user.id, request.upload_id)
+    if not items:
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="本次采集没有可生成场景的对话")
+    scenarios = await _generate_and_save_capture_scenarios(user.id, items)
+    shutil.rmtree(session_dir, ignore_errors=True)
+    return CaptureUploadCompleteResponse(
+        accepted_items=len(items),
+        generated=len(scenarios),
+        scenario_ids=[scenario.scene_id for scenario in scenarios],
+        scenarios=scenarios,
+    )
+
+
 @app.post("/transcript/upload", response_model=TranscriptUploadResponse)
-def upload_transcripts(
+async def upload_transcripts(
     request: TranscriptUploadRequest,
     user: UserOut = Depends(current_user),
 ) -> TranscriptUploadResponse:
-    db.cleanup_expired()
-    uploaded = db.insert_transcripts(user.id, request.items)
-    return TranscriptUploadResponse(uploaded=uploaded, retention_days=settings.retention_days)
+    """兼容旧客户端：不再写 transcripts 表，清洗后直接生成场景。"""
+    require_ai_access(user)
+    items = sorted(clean_transcript_items(request.items), key=lambda item: item.timestamp)
+    if not items:
+        return TranscriptUploadResponse(uploaded=0, retention_days=0, generated=0, scenario_ids=[])
+    scenarios = await _generate_and_save_capture_scenarios(user.id, items)
+    return TranscriptUploadResponse(
+        uploaded=len(items),
+        retention_days=0,
+        generated=len(scenarios),
+        scenario_ids=[scenario.scene_id for scenario in scenarios],
+    )
 
 
 # ---- 高级会员：录音文件上传 → 转写 → 生成场景 ----
@@ -1435,33 +1610,21 @@ def scenario_list(
 
 
 @app.get("/scenario/today", response_model=ScenarioListResponse)
-async def scenario_today(
+def scenario_today(
     auto_generate: bool = Query(default=True),
     user: UserOut = Depends(current_user),
 ) -> ScenarioListResponse:
-    """返回今天的场景列表；如果今天还没有场景但已有真实对话，自动按当天对话生成一个。
+    """返回今天的场景列表。
 
-    生成由用户打开 App 触发而非全局定时任务，避免给不活跃用户白白消耗模型费用。
+    真实对话采集结束时会通过 /capture/upload/complete 直接生成场景；
+    打开列表只读取已经生成的场景，不再触发模型调用。
     """
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     existing = db.list_scenarios(user.id, day_start, now + timedelta(minutes=1))
-    generated = False
-    if not existing and auto_generate:
-        transcripts = db.query_transcripts(user.id, day_start, now)
-        if transcripts:
-            try:
-                require_ai_access(user)
-            except HTTPException:
-                transcripts = []
-            if transcripts:
-                scenario = await generate_scenario(transcripts, user_id=user.id)
-                db.create_scenario(user.id, day_start, now, scenario)
-                existing = db.list_scenarios(user.id, day_start, now + timedelta(minutes=1))
-                generated = True
     return ScenarioListResponse(
         items=[ScenarioSummary(**item) for item in existing],
-        generated=generated,
+        generated=False,
     )
 
 
@@ -1532,14 +1695,15 @@ async def roleplay_message(
         user_id=user.id,
     )
     score = evaluation.score
-    accepted = evaluation.accepted and score >= settings.roleplay_accept_score
+    final_guidance = request.guidance_mode == "final"
+    accepted = True if final_guidance else evaluation.accepted and score >= settings.roleplay_accept_score
     had_rejected_attempt = db.has_rejected_practice_attempt(
         user.id,
         session.session_id,
         target_line.index,
         settings.roleplay_accept_score,
     )
-    feedback = format_roleplay_feedback(
+    feedback = "" if final_guidance else format_roleplay_feedback(
         evaluation.feedback,
         evaluation.correction,
         accepted,
@@ -1553,7 +1717,7 @@ async def roleplay_message(
         role=session.selected_role,
         content=request.message.strip(),
         translation=target_line.source_text,
-        feedback=feedback or None,
+        feedback=(stored_feedback if final_guidance else feedback or None),
     )
     db.add_practice_result(
         user.id,
@@ -1574,11 +1738,17 @@ async def roleplay_message(
         if next_user_line(session, scenario) is None:
             session.status = "completed"
     db.update_roleplay_session(session)
+    latest_feedback = feedback or None
+    if final_guidance and session.status == "completed":
+        latest_feedback = format_final_roleplay_review(
+            session,
+            db.list_roleplay_messages(user.id, session.session_id),
+        )
     return roleplay_state_response(
         user.id,
         session,
         scenario,
-        latest_feedback=feedback or None,
+        latest_feedback=latest_feedback,
         latest_accepted=accepted,
     )
 
@@ -1769,7 +1939,6 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
 def materialize_items(user_id: str, start: datetime, end: datetime, request_items: list) -> list:
     if request_items:
         items = clean_transcript_items(request_items)
-        db.insert_transcripts(user_id, items)
     else:
         items = db.query_transcripts(user_id, start, end)
     return sorted(clean_transcript_items(items), key=lambda item: item.timestamp)
@@ -1886,6 +2055,23 @@ def format_roleplay_feedback(
     if correction and correction not in feedback:
         return feedback + "\n更自然：" + correction
     return feedback
+
+
+def format_final_roleplay_review(
+    session: RoleplaySessionRecord,
+    messages: list,
+) -> str:
+    score = round((session.score_total / session.turns) * 100) if session.turns else 0
+    user_messages = [message for message in messages if getattr(message, "speaker", "") == "user"]
+    weak_points = [
+        getattr(message, "feedback", "")
+        for message in user_messages
+        if getattr(message, "feedback", "") and "正确，已继续" not in getattr(message, "feedback", "")
+    ][:3]
+    if not weak_points:
+        return f"最终评分 {score}/100。整体表达能完成交流，接下来重点练自然停顿和更口语的连接词。"
+    joined = "\n".join(f"- {point}" for point in weak_points)
+    return f"最终评分 {score}/100。本轮优先改这几处：\n{joined}"
 
 
 async def _cleanup_loop() -> None:

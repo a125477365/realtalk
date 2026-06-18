@@ -25,6 +25,7 @@ struct MainChatView: View {
     @State private var showingAccount = false
     @State private var roleDialogScenario: ScenarioSummary?
     @State private var showImmersive = false
+    @State private var scenarioScope = "today"
 
     var body: some View {
         NavigationStack {
@@ -33,9 +34,11 @@ struct MainChatView: View {
 
                 VStack(spacing: 0) {
                     topBar
+                    statusPill
+                    scenarioScopePicker
                     scenarioStrip
-                    messages
-                    composer
+                    Spacer(minLength: 0)
+                    captureButton
                 }
             }
             // 开始对练即进入沉浸式字幕；练习完成或退出回到聊天
@@ -97,29 +100,45 @@ struct MainChatView: View {
                 Text("RealTalk")
                     .font(.headline)
                     .foregroundStyle(RTTheme.textPrimary)
-                Text(statusText)
+                Text("场景列表与日期选择")
                     .font(.caption2)
                     .foregroundStyle(RTTheme.textSecondary)
             }
 
             Spacer()
-
-            Button {
-                Task {
-                    await model.sendMainChatMessage(speech.isRecording ? "停止录音" : "开始录音")
-                }
-            } label: {
-                Image(systemName: speech.isRecording ? "record.circle.fill" : "waveform")
-                    .font(.title3)
-                    .foregroundStyle(speech.isRecording ? .red : RTTheme.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .background(RTTheme.surface, in: Circle())
-                    .overlay(Circle().stroke(RTTheme.hairline))
-            }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private var statusPill: some View {
+        Text(statusText)
+            .font(.system(size: 12 * model.fontScale, weight: .semibold))
+            .foregroundStyle(statusColor)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(statusColor.opacity(0.10), in: Capsule())
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.bottom, 10)
+    }
+
+    private var scenarioScopePicker: some View {
+        Picker("场景日期", selection: $scenarioScope) {
+            Text("今天").tag("today")
+            Text("全部").tag("all")
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .onChange(of: scenarioScope) { _, scope in
+            Task {
+                if scope == "all" {
+                    await model.loadScenarioList()
+                } else {
+                    await model.loadTodayScenarios()
+                }
+            }
+        }
     }
 
     // MARK: 今日场景
@@ -127,7 +146,7 @@ struct MainChatView: View {
     private var scenarioStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("今日场景")
+                Text(scenarioScope == "today" ? "今日场景" : "全部场景")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(RTTheme.textSecondary)
                 Spacer()
@@ -146,7 +165,7 @@ struct MainChatView: View {
             if model.todayScenarios.isEmpty {
                 // 空态：引导用户先采集真实对话或上传录音（场景只能来自真实对话）
                 Button {
-                    Task { await model.sendMainChatMessage(speech.isRecording ? "停止录音" : "开始录音") }
+                    Task { await model.toggleRecording() }
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "waveform.badge.plus")
@@ -155,7 +174,7 @@ struct MainChatView: View {
                             Text(model.isLoadingScenarios ? "正在加载今日场景…" : "今天还没有场景")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(RTTheme.textPrimary)
-                            Text("点这里采集今天的真实对话；无麦克风可在下方输入「录入对话 …」")
+                            Text("点底部按钮采集今天的真实对话，停止后自动生成英语场景")
                                 .font(.caption)
                                 .foregroundStyle(RTTheme.textSecondary)
                         }
@@ -201,6 +220,29 @@ struct MainChatView: View {
             }
         }
         .padding(.bottom, 8)
+    }
+
+    private var captureButton: some View {
+        Button {
+            Task { await model.toggleRecording() }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: speech.isRecording ? "stop.fill" : "waveform.badge.plus")
+                    .font(.system(size: 20, weight: .semibold))
+                Text(speech.isRecording ? "停止采集并生成场景" : "开始采集日常对话")
+                    .font(.system(size: 16 * model.fontScale, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(speech.isRecording ? Color.red : RTTheme.accent, in: Capsule())
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+            .padding(.bottom, 14)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isWorking)
+        .background(RTTheme.background)
     }
 
     // MARK: 消息流（字幕自动上滚）
@@ -296,10 +338,19 @@ struct MainChatView: View {
         if voice.isSpeaking { return "AI 正在说话…" }
         if practiceSpeech.isListening { return "正在听你说英语…" }
         if speech.isRecording { return "正在采集真实对话…" }
+        if model.isWorking { return "正在处理，请稍等" }
         if let usage = model.billingAccount?.usage, usage.overLimit {
             return "今日 AI 用量已达上限"
         }
         return auth.user?.tierName ?? "用真实生活练英语"
+    }
+
+    private var statusColor: Color {
+        if speech.isRecording { return .red }
+        if voice.isSpeaking { return .orange }
+        if practiceSpeech.isListening { return RTTheme.success }
+        if model.isWorking { return RTTheme.accent }
+        return RTTheme.textSecondary
     }
 
     private func sendDraft() async {

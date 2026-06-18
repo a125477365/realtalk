@@ -81,6 +81,39 @@ class TranscriptUploadRequest(BaseModel):
 class TranscriptUploadResponse(BaseModel):
     uploaded: int
     retention_days: int
+    generated: int = 0
+    scenario_ids: list[str] = Field(default_factory=list)
+
+
+class CaptureUploadInitRequest(BaseModel):
+    start: datetime | None = None
+    end: datetime | None = None
+    estimated_items: int = Field(default=0, ge=0, le=200000)
+
+
+class CaptureUploadInitResponse(BaseModel):
+    upload_id: str
+    received_chunks: list[int] = Field(default_factory=list)
+    max_items_per_chunk: int = 80
+
+
+class CaptureUploadChunkRequest(BaseModel):
+    upload_id: str = Field(min_length=1, max_length=120)
+    chunk_index: int = Field(ge=0, le=100000)
+    items: list[TranscriptItem] = Field(default_factory=list, max_length=200)
+
+
+class CaptureUploadChunkResponse(BaseModel):
+    upload_id: str
+    chunk_index: int
+    accepted_items: int
+    received_chunks: list[int]
+
+
+class CaptureUploadCompleteRequest(BaseModel):
+    upload_id: str = Field(min_length=1, max_length=120)
+    start: datetime | None = None
+    end: datetime | None = None
 
 
 class TranscriptQueryResponse(BaseModel):
@@ -170,6 +203,13 @@ class ScenarioResponse(BaseModel):
     expressions: list[ExpressionCard] = Field(default_factory=list)
 
 
+class CaptureUploadCompleteResponse(BaseModel):
+    accepted_items: int
+    generated: int
+    scenario_ids: list[str]
+    scenarios: list[ScenarioResponse] = Field(default_factory=list)
+
+
 class RoleplayStartRequest(BaseModel):
     start: datetime
     end: datetime
@@ -181,6 +221,7 @@ class RoleplayStartRequest(BaseModel):
 class RoleplayMessageRequest(BaseModel):
     session_id: str
     message: str = Field(min_length=1, max_length=2000)
+    guidance_mode: Literal["realtime", "final"] = "realtime"
 
 
 class RoleplayEvaluation(BaseModel):

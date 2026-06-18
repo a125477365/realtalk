@@ -107,25 +107,31 @@ fun LoginScreen(model: AppViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainChatScreen(model: AppViewModel) {
-    val messages by model.chatMessages.collectAsState()
-    val partial by model.partialSubtitle.collectAsState()
     val scenarios by model.todayScenarios.collectAsState()
     val isRecording by model.isRecording.collectAsState()
     val isListening by model.isListening.collectAsState()
     val isSpeaking by model.isSpeaking.collectAsState()
-    val isVoiceActive by model.isVoiceActive.collectAsState()
+    val isWorking by model.isWorking.collectAsState()
     val user by model.user.collectAsState()
     val showImmersive by model.showImmersive.collectAsState()
 
-    var draft by remember { mutableStateOf("") }
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
+    var scenarioScope by remember { mutableStateOf("today") }
 
-    val listState = rememberLazyListState()
-    // 要求 13：字幕自动向上滚动
-    LaunchedEffect(messages.size, partial) {
-        val total = messages.size + (if (partial.isNotBlank()) 1 else 0)
-        if (total > 0) listState.animateScrollToItem(total - 1)
+    val statusText = when {
+        isSpeaking -> "AI 正在说话…"
+        isListening -> "正在听你说英语…"
+        isRecording -> "正在采集真实对话…"
+        isWorking -> "正在处理，请稍等"
+        else -> user?.tierName ?: "用真实生活练英语"
+    }
+    val statusColor = when {
+        isRecording -> Color.Red
+        isSpeaking -> Color(0xFFD97706)
+        isListening -> RT.Success
+        isWorking -> RT.Accent
+        else -> RT.TextSecondary
     }
 
     Column(Modifier.fillMaxSize().background(RT.Background).imePadding()) {
@@ -144,31 +150,48 @@ fun MainChatScreen(model: AppViewModel) {
             Spacer(Modifier.width(10.dp))
             Column {
                 Text("RealTalk", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
-                Text(
-                    when {
-                        isSpeaking -> "AI 正在说话…"
-                        isListening -> "正在听你说英语…"
-                        isRecording -> "正在采集真实对话…"
-                        else -> user?.tierName ?: ""
-                    },
-                    fontSize = 11.sp, color = RT.TextSecondary,
-                )
+                Text("场景列表与日期选择", fontSize = 11.sp, color = RT.TextSecondary)
             }
             Spacer(Modifier.weight(1f))
-            Box(
-                Modifier.size(36.dp)
-                    .background(RT.Surface, CircleShape)
-                    .border(1.dp, RT.Hairline, CircleShape)
-                    .clickable { model.toggleRecording() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(if (isRecording) "■" else "●", color = if (isRecording) Color.Red else RT.TextSecondary)
-            }
         }
 
-        // 今日场景
         Text(
-            "今日场景",
+            statusText,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = statusColor,
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .background(statusColor.copy(alpha = 0.10f), RoundedCornerShape(99.dp))
+                .padding(horizontal = 14.dp, vertical = 7.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("today" to "今天", "all" to "全部").forEach { (key, label) ->
+                OutlinedButton(
+                    onClick = {
+                        scenarioScope = key
+                        if (key == "today") model.loadTodayScenarios() else model.loadScenarioList()
+                    },
+                    modifier = Modifier.weight(1f),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (scenarioScope == key) RT.Accent else RT.Hairline,
+                    ),
+                ) {
+                    Text(label, color = if (scenarioScope == key) RT.Accent else RT.TextSecondary)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        // 场景列表
+        Text(
+            if (scenarioScope == "today") "今日场景" else "全部场景",
             fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
@@ -186,7 +209,7 @@ fun MainChatScreen(model: AppViewModel) {
                     fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = RT.TextPrimary,
                 )
                 Spacer(Modifier.height(2.dp))
-                Text("点这里采集今天的真实对话，自动生成练习场景",
+                Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
                     fontSize = 12.sp, color = RT.TextSecondary)
             }
         } else {
@@ -214,58 +237,17 @@ fun MainChatScreen(model: AppViewModel) {
             }
         }
 
-        // 消息流
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            items(messages, key = { it.id }) { message -> ChatRow(message) }
-            if (partial.isNotBlank()) {
-                item(key = "partial") {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Text(
-                            partial, color = RT.TextSecondary,
-                            modifier = Modifier
-                                .background(RT.UserBubble.copy(alpha = 0.6f), RoundedCornerShape(18.dp))
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                        )
-                    }
-                }
-            }
-        }
+        Spacer(Modifier.weight(1f))
 
-        // 输入栏
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)
-                .background(RT.Surface, RoundedCornerShape(26.dp))
-                .border(1.dp, RT.Hairline, RoundedCornerShape(26.dp))
-                .padding(start = 8.dp, end = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Button(
+            onClick = { model.toggleRecording() },
+            enabled = !isWorking,
+            colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Color.Red else RT.Accent),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).height(56.dp),
+            shape = RoundedCornerShape(99.dp),
         ) {
-            TextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = { Text("和 RealTalk 说说今天想练什么", fontSize = 14.sp) },
-                modifier = Modifier.weight(1f),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                ),
-                maxLines = 4,
-            )
-            TextButton(onClick = { model.toggleVoiceConversation() }) {
-                Text(if (isVoiceActive) "⏸" else "🎤", fontSize = 22.sp)
-            }
-            TextButton(
-                onClick = { model.sendText(draft); draft = "" },
-                enabled = draft.isNotBlank(),
-            ) { Text("↑", fontSize = 22.sp, color = if (draft.isNotBlank()) RT.Accent else RT.TextSecondary) }
+            Text(if (isRecording) "停止采集并生成场景" else "开始采集日常对话", fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(6.dp))
     }
 
     // 角色选择

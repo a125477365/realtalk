@@ -26,6 +26,7 @@ final class SpeechPracticeManager: ObservableObject {
     @Published private(set) var partialText = ""
     @Published private(set) var statusText = "未开始"
     @Published private(set) var lastError: String?
+    @Published private(set) var audioLevel: Double = 0
 
     var onUtterance: ((String) -> Void)?
 
@@ -81,6 +82,7 @@ final class SpeechPracticeManager: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         isListening = false
+        audioLevel = 0
         statusText = "已停止"
     }
 
@@ -134,8 +136,12 @@ final class SpeechPracticeManager: ObservableObject {
         }
 
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request, weak self] buffer, _ in
             request?.append(buffer)
+            let level = Self.level(from: buffer)
+            Task { @MainActor in
+                self?.audioLevel = level
+            }
         }
 
         audioEngine.prepare()
@@ -180,5 +186,18 @@ final class SpeechPracticeManager: ObservableObject {
         guard text.isEmpty == false, text != emittedText else { return }
         emittedText = text
         onUtterance?(text)
+    }
+
+    private nonisolated static func level(from buffer: AVAudioPCMBuffer) -> Double {
+        guard let channel = buffer.floatChannelData?[0] else { return 0 }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return 0 }
+        var sum: Float = 0
+        for index in 0..<frameCount {
+            let sample = channel[index]
+            sum += sample * sample
+        }
+        let rms = sqrt(sum / Float(frameCount))
+        return min(1, max(0, Double(rms) * 24))
     }
 }

@@ -22,8 +22,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -50,16 +53,24 @@ private fun money(cents: Int) = "¥%.2f".format(cents / 100.0)
 fun AccountSheet(model: AppViewModel) {
     val user by model.user.collectAsState()
     val billing by model.billing.collectAsState()
-    val plans by model.plans.collectAsState()
-    val order by model.rechargeOrder.collectAsState()
     val status by model.statusMessage.collectAsState()
     var method by remember { mutableStateOf("wechat") }
     var showUpload by remember { mutableStateOf(false) }
+    var showBilling by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) { model.refreshBilling(); if (plans.isEmpty()) model.loadPlans() }
+    LaunchedEffect(Unit) { model.refreshBilling(); model.loadPlans() }
 
     if (showUpload) {
         UploadSheetContent(model) { showUpload = false }
+        return
+    }
+    if (showBilling) {
+        BillingSheetContent(model, method, { method = it }) { showBilling = false }
+        return
+    }
+    if (showSettings) {
+        SettingsSheetContent(model) { showSettings = false }
         return
     }
 
@@ -122,80 +133,18 @@ fun AccountSheet(model: AppViewModel) {
             }
         }
 
-        // 套餐
         item {
-            Text("会员套餐 · 会员每日有 token 限额", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("wechat" to "微信支付", "alipay" to "支付宝").forEach { (key, label) ->
-                    OutlinedButton(
-                        onClick = { method = key },
-                        modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp, if (method == key) RT.Accent else RT.Hairline,
-                        ),
-                    ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
-                }
-            }
-        }
-        item {
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(plans, key = { it.id }) { plan ->
-                    Column(
-                        Modifier.width(136.dp)
-                            .background(RT.Surface, RoundedCornerShape(14.dp))
-                            .border(
-                                1.dp,
-                                if (plan.tier == "premium") Color(0xFFF59E0B).copy(alpha = 0.5f) else RT.Hairline,
-                                RoundedCornerShape(14.dp),
-                            )
-                            .padding(12.dp),
-                    ) {
-                        Text(
-                            plan.title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                            color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent,
-                        )
-                        Text(money(plan.perMonthCents), fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            if (plan.months > 1) "每月 · 共 ${money(plan.priceCents)}" else "每月",
-                            fontSize = 10.sp, color = RT.TextSecondary,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = { model.subscribe(plan.id, method) },
-                            modifier = Modifier.fillMaxWidth().height(34.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (plan.tier == "premium") Color(0xFFF59E0B) else RT.Accent,
-                            ),
-                        ) { Text("开通", fontSize = 13.sp) }
-                    }
-                }
-            }
-        }
-
-        // 待支付订单（开通会员后出现）
-        order?.let { o ->
-            item {
-                Column(
-                    Modifier.fillMaxWidth()
-                        .background(RT.Surface, RoundedCornerShape(16.dp))
-                        .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
-                        .padding(16.dp),
-                ) {
-                    Text("待支付", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(8.dp))
-                    Text(o.message, fontSize = 13.sp)
-                    o.receiverAccount?.let { Text("收款账号：$it", fontSize = 12.sp, color = RT.TextSecondary) }
-                    Text("订单号：${o.orderId}", fontSize = 10.sp, color = RT.TextSecondary)
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { model.confirmRecharge() },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
-                    ) { Text("我已完成支付") }
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsEntry(
+                    title = "设置",
+                    subtitle = "字体、字幕、自动录音",
+                    modifier = Modifier.weight(1f),
+                ) { showSettings = true }
+                SettingsEntry(
+                    title = "会员与充值",
+                    subtitle = "套餐、支付订单",
+                    modifier = Modifier.weight(1f),
+                ) { showBilling = true }
             }
         }
 
@@ -240,6 +189,186 @@ fun AccountSheet(model: AppViewModel) {
         item {
             if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = RT.TextSecondary)
             TextButton(onClick = { model.logout() }) { Text("退出登录", color = Color.Red) }
+        }
+    }
+}
+
+@Composable
+private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier
+            .background(RT.Surface, RoundedCornerShape(16.dp))
+            .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
+            .clickable { onClick() }
+            .padding(14.dp),
+    ) {
+        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = RT.TextPrimary)
+        Spacer(Modifier.height(3.dp))
+        Text(subtitle, fontSize = 11.sp, color = RT.TextSecondary)
+    }
+}
+
+@Composable
+private fun BillingSheetContent(
+    model: AppViewModel,
+    method: String,
+    onMethodChange: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val plans by model.plans.collectAsState()
+    val order by model.rechargeOrder.collectAsState()
+    val status by model.statusMessage.collectAsState()
+
+    LazyColumn(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("‹ 返回") }
+                Text("会员与充值", fontWeight = FontWeight.SemiBold)
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("wechat" to "微信支付", "alipay" to "支付宝").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { onMethodChange(key) },
+                        modifier = Modifier.weight(1f),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp, if (method == key) RT.Accent else RT.Hairline,
+                        ),
+                    ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+        }
+        items(plans, key = { it.id }) { plan ->
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(14.dp))
+                    .border(
+                        1.dp,
+                        if (plan.tier == "premium") Color(0xFFF59E0B).copy(alpha = 0.5f) else RT.Hairline,
+                        RoundedCornerShape(14.dp),
+                    )
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(plan.title, fontWeight = FontWeight.SemiBold, color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent)
+                    Text(
+                        if (plan.months > 1) "每月 ${money(plan.perMonthCents)} · 共 ${money(plan.priceCents)}" else "每月 ${money(plan.perMonthCents)}",
+                        fontSize = 11.sp,
+                        color = RT.TextSecondary,
+                    )
+                }
+                Button(
+                    onClick = { model.subscribe(plan.id, method) },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (plan.tier == "premium") Color(0xFFF59E0B) else RT.Accent),
+                ) { Text("开通") }
+            }
+        }
+        order?.let { o ->
+            item {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(16.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
+                        .padding(16.dp),
+                ) {
+                    Text("待支付", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(o.message, fontSize = 13.sp)
+                    o.receiverAccount?.let { Text("收款账号：$it", fontSize = 12.sp, color = RT.TextSecondary) }
+                    Text("订单号：${o.orderId}", fontSize = 10.sp, color = RT.TextSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { model.confirmRecharge() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
+                    ) { Text("我已完成支付") }
+                }
+            }
+        }
+        item {
+            if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = RT.TextSecondary)
+        }
+    }
+}
+
+@Composable
+private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
+    val showSubtitles by model.showSubtitles.collectAsState()
+    val guidanceMode by model.guidanceMode.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
+    val autoEnabled by model.autoCaptureEnabled.collectAsState()
+    val autoStart by model.autoCaptureStart.collectAsState()
+    val autoEnd by model.autoCaptureEnd.collectAsState()
+
+    LazyColumn(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("‹ 返回") }
+                Text("设置", fontWeight = FontWeight.SemiBold)
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("显示双语字幕", fontWeight = FontWeight.SemiBold)
+                    Text("对话字幕中显示中文辅助内容", fontSize = 11.sp, color = RT.TextSecondary)
+                }
+                Switch(checked = showSubtitles, onCheckedChange = { model.setShowSubtitles(it) })
+            }
+        }
+        item {
+            Text("默认指导方式", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("realtime" to "实时指导", "final" to "结束后指导").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { model.setGuidanceMode(key) },
+                        modifier = Modifier.weight(1f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (guidanceMode == key) RT.Accent else RT.Hairline),
+                    ) { Text(label, color = if (guidanceMode == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+        }
+        item {
+            Text("字体大小 ${"%.0f".format(fontScale * 100)}%", fontWeight = FontWeight.SemiBold)
+            Slider(value = fontScale, onValueChange = { model.setFontScale(it) }, valueRange = 0.85f..1.35f, steps = 9)
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("按时段自动录音", fontWeight = FontWeight.SemiBold)
+                    Text("后台录音需系统允许麦克风与后台运行", fontSize = 11.sp, color = RT.TextSecondary)
+                }
+                Switch(checked = autoEnabled, onCheckedChange = { model.setAutoCaptureEnabled(it) })
+            }
+        }
+        if (autoEnabled) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TextField(
+                        value = autoStart,
+                        onValueChange = { model.setAutoCaptureStart(it) },
+                        label = { Text("开始") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextField(
+                        value = autoEnd,
+                        onValueChange = { model.setAutoCaptureEnd(it) },
+                        label = { Text("结束") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }

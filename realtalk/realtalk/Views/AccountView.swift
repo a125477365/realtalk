@@ -22,8 +22,6 @@ struct AccountPanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     memberCard
-                    plans
-                    if model.rechargeOrder != nil { orderPanel }
                     uploadEntry
                     ledger
                     StatusBanner(text: model.statusMessage)

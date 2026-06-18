@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct realtalkApp: App {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -27,6 +28,10 @@ struct realtalkApp: App {
                 }
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     _ = WeChatAuthManager.shared.handleUniversalLink(activity)
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await model.handlePendingShortcutAction() }
                 }
         }
     }

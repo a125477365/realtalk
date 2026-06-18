@@ -80,6 +80,7 @@ class PracticeSpeech(private val context: Context) {
     var onPartial: ((String) -> Unit)? = null
     var onUtterance: ((String) -> Unit)? = null
     var onStateChange: ((Boolean) -> Unit)? = null
+    var onLevel: ((Float) -> Unit)? = null
 
     private var recognizer: SpeechRecognizer? = null
     private var lastPartial = ""
@@ -113,7 +114,9 @@ class PracticeSpeech(private val context: Context) {
 
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onRmsChanged(rmsdB: Float) {
+                    onLevel?.invoke(((rmsdB + 2f) / 12f).coerceIn(0f, 1f))
+                }
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -129,6 +132,7 @@ class PracticeSpeech(private val context: Context) {
     fun stop() {
         isListening = false
         onPartial?.invoke("")
+        onLevel?.invoke(0f)
         recognizer?.destroy()
         recognizer = null
         onStateChange?.invoke(false)
