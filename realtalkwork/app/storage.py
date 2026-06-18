@@ -1159,6 +1159,11 @@ class Database:
             )
 
     def insert_transcripts(self, user_id: str, items: list[TranscriptItem]) -> int:
+        """[已废弃] 原始对话不再入库。
+
+        采集结束后由 /capture/upload/complete 直接交模型生成场景，原文只在上传过程中
+        以临时文件存在、用完即删。本方法与 transcripts 表仅为兼容旧数据保留，已无调用方。
+        """
         now = _now()
         rows = []
         for item in clean_transcript_items(items):

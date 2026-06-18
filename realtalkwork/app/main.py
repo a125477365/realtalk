@@ -78,6 +78,7 @@ from .schemas import (
     RechargeCreateRequest,
     RechargeQueryRequest,
     RechargeOrderResponse,
+    RoleplayEvaluateRequest,
     RoleplayMessageRequest,
     RoleplaySessionRecord,
     RoleplayStartRequest,
@@ -1561,12 +1562,16 @@ def audio_jobs_list(
     return AudioJobListResponse(items=[AudioJobOut(**item) for item in db.list_audio_jobs(user.id, limit=limit)])
 
 
-@app.get("/transcript/query", response_model=TranscriptQueryResponse)
+@app.get("/transcript/query", response_model=TranscriptQueryResponse, deprecated=True)
 def query_transcripts(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     user: UserOut = Depends(current_user),
 ) -> TranscriptQueryResponse:
+    """[已废弃] 原始对话不再入库（采集结束直接生成场景，见 /capture/upload/*）。
+
+    transcripts 表与本端点仅为兼容旧客户端保留，正常情况下会返回空列表。
+    """
     now = datetime.now(timezone.utc)
     start = start or (now - timedelta(hours=1))
     end = end or now
@@ -1751,6 +1756,28 @@ async def roleplay_message(
         latest_feedback=latest_feedback,
         latest_accepted=accepted,
     )
+
+
+@app.post("/roleplay/evaluate", response_model=RoleplayStateResponse)
+async def roleplay_evaluate(
+    request: RoleplayEvaluateRequest,
+    user: UserOut = Depends(current_user),
+) -> RoleplayStateResponse:
+    """按需对当前对练给出最终评分与建议。
+
+    与 /roleplay/message 不同，本接口不推进对话，只汇总到目前为止的表现，
+    因此用户中途退出（未走到最后一句）也能拿到评估结果。
+    """
+    require_ai_access(user)
+    session = db.get_roleplay_session(user.id, request.session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景练习不存在")
+    scenario = db.get_scenario(user.id, session.scene_id)
+    if scenario is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景不存在")
+    messages = db.list_roleplay_messages(user.id, session.session_id)
+    review = format_final_roleplay_review(session, messages)
+    return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)

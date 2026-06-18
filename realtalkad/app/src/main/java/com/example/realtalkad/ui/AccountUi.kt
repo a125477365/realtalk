@@ -18,15 +18,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -54,19 +57,13 @@ fun AccountSheet(model: AppViewModel) {
     val user by model.user.collectAsState()
     val billing by model.billing.collectAsState()
     val status by model.statusMessage.collectAsState()
-    var method by remember { mutableStateOf("wechat") }
     var showUpload by remember { mutableStateOf(false) }
-    var showBilling by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { model.refreshBilling(); model.loadPlans() }
 
     if (showUpload) {
         UploadSheetContent(model) { showUpload = false }
-        return
-    }
-    if (showBilling) {
-        BillingSheetContent(model, method, { method = it }) { showBilling = false }
         return
     }
     if (showSettings) {
@@ -134,18 +131,11 @@ fun AccountSheet(model: AppViewModel) {
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SettingsEntry(
-                    title = "设置",
-                    subtitle = "字体、字幕、自动录音",
-                    modifier = Modifier.weight(1f),
-                ) { showSettings = true }
-                SettingsEntry(
-                    title = "会员与充值",
-                    subtitle = "套餐、支付订单",
-                    modifier = Modifier.weight(1f),
-                ) { showBilling = true }
-            }
+            SettingsEntry(
+                title = "设置",
+                subtitle = "字体、字幕、自动录音、会员与充值",
+                modifier = Modifier.fillMaxWidth(),
+            ) { showSettings = true }
         }
 
         // 上传录音入口
@@ -300,11 +290,20 @@ private fun BillingSheetContent(
 @Composable
 private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val showSubtitles by model.showSubtitles.collectAsState()
+    val autoSpeak by model.autoSpeakAI.collectAsState()
+    val continuousVoice by model.continuousVoice.collectAsState()
     val guidanceMode by model.guidanceMode.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
     val autoStart by model.autoCaptureStart.collectAsState()
     val autoEnd by model.autoCaptureEnd.collectAsState()
+
+    var method by remember { mutableStateOf("wechat") }
+    var showBilling by remember { mutableStateOf(false) }
+    if (showBilling) {
+        BillingSheetContent(model, method, { method = it }) { showBilling = false }
+        return
+    }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -324,6 +323,24 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                     Text("对话字幕中显示中文辅助内容", fontSize = 11.sp, color = RT.TextSecondary)
                 }
                 Switch(checked = showSubtitles, onCheckedChange = { model.setShowSubtitles(it) })
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("自动朗读 AI 台词", fontWeight = FontWeight.SemiBold)
+                    Text("AI 回应时自动用英文朗读", fontSize = 11.sp, color = RT.TextSecondary)
+                }
+                Switch(checked = autoSpeak, onCheckedChange = { model.setAutoSpeakAI(it) })
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("连续语音对话", fontWeight = FontWeight.SemiBold)
+                    Text("一句结束后自动继续听你说下一句", fontSize = 11.sp, color = RT.TextSecondary)
+                }
+                Switch(checked = continuousVoice, onCheckedChange = { model.setContinuousVoice(it) })
             }
         }
         item {
@@ -355,21 +372,56 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         if (autoEnabled) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextField(
-                        value = autoStart,
-                        onValueChange = { model.setAutoCaptureStart(it) },
-                        label = { Text("开始") },
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextField(
-                        value = autoEnd,
-                        onValueChange = { model.setAutoCaptureEnd(it) },
-                        label = { Text("结束") },
-                        modifier = Modifier.weight(1f),
-                    )
+                    TimeField("开始", autoStart, Modifier.weight(1f)) { model.setAutoCaptureStart(it) }
+                    TimeField("结束", autoEnd, Modifier.weight(1f)) { model.setAutoCaptureEnd(it) }
                 }
             }
         }
+        item {
+            SettingsEntry(
+                title = "会员与充值",
+                subtitle = "套餐、支付订单",
+                modifier = Modifier.fillMaxWidth(),
+            ) { showBilling = true }
+        }
+    }
+}
+
+/** 时间选择：点击弹出系统风格时钟选择器，输出 HH:mm，避免手输无效字符串。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TimeField(label: String, value: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
+    var showDialog by remember { mutableStateOf(false) }
+    val parts = value.split(":")
+    val hour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 9
+    val minute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0
+
+    Column(
+        modifier
+            .background(RT.Surface, RoundedCornerShape(12.dp))
+            .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp))
+            .clickable { showDialog = true }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Text(label, fontSize = 11.sp, color = RT.TextSecondary)
+        Spacer(Modifier.height(2.dp))
+        Text("%02d:%02d".format(hour, minute), fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = RT.TextPrimary)
+    }
+
+    if (showDialog) {
+        val state = rememberTimePickerState(initialHour = hour, initialMinute = minute, is24Hour = true)
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange("%02d:%02d".format(state.hour, state.minute))
+                    showDialog = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = { showDialog = false }) { Text("取消") } },
+            title = { Text("选择${label}时间") },
+            text = { TimePicker(state = state) },
+        )
     }
 }
 

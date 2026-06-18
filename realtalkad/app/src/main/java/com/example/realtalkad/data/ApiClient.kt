@@ -108,6 +108,10 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun sendRoleplayMessage(sessionId: String, message: String, guidanceMode: String, token: String): RoleplayState =
         post("/roleplay/message", RoleplayMessageRequest(sessionId, message, guidanceMode), token)
 
+    /** 按需最终评估：中途退出也能拿到评分与建议，不推进对话。 */
+    suspend fun evaluateRoleplay(sessionId: String, token: String): RoleplayState =
+        post("/roleplay/evaluate", RoleplayEvaluateRequest(sessionId), token)
+
     suspend fun aiChat(message: String, history: List<AIChatMessage>, sceneId: String?, sessionId: String?, token: String): AIChatResponse =
         post("/ai/chat", AIChatRequest(message, history, sceneId, sessionId), token)
 

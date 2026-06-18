@@ -1,3 +1,9 @@
 <resources>
     <string name="app_name">realtalkad</string>
+
+    <!-- 语音助手 / 长按图标快捷指令（Google 助手可直接念出长标签触发） -->
+    <string name="shortcut_start_short">开始录音</string>
+    <string name="shortcut_start_long">在 RealTalk 开始录音</string>
+    <string name="shortcut_stop_short">结束录音</string>
+    <string name="shortcut_stop_long">结束 RealTalk 录音</string>
 </resources>

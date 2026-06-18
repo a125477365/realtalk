@@ -50,7 +50,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
-import com.example.realtalkad.data.ChatMessage
 import com.example.realtalkad.data.ScenarioSummary
 
 /* Claude 风格主题色（与 iOS RTTheme 对应） */
@@ -155,16 +154,15 @@ fun MainChatScreen(model: AppViewModel) {
             Spacer(Modifier.weight(1f))
         }
 
-        Text(
-            statusText,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = statusColor,
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .background(statusColor.copy(alpha = 0.10f), RoundedCornerShape(99.dp))
-                .padding(horizontal = 14.dp, vertical = 7.dp),
-        )
+        // 顶部状态：低调的「圆点 + 文字」指示器，不再是抢眼的彩色胶囊
+        Row(
+            Modifier.align(Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(Modifier.size(6.dp).background(statusColor, CircleShape))
+            Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = RT.TextSecondary)
+        }
         Spacer(Modifier.height(12.dp))
 
         Row(
@@ -284,31 +282,4 @@ fun MainChatScreen(model: AppViewModel) {
 
     // 沉浸式对练字幕：开练后全屏覆盖在主界面之上
     if (showImmersive) ImmersiveRoleplayScreen(model)
-}
-
-@Composable
-fun ChatRow(message: ChatMessage) {
-    when (message.sender) {
-        ChatMessage.Sender.ASSISTANT -> Row(verticalAlignment = Alignment.Top) {
-            Box(Modifier.padding(top = 8.dp).size(6.dp).background(RT.Accent, CircleShape))
-            Spacer(Modifier.width(10.dp))
-            Text(message.text, color = RT.TextPrimary, lineHeight = 22.sp)
-        }
-        ChatMessage.Sender.USER -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            Text(
-                message.text, color = RT.TextPrimary,
-                modifier = Modifier
-                    .background(RT.UserBubble, RoundedCornerShape(18.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            )
-        }
-        ChatMessage.Sender.SYSTEM -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            Text(
-                message.text, color = RT.Accent, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .background(RT.Accent.copy(alpha = 0.10f), RoundedCornerShape(99.dp))
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-            )
-        }
-    }
 }

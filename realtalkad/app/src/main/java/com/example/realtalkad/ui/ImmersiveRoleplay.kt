@@ -1,10 +1,5 @@
 package com.example.realtalkad.ui
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +20,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,12 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
+import com.example.realtalkad.R
 
 private object RTImm {
     val Top = Color(0xFF1A1C29)
@@ -71,6 +69,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val guidanceMode by model.guidanceMode.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val level by model.practiceAudioLevel.collectAsState()
+    val aiLevel by model.aiAudioLevel.collectAsState()
 
     val captions = buildList {
         state?.messages?.forEach { m ->
@@ -79,11 +78,10 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                 add(ImmCaption("AI", m.feedback, "", RTImm.Correction))
             }
         }
+        // 实时模式展示每轮纠正；结束后指导模式仅在完成/按需评估时由 latestFeedback 给出最终建议
         val feedback = state?.latestFeedback?.trim().orEmpty()
-        if (feedback.isNotBlank() && (guidanceMode == "realtime" || state?.completed == true)) {
-            if (lastOrNull()?.text != feedback) {
-                add(ImmCaption("AI", feedback, "", RTImm.Correction))
-            }
+        if (feedback.isNotBlank() && lastOrNull()?.text != feedback) {
+            add(ImmCaption("AI", feedback, "", RTImm.Correction))
         }
     }
 
@@ -165,7 +163,9 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                 isSpeaking = isSpeaking,
                 isListening = isListening,
                 isVoiceActive = isVoiceActive,
+                guidanceMode = guidanceMode,
                 level = level,
+                aiLevel = aiLevel,
                 fontScale = fontScale,
                 onClick = {
                     when {
@@ -173,6 +173,8 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                         state?.completed != true && !isWorking -> model.toggleVoiceConversation()
                     }
                 },
+                onReplay = { model.replayScenario() },
+                onEvaluate = { model.requestFinalEvaluation() },
             )
         }
     }
@@ -206,17 +208,14 @@ private fun PromptCircle(
     isSpeaking: Boolean,
     isListening: Boolean,
     isVoiceActive: Boolean,
+    guidanceMode: String,
     level: Float,
+    aiLevel: Float,
     fontScale: Float,
     onClick: () -> Unit,
+    onReplay: () -> Unit,
+    onEvaluate: () -> Unit,
 ) {
-    val transition = rememberInfiniteTransition(label = "ai-pulse")
-    val aiScale by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.12f,
-        animationSpec = infiniteRepeatable(tween(420), RepeatMode.Reverse),
-        label = "ai-scale",
-    )
     val color = when {
         completed -> Color.White
         isWorking -> RTImm.Thinking
@@ -225,8 +224,10 @@ private fun PromptCircle(
         else -> RTImm.Muted
     }
     val scale = when {
+        // 绿色：随用户说话的真实麦克风电平跳动
         isListening -> 1f + level.coerceIn(0f, 1f) * 0.28f
-        isSpeaking -> aiScale
+        // 红色：随 AI 实际输出音量跳动（Visualizer 实时电平，非固定正弦）
+        isSpeaking -> 1f + aiLevel.coerceIn(0f, 1f) * 0.28f
         else -> 1f
     }
     val label = when {
@@ -264,20 +265,45 @@ private fun PromptCircle(
             if (isWorking) {
                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(30.dp), strokeWidth = 3.dp)
             } else {
-                Text(
-                    when {
-                        completed -> "✓"
-                        isSpeaking -> "■"
-                        isListening -> "~"
-                        isVoiceActive -> "mic"
-                        else -> "play"
-                    },
-                    color = if (completed) Color.Black.copy(alpha = 0.35f) else Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 24.sp,
+                val iconRes = when {
+                    completed -> R.drawable.ic_check
+                    isSpeaking -> R.drawable.ic_stop
+                    isListening -> R.drawable.ic_graphic_eq
+                    isVoiceActive -> R.drawable.ic_mic
+                    else -> R.drawable.ic_play_arrow
+                }
+                Icon(
+                    painter = painterResource(iconRes),
+                    contentDescription = label,
+                    tint = if (completed) Color.Black.copy(alpha = 0.4f) else Color.White,
+                    modifier = Modifier.size(34.dp),
                 )
             }
         }
         Text(label, color = Color.White.copy(alpha = 0.62f), fontSize = (13f * fontScale).sp, fontWeight = FontWeight.Medium)
+
+        // 完成后可一键重玩；「结束后指导」模式可随时取最终评分（中途退出也有评价）
+        if (completed) {
+            OutlinedButton(
+                onClick = onReplay,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_replay),
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text("重新对话", color = Color.White, fontSize = (14f * fontScale).sp)
+            }
+        } else if (guidanceMode == "final") {
+            OutlinedButton(
+                onClick = onEvaluate,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
+            ) {
+                Text("查看评分与建议", color = Color.White.copy(alpha = 0.85f), fontSize = (14f * fontScale).sp)
+            }
+        }
     }
 }

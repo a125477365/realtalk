@@ -21,7 +21,6 @@ struct MainChatView: View {
     @EnvironmentObject private var practiceSpeech: SpeechPracticeManager
     @EnvironmentObject private var voice: VoicePromptPlayer
 
-    @State private var draft = ""
     @State private var showingAccount = false
     @State private var roleDialogScenario: ScenarioSummary?
     @State private var showImmersive = false
@@ -111,15 +110,18 @@ struct MainChatView: View {
         .padding(.vertical, 10)
     }
 
+    // 顶部状态：低调的「圆点 + 文字」指示器，不再是抢眼的彩色胶囊
     private var statusPill: some View {
-        Text(statusText)
-            .font(.system(size: 12 * model.fontScale, weight: .semibold))
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(statusColor.opacity(0.10), in: Capsule())
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.bottom, 10)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 6, height: 6)
+            Text(statusText)
+                .font(.system(size: 12 * model.fontScale, weight: .medium))
+                .foregroundStyle(RTTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.bottom, 10)
     }
 
     private var scenarioScopePicker: some View {
@@ -245,95 +247,6 @@ struct MainChatView: View {
         .background(RTTheme.background)
     }
 
-    // MARK: 消息流（字幕自动上滚）
-
-    private var messages: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(model.chatMessages) { message in
-                        ChatRow(message: message)
-                            .id(message.id)
-                    }
-                    if practiceSpeech.partialText.isEmpty == false {
-                        // 实时识别字幕：用户开口时同步显示
-                        HStack {
-                            Spacer(minLength: 56)
-                            Text(practiceSpeech.partialText)
-                                .font(.body)
-                                .foregroundStyle(RTTheme.textSecondary)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(RTTheme.userBubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 18))
-                        }
-                        .id("partial")
-                    }
-                    Color.clear.frame(height: 8).id("bottom")
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-            }
-            .scrollIndicators(.hidden)
-            .onChange(of: model.chatMessages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.25)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-            }
-            .onChange(of: practiceSpeech.partialText) { _, text in
-                guard text.isEmpty == false else { return }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-            }
-        }
-    }
-
-    // MARK: 输入栏
-
-    private var composer: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                TextField("和 RealTalk 说说今天想练什么", text: $draft, axis: .vertical)
-                    .lineLimit(1...4)
-                    .font(.body)
-                    .textFieldStyle(.plain)
-                    .padding(.leading, 16)
-
-                Button {
-                    Task { await model.toggleVoiceConversation() }
-                } label: {
-                    Image(systemName: model.isVoiceConversationActive ? "pause.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundStyle(model.isVoiceConversationActive ? .orange : RTTheme.accent)
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isWorking)
-
-                Button {
-                    Task { await sendDraft() }
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundStyle(
-                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? RTTheme.textSecondary.opacity(0.4)
-                                : RTTheme.accent
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isWorking)
-            }
-            .padding(.vertical, 7)
-            .padding(.trailing, 8)
-            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 26))
-            .overlay(RoundedRectangle(cornerRadius: 26).stroke(RTTheme.hairline))
-            .padding(.horizontal, 14)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-        }
-        .background(RTTheme.background)
-    }
-
     private var statusText: String {
         if voice.isSpeaking { return "AI 正在说话…" }
         if practiceSpeech.isListening { return "正在听你说英语…" }
@@ -353,55 +266,4 @@ struct MainChatView: View {
         return RTTheme.textSecondary
     }
 
-    private func sendDraft() async {
-        let text = draft
-        draft = ""
-        await model.sendMainChatMessage(text)
-    }
-}
-
-// MARK: - 消息行
-
-struct ChatRow: View {
-    let message: ChatMessage
-
-    var body: some View {
-        switch message.sender {
-        case .assistant:
-            // Claude 风格：助手消息纯文本，无气泡
-            HStack(alignment: .top, spacing: 10) {
-                Circle()
-                    .fill(RTTheme.accent.opacity(0.9))
-                    .frame(width: 6, height: 6)
-                    .padding(.top, 8)
-                Text(message.text)
-                    .font(.body)
-                    .foregroundStyle(RTTheme.textPrimary)
-                    .lineSpacing(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        case .user:
-            HStack {
-                Spacer(minLength: 56)
-                Text(message.text)
-                    .font(.body)
-                    .foregroundStyle(RTTheme.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(RTTheme.userBubble, in: RoundedRectangle(cornerRadius: 18))
-            }
-        case .system:
-            // 「轮到你」等提示：居中胶囊
-            HStack {
-                Spacer()
-                Text(message.text)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(RTTheme.accent)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(RTTheme.accent.opacity(0.10), in: Capsule())
-                Spacer()
-            }
-        }
-    }
 }

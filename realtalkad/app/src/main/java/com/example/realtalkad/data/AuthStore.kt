@@ -23,6 +23,14 @@ class AuthStore(context: Context) {
         get() = prefs.getString("guidance_mode", "realtime") ?: "realtime"
         set(value) = prefs.edit().putString("guidance_mode", if (value == "final") "final" else "realtime").apply()
 
+    var autoSpeakAI: Boolean
+        get() = prefs.getBoolean("auto_speak_ai", true)
+        set(value) = prefs.edit().putBoolean("auto_speak_ai", value).apply()
+
+    var continuousVoice: Boolean
+        get() = prefs.getBoolean("continuous_voice", true)
+        set(value) = prefs.edit().putBoolean("continuous_voice", value).apply()
+
     var fontScale: Float
         get() = prefs.getFloat("font_scale", 1f).coerceIn(0.85f, 1.35f)
         set(value) = prefs.edit().putFloat("font_scale", value.coerceIn(0.85f, 1.35f)).apply()

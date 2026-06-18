@@ -61,7 +61,6 @@ final class AppModel: ObservableObject {
     @Published var isWorking = false
     @Published var statusMessage = ""
 
-    private var uploadLoop: Task<Void, Never>?
     private var captureScheduleLoop: Task<Void, Never>?
     private var answerTimeoutTask: Task<Void, Never>?
     private var shortcutObserver: NSObjectProtocol?
@@ -122,7 +121,6 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
-        uploadLoop?.cancel()
         captureScheduleLoop?.cancel()
         answerTimeoutTask?.cancel()
         if let shortcutObserver {
@@ -245,88 +243,6 @@ final class AppModel: ObservableObject {
     func savePracticePreferences() {
         defaults.set(fontScale, forKey: DefaultsKey.fontScale)
         defaults.set(guidanceMode.rawValue, forKey: DefaultsKey.guidanceMode)
-    }
-
-    func sendMainChatMessage(_ text: String) async {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard prompt.isEmpty == false else { return }
-
-        appendChat(.user, prompt)
-
-        if prompt.contains("开始录音") || prompt.contains("开始采集") {
-            if speech.isRecording == false { await toggleRecording() }
-            return
-        }
-
-        if prompt.contains("停止录音") || prompt.contains("停止采集") {
-            if speech.isRecording { await toggleRecording() }
-            return
-        }
-
-        if prompt.hasPrefix("录入") {
-            await ingestTypedConversation(prompt)
-            return
-        }
-
-        if prompt.contains("显示台词") || prompt.contains("显示字幕") {
-            showDialogueContent = true
-            appendChat(.assistant, "已显示字幕。")
-            return
-        }
-
-        if prompt.contains("隐藏台词") || prompt.contains("隐藏字幕") {
-            showDialogueContent = false
-            appendChat(.assistant, "已隐藏字幕。")
-            return
-        }
-
-        if prompt.contains("换角色") || prompt.contains("对换角色") {
-            await switchRoleAndRestart()
-            return
-        }
-
-        if isPracticeHelpRequest(prompt) {
-            if roleplay?.completed == false {
-                await providePracticeHint(for: prompt)
-            } else {
-                await askBackendAI(prompt, fallback: { [weak self] in
-                    self?.appendCurrentHint()
-                })
-            }
-            return
-        }
-
-        if prompt.contains("结束") || prompt.contains("总结") || prompt.contains("纠正") {
-            await askBackendAI(prompt, fallback: { [weak self] in
-                self?.appendPracticeSummary()
-            })
-            return
-        }
-
-        if prompt.contains("练习") || prompt.contains("模拟") || prompt.contains("重现") || prompt.contains("还原") {
-            configureConversationRange(from: prompt)
-            await generateScenario()
-            if scenario != nil {
-                selectedRoleID = scenario?.roles.first(where: { $0.id == "self" && $0.isUserCandidate })?.id
-                    ?? scenario?.roles.first(where: { $0.isUserCandidate })?.id
-                    ?? ""
-                appendChat(.assistant, "场景已就绪，开始对练吧。")
-                await startRoleplay()
-            }
-            return
-        }
-
-        if roleplay?.completed == false, roleplay?.nextLine != nil {
-            await submitRoleplayUtterance(prompt)
-            return
-        }
-
-        await askBackendAI(
-            prompt,
-            fallback: { [weak self] in
-                self?.appendChat(.assistant, "想练哪段？选上方场景，或用底部按钮采集。")
-            }
-        )
     }
 
     /// 上传待同步的转写，返回成功上传的条数（-1=出错，0=无内容）。
@@ -663,6 +579,37 @@ final class AppModel: ObservableObject {
             await loadPracticeHistory()
         } catch {
             isVoiceConversationActive = false
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    /// 重新对练当前场景：完成后可在沉浸式界面一键重玩。
+    func replayScenario() async {
+        guard scenario != nil, selectedRoleID.isEmpty == false else {
+            statusMessage = "先选个场景再开始"
+            return
+        }
+        roleplay = nil
+        await startRoleplay()
+    }
+
+    /// 「结束后指导」模式下按需取最终评分与建议；中途退出也能拿到结果。
+    func requestFinalEvaluation() async {
+        guard let token = auth.token, let roleplay else {
+            statusMessage = "还没有进行中的对练"
+            return
+        }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let state = try await api.evaluateRoleplay(sessionId: roleplay.sessionId, token: token)
+            self.roleplay = state
+            if let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
+               feedback.isEmpty == false {
+                appendChat(.assistant, feedback)
+                if autoSpeakAI { voice.speak(feedback) }
+            }
+        } catch {
             statusMessage = error.localizedDescription
         }
     }
@@ -1006,16 +953,6 @@ final class AppModel: ObservableObject {
             filter = .custom
         } else if prompt.contains("今天") {
             filter = .today
-        }
-    }
-
-    private func startUploadLoop() {
-        guard uploadLoop == nil else { return }
-        uploadLoop = Task { [weak self] in
-            while Task.isCancelled == false {
-                try? await Task.sleep(nanoseconds: 10 * 60 * 1_000_000_000)
-                await self?.uploadPending()
-            }
         }
     }
 

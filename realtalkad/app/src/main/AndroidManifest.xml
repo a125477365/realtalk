@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Visualizer 监听 AI 朗读输出电平所需 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
@@ -26,6 +28,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.Realtalkad"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -33,6 +36,17 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- 语音指令 / 桌面快捷指令：开始 / 结束录音 -->
+            <intent-filter>
+                <action android:name="com.example.realtalkad.action.START_CAPTURE" />
+                <action android:name="com.example.realtalkad.action.STOP_CAPTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- 微信授权回调入口；包名必须为 <applicationId>.wxapi.WXEntryActivity -->

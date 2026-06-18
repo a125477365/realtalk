@@ -13,7 +13,6 @@ struct AccountPanelView: View {
     @EnvironmentObject private var auth: AuthStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var method = "wechat"
     @State private var showingSettings = false
     @State private var showingUpload = false
 
@@ -117,95 +116,6 @@ struct AccountPanelView: View {
         .padding(16)
         .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
-    }
-
-    // MARK: 套餐
-
-    private var plans: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("会员套餐")
-                .font(.headline)
-            Text("会员每日有 token 用量限额；高级会员可上传录音文件生成场景")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker("支付方式", selection: $method) {
-                Text("微信支付").tag("wechat")
-                Text("支付宝").tag("alipay")
-            }
-            .pickerStyle(.segmented)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(model.planCatalog) { plan in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(plan.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(plan.tier == "premium" ? .orange : RTTheme.accent)
-                            Text(money(plan.perMonthCents))
-                                .font(.title3.weight(.bold))
-                            Text(plan.months > 1 ? "每月 · 共 \(money(plan.priceCents))" : "每月")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Button {
-                                Task { await model.subscribe(planId: plan.id, method: method) }
-                            } label: {
-                                Text("开通")
-                                    .font(.caption.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(plan.tier == "premium" ? .orange : RTTheme.accent)
-                            .disabled(model.isWorking)
-                        }
-                        .padding(12)
-                        .frame(width: 132)
-                        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(
-                            plan.tier == "premium" ? Color.orange.opacity(0.4) : RTTheme.hairline
-                        ))
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: 待支付订单（开通会员后出现）
-
-    @ViewBuilder
-    private var orderPanel: some View {
-        if let order = model.rechargeOrder {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("待支付")
-                    .font(.headline)
-                Text(order.message)
-                    .font(.subheadline)
-                if let url = order.qrCodeUrl, let u = URL(string: url) {
-                    AsyncImage(url: u) { img in img.resizable().scaledToFit() } placeholder: { ProgressView() }
-                        .frame(width: 180, height: 180)
-                        .frame(maxWidth: .infinity)
-                }
-                Text("订单号：\(order.orderId)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                if let account = order.receiverAccount, account.isEmpty == false {
-                    Text("收款账号：\(account)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button {
-                    Task { await model.confirmRecharge() }
-                } label: {
-                    Text("我已完成支付")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(RTTheme.accent)
-            }
-            .padding(16)
-            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
-        }
     }
 
     // MARK: 上传录音入口

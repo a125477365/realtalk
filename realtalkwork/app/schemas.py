@@ -224,6 +224,11 @@ class RoleplayMessageRequest(BaseModel):
     guidance_mode: Literal["realtime", "final"] = "realtime"
 
 
+class RoleplayEvaluateRequest(BaseModel):
+    """按需触发最终评估（用户中途退出也能拿到评分与建议）。"""
+    session_id: str
+
+
 class RoleplayEvaluation(BaseModel):
     score: float = Field(ge=0, le=1)
     feedback: str

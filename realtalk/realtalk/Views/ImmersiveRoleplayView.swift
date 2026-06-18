@@ -154,7 +154,38 @@ struct ImmersiveRoleplayView: View {
             Text(controlText)
                 .font(.system(size: 13 * model.fontScale, weight: .medium))
                 .foregroundStyle(.white.opacity(0.62))
+
+            // 完成后可一键重玩；「结束后指导」模式可随时取最终评分（中途退出也有评价）
+            if model.roleplay?.completed == true {
+                Button {
+                    Task { await model.replayScenario() }
+                } label: {
+                    Label("重新对话", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .overlay(Capsule().stroke(.white.opacity(0.5)))
+                }
+                .buttonStyle(.plain)
                 .padding(.bottom, 24)
+            } else if model.guidanceMode == .final {
+                Button {
+                    Task { await model.requestFinalEvaluation() }
+                } label: {
+                    Text("查看评分与建议")
+                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .overlay(Capsule().stroke(.white.opacity(0.4)))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isWorking)
+                .padding(.bottom, 24)
+            } else {
+                Color.clear.frame(height: 24)
+            }
         }
         .animation(.easeOut(duration: 0.22), value: promptText)
     }
@@ -193,10 +224,12 @@ struct ImmersiveRoleplayView: View {
 
     private func circleScale(at date: Date) -> CGFloat {
         if practiceSpeech.isListening {
+            // 绿色：随用户说话的真实麦克风电平跳动
             return 1 + CGFloat(practiceSpeech.audioLevel) * 0.28
         }
         if voice.isSpeaking {
-            return 1 + CGFloat((sin(date.timeIntervalSinceReferenceDate * 7) + 1) * 0.06)
+            // 红色：随 AI 实际朗读的逐词音律跳动（非固定正弦）
+            return 1 + CGFloat(voice.audioLevel) * 0.28
         }
         return 1
     }
@@ -227,9 +260,9 @@ struct ImmersiveRoleplayView: View {
                 items.append(Caption(speaker: "AI", text: feedback, translation: "", color: Color(red: 1.0, green: 0.82, blue: 0.42)))
             }
         }
+        // 实时模式展示每轮纠正；结束后指导模式仅在完成/按需评估时由 latestFeedback 给出最终建议
         if let feedback = rp.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
            feedback.isEmpty == false,
-           (model.guidanceMode == .realtime || rp.completed),
            items.last?.text != feedback {
             items.append(Caption(speaker: "AI", text: feedback, translation: "", color: Color(red: 1.0, green: 0.82, blue: 0.42)))
         }

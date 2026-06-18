@@ -1,6 +1,7 @@
 package com.example.realtalkad
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -40,5 +41,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        handleVoiceCommand(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleVoiceCommand(intent)
+    }
+
+    /** 处理 Google 助手 / 桌面快捷指令的「开始 / 结束录音」语音命令。 */
+    private fun handleVoiceCommand(intent: Intent?) {
+        when (intent?.action) {
+            ACTION_START_CAPTURE -> model.startCapture()
+            ACTION_STOP_CAPTURE -> model.stopCapture()
+        }
+    }
+
+    companion object {
+        const val ACTION_START_CAPTURE = "com.example.realtalkad.action.START_CAPTURE"
+        const val ACTION_STOP_CAPTURE = "com.example.realtalkad.action.STOP_CAPTURE"
     }
 }

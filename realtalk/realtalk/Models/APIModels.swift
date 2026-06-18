@@ -339,6 +339,14 @@ struct RoleplayMessageRequest: Codable {
     }
 }
 
+struct RoleplayEvaluateRequest: Codable {
+    let sessionId: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+    }
+}
+
 struct TrainingAnswerRequest: Codable {
     let sessionId: String
     let answer: String

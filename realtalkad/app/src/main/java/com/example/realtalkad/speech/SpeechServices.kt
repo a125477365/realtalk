@@ -2,6 +2,7 @@ package com.example.realtalkad.speech
 
 import android.content.Context
 import android.content.Intent
+import android.media.audiofx.Visualizer
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -145,7 +146,14 @@ class VoicePlayer(context: Context) {
         private set
     var onStateChange: ((Boolean) -> Unit)? = null
 
+    /**
+     * AI 朗读时的实时输出电平（0..1）。用 [Visualizer] 监听系统输出混音的真实波形，
+     * 因此提示圈是跟着 AI 实际播放音量跳动，而不是固定正弦动画。
+     */
+    var onLevel: ((Float) -> Unit)? = null
+
     private var pendingCompletion: (() -> Unit)? = null
+    private var visualizer: Visualizer? = null
     private val tts = TextToSpeech(context) { status ->
         if (status == TextToSpeech.SUCCESS) ready = true
     }
@@ -160,6 +168,7 @@ class VoicePlayer(context: Context) {
 
             private fun finish() {
                 isSpeaking = false
+                stopMetering()
                 onStateChange?.invoke(false)
                 pendingCompletion?.let { done -> pendingCompletion = null; done() }
             }
@@ -171,6 +180,7 @@ class VoicePlayer(context: Context) {
         tts.language = Locale.US
         isSpeaking = true
         onStateChange?.invoke(true)
+        startMetering()
         pendingCompletion = completion
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
     }
@@ -178,7 +188,51 @@ class VoicePlayer(context: Context) {
     fun stop() {
         pendingCompletion = null
         tts.stop()
+        stopMetering()
         isSpeaking = false
         onStateChange?.invoke(false)
+    }
+
+    private fun startMetering() {
+        runCatching {
+            releaseVisualizer()
+            // session 0 = 全局输出混音；需要 RECORD_AUDIO 权限（已申请）。
+            visualizer = Visualizer(0).apply {
+                captureSize = Visualizer.getCaptureSizeRange()[1]
+                setDataCaptureListener(
+                    object : Visualizer.OnDataCaptureListener {
+                        override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {
+                            if (waveform == null || waveform.isEmpty()) return
+                            var sum = 0.0
+                            for (b in waveform) {
+                                val centered = (b.toInt() and 0xFF) - 128
+                                sum += (centered * centered).toDouble()
+                            }
+                            val rms = kotlin.math.sqrt(sum / waveform.size)
+                            onLevel?.invoke((rms / 48.0).coerceIn(0.0, 1.0).toFloat())
+                        }
+
+                        override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {}
+                    },
+                    Visualizer.getMaxCaptureRate() / 2,
+                    true,
+                    false,
+                )
+                enabled = true
+            }
+        }
+    }
+
+    private fun stopMetering() {
+        releaseVisualizer()
+        onLevel?.invoke(0f)
+    }
+
+    private fun releaseVisualizer() {
+        visualizer?.let { v ->
+            runCatching { v.enabled = false }
+            runCatching { v.release() }
+        }
+        visualizer = null
     }
 }

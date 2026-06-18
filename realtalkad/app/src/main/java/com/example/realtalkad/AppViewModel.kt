@@ -3,7 +3,6 @@ package com.example.realtalkad
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.realtalkad.data.AIChatMessage
 import com.example.realtalkad.data.ApiClient
 import com.example.realtalkad.data.AppUser
 import com.example.realtalkad.data.AudioJob
@@ -29,7 +28,6 @@ import java.io.File
 import java.time.Instant
 import java.time.LocalTime
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicLong
 
 /** 与 iOS AppModel 等价的业务编排层。 */
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -45,9 +43,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val billing = MutableStateFlow<BillingAccount?>(null)
     val plans = MutableStateFlow<List<PlanItem>>(emptyList())
     val todayScenarios = MutableStateFlow<List<ScenarioSummary>>(emptyList())
-    val chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val partialSubtitle = MutableStateFlow("")
     val practiceAudioLevel = MutableStateFlow(0f)
+    val aiAudioLevel = MutableStateFlow(0f)
     val isRecording = MutableStateFlow(false)
     val isListening = MutableStateFlow(false)
     val isSpeaking = MutableStateFlow(false)
@@ -60,6 +58,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val showSubtitles = MutableStateFlow(auth.showSubtitles)
     val guidanceMode = MutableStateFlow(auth.guidanceMode)
     val fontScale = MutableStateFlow(auth.fontScale)
+    val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
+    val continuousVoice = MutableStateFlow(auth.continuousVoice)
     val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
     val autoCaptureStart = MutableStateFlow(auth.autoCaptureStart)
     val autoCaptureEnd = MutableStateFlow(auth.autoCaptureEnd)
@@ -73,7 +73,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var answerTimeoutJob: Job? = null
     private var captureScheduleJob: Job? = null
     private var autoCaptureRunning = false
-    private val messageId = AtomicLong(0)
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
 
@@ -87,6 +86,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         practice.onStateChange = { isListening.value = it }
         practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
         voice.onStateChange = { isSpeaking.value = it }
+        voice.onLevel = { aiAudioLevel.value = it }
 
         appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或用底部按钮采集。")
         bootstrap()
@@ -143,15 +143,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ---- 采集 ----
 
     fun toggleRecording() {
-        if (capture.isRecording) {
-            capture.stop()
-            autoCaptureRunning = false
-            uploadPendingAndRefresh()
-        } else {
-            autoCaptureRunning = false
-            capture.start()
-            statusMessage.value = "正在采集真实对话"
-        }
+        if (capture.isRecording) stopCapture() else startCapture()
+    }
+
+    /** 供 Siri/Google 助手语音指令与主界面按钮共用：开始采集。 */
+    fun startCapture() {
+        if (capture.isRecording) return
+        autoCaptureRunning = false
+        capture.start()
+        statusMessage.value = "正在采集真实对话"
+    }
+
+    /** 供语音指令与主界面按钮共用：停止采集并推送生成场景。 */
+    fun stopCapture() {
+        if (!capture.isRecording) return
+        capture.stop()
+        autoCaptureRunning = false
+        uploadPendingAndRefresh()
     }
 
     private fun uploadPendingAndRefresh() {
@@ -239,20 +247,70 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleVoiceConversation() {
-        if (isVoiceActive.value) {
-            isVoiceActive.value = false
-            cancelAnswerTimeout()
-            practice.stop()
-            voice.stop()
-            statusMessage.value = "语音对话已暂停"
-        } else if (roleplay != null && roleplay?.completed == false) {
-            isVoiceActive.value = true
-            listenForNextTurn()
-        } else {
-            appendChat(
+        val rp = roleplay
+        // 与 iOS 对齐：先判完成态（可重玩），再判暂停/继续，避免竞态下 replay 分支不可达
+        when {
+            rp == null -> appendChat(
                 ChatMessage.Sender.ASSISTANT,
                 "先选个场景：点上方卡片，或用底部按钮采集。",
             )
+            rp.completed -> replayScenario()
+            isVoiceActive.value -> {
+                isVoiceActive.value = false
+                cancelAnswerTimeout()
+                practice.stop()
+                voice.stop()
+                statusMessage.value = "语音对话已暂停"
+            }
+            else -> {
+                isVoiceActive.value = true
+                listenForNextTurn()
+            }
+        }
+    }
+
+    /** 重新对练当前场景：在同一场景上新开一轮，可在完成后直接重玩。 */
+    fun replayScenario() {
+        val sceneId = scenario?.sceneId ?: roleplay?.scenario?.sceneId
+        val role = selectedRole.ifEmpty { roleplay?.selectedRole.orEmpty() }
+        if (sceneId == null || role.isEmpty()) {
+            appendChat(ChatMessage.Sender.ASSISTANT, "先选个场景：点上方卡片，或用底部按钮采集。")
+            return
+        }
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            isWorking.value = true
+            spokenMessageIds.clear()
+            runCatching {
+                val state = api.startRoleplay(sceneId, role, token)
+                isVoiceActive.value = true
+                showImmersive.value = true
+                handleRoleplayState(state)
+            }.onFailure { statusMessage.value = it.message ?: "重新开始失败" }
+            isWorking.value = false
+        }
+    }
+
+    /** 「结束后指导」模式下按需取最终评分与建议；中途退出也能拿到结果。 */
+    fun requestFinalEvaluation() {
+        val rp = roleplay ?: run {
+            appendChat(ChatMessage.Sender.ASSISTANT, "还没有进行中的对练。")
+            return
+        }
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            isWorking.value = true
+            runCatching { api.evaluateRoleplay(rp.sessionId, token) }
+                .onSuccess { state ->
+                    roleplay = state
+                    roleplayState.value = state
+                    state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
+                        appendChat(ChatMessage.Sender.ASSISTANT, it)
+                        if (autoSpeakAI.value) voice.speak(it) {}
+                    }
+                }
+                .onFailure { statusMessage.value = it.message ?: "评估失败" }
+            isWorking.value = false
         }
     }
 
@@ -271,6 +329,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val normalized = value.coerceIn(0.85f, 1.35f)
         fontScale.value = normalized
         auth.fontScale = normalized
+    }
+
+    fun setAutoSpeakAI(value: Boolean) {
+        autoSpeakAI.value = value
+        auth.autoSpeakAI = value
+    }
+
+    fun setContinuousVoice(value: Boolean) {
+        continuousVoice.value = value
+        auth.continuousVoice = value
     }
 
     fun setAutoCaptureEnabled(value: Boolean) {
@@ -293,22 +361,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.autoCaptureEnd = value
     }
 
-    fun sendText(text: String) {
-        val prompt = text.trim()
-        if (prompt.isEmpty()) return
-        appendChat(ChatMessage.Sender.USER, prompt)
-        if (prompt.startsWith("录入")) {
-            ingestTypedConversation(prompt)
-            return
-        }
-        val rp = roleplay
-        if (rp != null && !rp.completed && rp.nextLine != null) {
-            viewModelScope.launch { submitAnswer(prompt) }
-        } else {
-            viewModelScope.launch { askAI(prompt) }
-        }
-    }
-
     private suspend fun submitUtterance(text: String) {
         partialSubtitle.value = ""
         cancelAnswerTimeout()
@@ -328,25 +380,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 handleRoleplayState(state, spokenPreface = state.latestFeedback)
             }
             .onFailure { statusMessage.value = it.message ?: "提交失败" }
-        isWorking.value = false
-    }
-
-    private suspend fun askAI(prompt: String) {
-        val token = auth.token ?: run { statusMessage.value = "请先登录"; return }
-        isWorking.value = true
-        val history = chatMessages.value.takeLast(20).map {
-            AIChatMessage(
-                role = when (it.sender) {
-                    ChatMessage.Sender.USER -> "user"
-                    ChatMessage.Sender.ASSISTANT -> "assistant"
-                    ChatMessage.Sender.SYSTEM -> "system"
-                },
-                content = it.text,
-            )
-        }
-        runCatching { api.aiChat(prompt, history, scenario?.sceneId, roleplay?.sessionId, token) }
-            .onSuccess { appendChat(ChatMessage.Sender.ASSISTANT, it.reply) }
-            .onFailure { statusMessage.value = it.message ?: "请求失败" }
         isWorking.value = false
     }
 
@@ -372,7 +405,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             appendChat(ChatMessage.Sender.SYSTEM, "轮到你：${next.sourceText}")
         }
 
-        val toSpeak = listOfNotNull(spokenPreface?.takeIf { it.isNotBlank() }) + newAiMessages.map { it.content }
+        // 「自动朗读 AI 台词」关闭时不朗读，直接进入聆听
+        val toSpeak = if (autoSpeakAI.value) {
+            listOfNotNull(spokenPreface?.takeIf { it.isNotBlank() }) + newAiMessages.map { it.content }
+        } else {
+            emptyList()
+        }
         if (toSpeak.isEmpty()) {
             listenForNextTurn()
         } else {
@@ -387,6 +425,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun listenForNextTurn() {
         if (!isVoiceActive.value) return
+        if (!continuousVoice.value) return
         if (roleplay?.completed != false || roleplay?.nextLine == null) return
         practice.start()
         scheduleAnswerTimeout()
@@ -570,11 +609,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 主界面已无聊天列表（chatMessages 已移除）。这里把助手 / 系统的引导与错误提示
+     * 汇到顶部状态文案；用户回声不展示（沉浸式界面用 roleplayState 字幕呈现真实对话）。
+     */
     private fun appendChat(sender: ChatMessage.Sender, text: String) {
+        if (sender == ChatMessage.Sender.USER) return
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-        val last = chatMessages.value.lastOrNull()
-        if (last?.sender == sender && last.text == trimmed) return
-        chatMessages.value = chatMessages.value + ChatMessage(messageId.incrementAndGet(), sender, trimmed)
+        if (trimmed.isEmpty() || statusMessage.value == trimmed) return
+        statusMessage.value = trimmed
     }
 }

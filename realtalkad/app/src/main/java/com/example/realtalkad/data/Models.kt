@@ -152,6 +152,11 @@ data class RoleplayMessageRequest(
 )
 
 @Serializable
+data class RoleplayEvaluateRequest(
+    @SerialName("session_id") val sessionId: String,
+)
+
+@Serializable
 data class RoleplayMessage(
     val id: String,
     val speaker: String,

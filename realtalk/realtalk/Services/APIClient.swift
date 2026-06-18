@@ -96,11 +96,6 @@ final class APIClient {
         )
     }
 
-    func uploadTranscripts(_ segments: [TranscriptSegment], token: String) async throws -> TranscriptUploadResponse {
-        let items = segments.map { TranscriptUploadItem(id: $0.id, timestamp: $0.timestamp, text: $0.text) }
-        return try await post("/transcript/upload", body: TranscriptUploadRequest(items: items), token: token)
-    }
-
     func uploadCaptureSegments(
         _ segments: [TranscriptSegment],
         token: String,
@@ -215,6 +210,14 @@ final class APIClient {
         try await post(
             "/roleplay/message",
             body: RoleplayMessageRequest(sessionId: sessionId, message: message, guidanceMode: guidanceMode),
+            token: token
+        )
+    }
+
+    func evaluateRoleplay(sessionId: String, token: String) async throws -> RoleplayStateResponse {
+        try await post(
+            "/roleplay/evaluate",
+            body: RoleplayEvaluateRequest(sessionId: sessionId),
             token: token
         )
     }
