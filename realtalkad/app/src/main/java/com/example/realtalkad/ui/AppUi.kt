@@ -44,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,16 +53,20 @@ import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.data.ScenarioSummary
 
-/* Claude 风格主题色（与 iOS RTTheme 对应） */
+/* 统一主题色（与 iOS RTTheme 对应）：「梦幻」渐变作 Hero/强调，内容区干净浅色 */
 object RT {
     val Background = Color(0xFFF7F8FB)
     val Surface = Color.White
-    val UserBubble = Color(0xFFEEF0FB)
-    val Accent = Color(0xFF4F46E5)
+    val UserBubble = Color(0xFFEAF4FF)
+    val Accent = Color(0xFF2997F5)            // 天蓝（取自渐变起点）
     val Success = Color(0xFF16A34A)
     val TextPrimary = Color(0xFF16181D)
     val TextSecondary = Color(0xFF5B616E)
     val Hairline = Color(0x12000000)
+
+    // 蓝→青→粉→橙 梦幻渐变
+    val Brand = listOf(Color(0xFF2997F5), Color(0xFF1AC7B3), Color(0xFFF58FB8), Color(0xFFFFC76B))
+    val BrandBrush: Brush = Brush.linearGradient(Brand)
 }
 
 @Composable
@@ -77,13 +82,13 @@ fun LoginScreen(model: AppViewModel) {
     val isWorking by model.isWorking.collectAsState()
     val status by model.statusMessage.collectAsState()
     Column(
-        modifier = Modifier.fillMaxSize().background(RT.Background).padding(34.dp),
+        modifier = Modifier.fillMaxSize().background(RT.BrandBrush).padding(34.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("RealTalk", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = RT.TextPrimary)
+        Text("RealTalk", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(Modifier.height(8.dp))
-        Text("用真实生活，进入英语环境", color = RT.TextSecondary)
+        Text("用真实生活，进入英语环境", color = Color.White.copy(alpha = 0.9f))
         Spacer(Modifier.height(36.dp))
         Button(
             onClick = { model.loginWithWeChat() },
@@ -96,7 +101,7 @@ fun LoginScreen(model: AppViewModel) {
         }
         if (status.isNotBlank()) {
             Spacer(Modifier.height(16.dp))
-            Text(status, color = RT.TextSecondary, fontSize = 13.sp)
+            Text(status, color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp)
         }
     }
 }
@@ -140,11 +145,11 @@ fun MainChatScreen(model: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(36.dp).background(RT.Accent.copy(alpha = 0.16f), CircleShape)
+                Modifier.size(36.dp).background(RT.BrandBrush, CircleShape)
                     .clickable { showAccount = true },
                 contentAlignment = Alignment.Center,
             ) {
-                Text((user?.displayName ?: "我").take(1), color = RT.Accent, fontWeight = FontWeight.SemiBold)
+                Text((user?.displayName ?: "我").take(1), color = Color.White, fontWeight = FontWeight.SemiBold)
             }
             Spacer(Modifier.width(10.dp))
             Column {
@@ -237,14 +242,21 @@ fun MainChatScreen(model: AppViewModel) {
 
         Spacer(Modifier.weight(1f))
 
-        Button(
-            onClick = { model.toggleRecording() },
-            enabled = !isWorking,
-            colors = ButtonDefaults.buttonColors(containerColor = if (isRecording) Color.Red else RT.Accent),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).height(56.dp),
-            shape = RoundedCornerShape(99.dp),
+        // 主操作按钮：录音中为红色，其余用品牌渐变（Box 才能铺渐变）
+        Box(
+            Modifier
+                .fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).height(56.dp)
+                .background(
+                    if (isRecording) androidx.compose.ui.graphics.SolidColor(Color.Red) else RT.BrandBrush,
+                    RoundedCornerShape(99.dp),
+                )
+                .clickable(enabled = !isWorking) { model.toggleRecording() },
+            contentAlignment = Alignment.Center,
         ) {
-            Text(if (isRecording) "停止采集并生成场景" else "开始采集日常对话", fontWeight = FontWeight.SemiBold)
+            Text(
+                if (isRecording) "停止采集并生成场景" else "开始采集日常对话",
+                color = Color.White, fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 

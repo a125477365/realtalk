@@ -53,10 +53,10 @@ struct AccountPanelView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(RTTheme.accent.opacity(0.16))
+                    Circle().fill(.white.opacity(0.25))
                     Text((auth.user?.displayName ?? "我").prefix(1))
                         .font(.title3.weight(.bold))
-                        .foregroundStyle(RTTheme.accent)
+                        .foregroundStyle(.white)
                 }
                 .frame(width: 48, height: 48)
 
@@ -64,31 +64,28 @@ struct AccountPanelView: View {
                     HStack(spacing: 8) {
                         Text(auth.user?.displayName ?? "微信用户")
                             .font(.headline)
+                            .foregroundStyle(.white)
                         Text(auth.user?.tierName ?? "免费用户")
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
-                            .background(
-                                auth.user?.effectiveTier == "premium"
-                                    ? Color.orange.opacity(0.18)
-                                    : RTTheme.accent.opacity(0.12),
-                                in: Capsule()
-                            )
-                            .foregroundStyle(auth.user?.effectiveTier == "premium" ? .orange : RTTheme.accent)
+                            .background(.white.opacity(0.22), in: Capsule())
+                            .foregroundStyle(.white)
                     }
                     if let expires = auth.user?.planExpiresAt {
                         Text("有效期至 \(expires.formatted(date: .abbreviated, time: .omitted))")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.85))
                     }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(money(auth.user?.balanceCents ?? 0))
                         .font(.title3.weight(.bold))
+                        .foregroundStyle(.white)
                     Text("余额")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.85))
                 }
             }
 
@@ -97,25 +94,25 @@ struct AccountPanelView: View {
                     HStack {
                         Text("今日 AI 用量")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.85))
                         Spacer()
                         Text("\(usage.todayTokens) / \(usage.dailyLimit) tokens")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(usage.overLimit ? .red : .secondary)
+                            .foregroundStyle(.white.opacity(usage.overLimit ? 1 : 0.85))
                     }
                     ProgressView(value: Double(usage.todayTokens), total: Double(max(1, usage.dailyLimit)))
-                        .tint(usage.overLimit ? .red : RTTheme.accent)
+                        .tint(.white)
                     if usage.overLimit {
                         Text("已达今日上限，明天自动恢复；不使用 AI 的功能不受影响")
                             .font(.caption2)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(.white)
                     }
                 }
             }
         }
         .padding(16)
-        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
+        .background(RTTheme.brandGradient, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: RTTheme.accent.opacity(0.25), radius: 12, y: 6)
     }
 
     // MARK: 上传录音入口

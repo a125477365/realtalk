@@ -1,8 +1,9 @@
 /* RealTalk 用户端 */
 :root {
-  --brand: #4f46e5;
-  --brand-2: #7c3aed;
-  --brand-grad: linear-gradient(135deg, #4f46e5 0%, #7c3aed 60%, #a855f7 100%);
+  /* 「梦幻」品牌渐变（与 App 登录页 DreamyBackdrop 同色系）：蓝→青→粉→橙 */
+  --brand: #2997f5;
+  --brand-2: #f58fb8;
+  --brand-grad: linear-gradient(135deg, #2997f5 0%, #1ac7b3 38%, #f58fb8 72%, #ffc76b 100%);
   --bg: #f6f7fb;
   --surface: #ffffff;
   --border: #e7e8ef;
@@ -15,7 +16,7 @@
   --premium: #b45309;
   --radius: 14px;
   --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 1px 2px rgba(16, 24, 40, .04);
-  --shadow-lg: 0 12px 32px rgba(79, 70, 229, .14);
+  --shadow-lg: 0 12px 32px rgba(41, 151, 245, .16);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -74,7 +75,7 @@ input, select { font-family: inherit; }
 }
 .btn:active { transform: scale(.98); }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
-.btn-primary { background: var(--brand-grad); color: #fff; box-shadow: 0 4px 14px rgba(79, 70, 229, .35); }
+.btn-primary { background: var(--brand-grad); color: #fff; box-shadow: 0 4px 14px rgba(41, 151, 245, .32); }
 .btn-primary:hover { box-shadow: var(--shadow-lg); }
 .btn-ghost { background: var(--bg); color: var(--text); }
 .btn-ghost:hover { background: #ecedf3; }

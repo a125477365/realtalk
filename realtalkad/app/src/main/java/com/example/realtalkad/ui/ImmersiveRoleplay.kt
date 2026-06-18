@@ -42,8 +42,9 @@ import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.R
 
 private object RTImm {
-    val Top = Color(0xFF1A1C29)
-    val Bottom = Color(0xFF05070D)
+    // 深蓝调暗色背景（呼应品牌渐变蓝端，同时保证字幕可读）
+    val Top = Color(0xFF12203B)
+    val Bottom = Color(0xFF05060F)
     val Listen = Color(0xFF1FBA62)
     val Speak = Color(0xFFE03131)
     val Thinking = Color(0xFF514BE0)

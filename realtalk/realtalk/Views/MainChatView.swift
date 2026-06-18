@@ -3,15 +3,28 @@ import SwiftUI
 /// Claude 风格的对话主界面：奶白底色、助手消息纯文本、用户消息浅色气泡、
 /// 系统提示居中胶囊；字幕随对话自动向上滚动。
 enum RTTheme {
-    // 统一品牌：学习靛蓝 + 进步绿，干净现代（与 Web / 管理端一致）
+    // 统一品牌：「梦幻」渐变（与登录页 DreamyBackdrop 同色系）作为 Hero/强调，内容区保持干净浅色
     static let background = Color(red: 0.969, green: 0.973, blue: 0.984)   // 冷调浅灰白
     static let surface = Color.white
-    static let userBubble = Color(red: 0.933, green: 0.941, blue: 0.984)   // 浅靛蓝
-    static let accent = Color(red: 0.310, green: 0.275, blue: 0.898)       // 靛蓝 #4F46E5
+    static let userBubble = Color(red: 0.918, green: 0.953, blue: 0.996)   // 浅天蓝
+    static let accent = Color(red: 0.16, green: 0.56, blue: 0.96)          // 天蓝 #2997F5（取自渐变起点）
     static let success = Color(red: 0.086, green: 0.639, blue: 0.290)      // 进步绿 #16A34A
     static let textPrimary = Color(red: 0.086, green: 0.094, blue: 0.114)  // 近墨 #16181D
     static let textSecondary = Color(red: 0.357, green: 0.380, blue: 0.431)// #5B616E
     static let hairline = Color.black.opacity(0.07)
+
+    // 蓝→青→粉→橙 梦幻渐变
+    static let brandColors = [
+        Color(red: 0.16, green: 0.56, blue: 0.96),
+        Color(red: 0.10, green: 0.78, blue: 0.70),
+        Color(red: 0.96, green: 0.56, blue: 0.72),
+        Color(red: 1.00, green: 0.78, blue: 0.42),
+    ]
+    static let brandGradient = LinearGradient(
+        colors: brandColors,
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 }
 
 struct MainChatView: View {
@@ -86,10 +99,10 @@ struct MainChatView: View {
                 showingAccount = true
             } label: {
                 ZStack {
-                    Circle().fill(RTTheme.accent.opacity(0.16))
+                    Circle().fill(RTTheme.brandGradient)
                     Text((auth.user?.displayName ?? "我").prefix(1))
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(RTTheme.accent)
+                        .foregroundStyle(.white)
                 }
                 .frame(width: 34, height: 34)
             }
@@ -237,7 +250,7 @@ struct MainChatView: View {
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .frame(height: 56)
-            .background(speech.isRecording ? Color.red : RTTheme.accent, in: Capsule())
+            .background(speech.isRecording ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.brandGradient), in: Capsule())
             .padding(.horizontal, 18)
             .padding(.top, 8)
             .padding(.bottom, 14)

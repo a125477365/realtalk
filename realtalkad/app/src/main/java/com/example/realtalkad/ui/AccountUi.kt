@@ -76,38 +76,34 @@ fun AccountSheet(model: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
     ) {
-        // 会员卡
+        // 会员卡：品牌渐变 Hero，白色文字
         item {
             Column(
                 Modifier.fillMaxWidth()
-                    .background(RT.Surface, RoundedCornerShape(16.dp))
-                    .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
+                    .background(RT.BrandBrush, RoundedCornerShape(16.dp))
                     .padding(16.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(user?.displayName ?: "微信用户", fontWeight = FontWeight.SemiBold)
+                            Text(user?.displayName ?: "微信用户", fontWeight = FontWeight.SemiBold, color = Color.White)
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 user?.tierName ?: "",
                                 fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                                color = if (user?.planTier == "premium") Color(0xFFB45309) else RT.Accent,
+                                color = Color.White,
                                 modifier = Modifier
-                                    .background(
-                                        (if (user?.planTier == "premium") Color(0xFFFDE68A) else RT.Accent.copy(alpha = 0.12f)),
-                                        RoundedCornerShape(99.dp),
-                                    )
+                                    .background(Color.White.copy(alpha = 0.22f), RoundedCornerShape(99.dp))
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
                             )
                         }
                         user?.planExpiresAt?.let {
-                            Text("有效期至 ${it.take(10)}", fontSize = 11.sp, color = RT.TextSecondary)
+                            Text("有效期至 ${it.take(10)}", fontSize = 11.sp, color = Color.White.copy(alpha = 0.85f))
                         }
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text(money(user?.balanceCents ?: 0), fontWeight = FontWeight.Bold, fontSize = 19.sp)
-                        Text("余额", fontSize = 10.sp, color = RT.TextSecondary)
+                        Text(money(user?.balanceCents ?: 0), fontWeight = FontWeight.Bold, fontSize = 19.sp, color = Color.White)
+                        Text("余额", fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
                     }
                 }
                 billing?.usage?.let { usage ->
@@ -116,7 +112,7 @@ fun AccountSheet(model: AppViewModel) {
                         "今日 AI 用量 ${usage.todayTokens} / ${usage.dailyLimit} tokens" +
                             if (usage.overLimit) "（已达上限，明天恢复）" else "",
                         fontSize = 11.sp,
-                        color = if (usage.overLimit) Color.Red else RT.TextSecondary,
+                        color = Color.White.copy(alpha = if (usage.overLimit) 1f else 0.85f),
                     )
                     Spacer(Modifier.height(5.dp))
                     LinearProgressIndicator(
@@ -124,7 +120,8 @@ fun AccountSheet(model: AppViewModel) {
                             (usage.todayTokens.toFloat() / maxOf(1, usage.dailyLimit)).coerceAtMost(1f)
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        color = if (usage.overLimit) Color.Red else RT.Accent,
+                        color = Color.White,
+                        trackColor = Color.White.copy(alpha = 0.3f),
                     )
                 }
             }

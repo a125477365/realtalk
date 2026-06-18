@@ -7,8 +7,9 @@ struct ImmersiveRoleplayView: View {
     @Environment(\.dismiss) private var dismiss
 
     private enum Palette {
-        static let top = Color(red: 0.10, green: 0.11, blue: 0.16)
-        static let bottom = Color(red: 0.02, green: 0.03, blue: 0.05)
+        // 深蓝调暗色背景（呼应品牌渐变的蓝端，同时保证字幕可读）
+        static let top = Color(red: 0.07, green: 0.11, blue: 0.22)
+        static let bottom = Color(red: 0.02, green: 0.03, blue: 0.08)
         static let listen = Color(red: 0.12, green: 0.74, blue: 0.38)
         static let speak = Color(red: 0.88, green: 0.18, blue: 0.18)
         static let thinking = Color(red: 0.32, green: 0.30, blue: 0.88)
