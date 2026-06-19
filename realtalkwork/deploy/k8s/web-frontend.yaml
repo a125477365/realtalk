@@ -1,0 +1,58 @@
+# RealTalk 用户 Web 端 K8s 部署
+#
+# Nginx 反向代理，通过 API_UPSTREAM 连接后端 API。
+# 镜像构建：docker build -f web-frontend/Dockerfile -t your-registry/realtalk-web:latest .
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtalk-web
+  labels:
+    app: realtalk-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: realtalk-web
+  template:
+    metadata:
+      labels:
+        app: realtalk-web
+    spec:
+      containers:
+        - name: nginx
+          image: your-registry/realtalk-web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_UPSTREAM
+              valueFrom:
+                configMapKeyRef:
+                  name: realtalk-api-config
+                  key: API_UPSTREAM
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtalk-web
+spec:
+  selector:
+    app: realtalk-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

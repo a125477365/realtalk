@@ -34,7 +34,7 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/ready
 ```
 
-`/health` 用于进程存活检查；`/ready` 会连接数据库，适合负载均衡或 Kubernetes readiness probe。
+`/health` 用于进程存活检查；`/ready` 会连接数据库，适合负载均衡健康探测。
 
 ## 分布式数据库
 
@@ -60,34 +60,105 @@ REALTALK_REGION=cn-shanghai-1
 
 ## Kubernetes
 
-示例清单在 `deploy/k8s/realtalk-api.yaml`。每个区域应分别创建：
+示例清单在 `deploy/k8s/`，包含两部分：
 
-- `realtalk-api-config`：`REALTALK_REGION`、`REQUIRE_PRO_FOR_AI`、模型基础配置等非密钥配置
-- `realtalk-api-secret`：`DATABASE_URL`、`JWT_SECRET`、模型 API Key、微信/支付密钥
+- `realtalk-api.yaml`：API Deployment（3 副本）+ Service
+- `redis.yaml`：Redis StatefulSet（1 Master + 2 Replica）+ 3 个 Service
+- `admin-frontend.yaml`：管理台 Deployment（1 副本）+ Service
+- `web-frontend.yaml`：用户 Web 端 Deployment（1 副本）+ Service
 
-最小 Secret 示例：
+### Redis 主从架构
 
-```yaml
+```
+redis-0 (Master)  ← 读写，API 容器通过 redis-master Service 连接
+redis-1 (Replica) ← 只读，自动从 Master 同步
+redis-2 (Replica) ← 只读，自动从 Master 同步
+```
+
+StatefulSet 按序号分配角色：`redis-0` 为 Master，其余为 Replica（通过 initContainer 写入 `replicaof` 配置）。数据持久化到 PVC（每 Pod 1Gi）。Master 故障时需手动提升 Replica 或部署 Redis Sentinel 自动故障转移。
+
+### 部署步骤
+
+```bash
+# 1. 先部署 Redis
+kubectl apply -f deploy/k8s/redis.yaml
+kubectl rollout status statefulset/redis
+
+# 2. 创建 Secret（敏感配置）和 ConfigMap（非敏感配置）
+#    ⚠️ 替换所有 replace-with-* 占位符，否则对应功能不可用
+kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
   name: realtalk-api-secret
 type: Opaque
 stringData:
-  DATABASE_URL: postgresql+psycopg://app_user:password@db.example.com:26257/realtalk?sslmode=require
+  # ── 基础设施 ──
+  DATABASE_URL: postgresql+psycopg://app_user:password@db.example.com:5432/realtalk?sslmode=require
   JWT_SECRET: replace-with-a-long-random-secret
-```
+  REDIS_URL: redis://redis-master:6379/0
 
-最小 ConfigMap 示例：
+  # ── 管理台 ──
+  ADMIN_USERNAME: admin
+  ADMIN_PASSWORD: replace-with-strong-password
 
-```yaml
+  # ── 微信登录（必须填写，否则 WECHAT_AUTH_DEV_MODE=false 时无人能登录）──
+  WECHAT_APP_ID: replace-with-wechat-mobile-appid
+  WECHAT_APP_SECRET: replace-with-wechat-mobile-secret
+  WECHAT_WEB_APP_ID: replace-with-wechat-web-appid
+  WECHAT_WEB_APP_SECRET: replace-with-wechat-web-secret
+
+  # ── AI 模型（不填则走离线兜底，可在管理台后续配置）──
+  AI_BASE_URL: https://ark.cn-beijing.volces.com/api/v3
+  AI_API_KEY: replace-with-ai-api-key
+  AI_MODEL: doubao-seed-1-6-251015
+
+  # ── 微信支付（不填则微信支付返回 503）──
+  WECHAT_MCHID: ""
+  WECHAT_API_KEY: ""
+  WECHAT_NOTIFY_URL: https://your-domain.com/payment/wechat/webhook
+
+  # ── 支付宝（不填则支付宝返回 503）──
+  ALIPAY_APP_ID: ""
+  ALIPAY_PRIVATE_KEY: ""
+  ALIPAY_PUBLIC_KEY: ""
+  ALIPAY_NOTIFY_URL: https://your-domain.com/payment/alipay/webhook
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: realtalk-api-config
 data:
+  # ── 基础 ──
   REALTALK_REGION: cn-shanghai-1
-  REQUIRE_PRO_FOR_AI: "false"
+  API_UPSTREAM: http://realtalk-api:80
+
+  # ── 功能开关（生产务必关闭 dev 模式）──
   WECHAT_AUTH_DEV_MODE: "false"
   PAYMENT_DEV_AUTO_CONFIRM: "false"
+  APPLE_IAP_DEV_BYPASS: "false"
+  EMAIL_AUTH_ENABLED: "false"
+  EMAIL_DEV_MODE: "false"
+
+  # ── 业务参数 ──
+  TRIAL_DAYS: "30"
+  DAILY_TOKEN_LIMIT_FREE: "8000"
+  DAILY_TOKEN_LIMIT_BASIC: "120000"
+  DAILY_TOKEN_LIMIT_PREMIUM: "400000"
+  UPLOAD_DATA_DIR: ./data/uploads
+  PAYMENT_RECEIVER_NAME: RealTalk
+EOF
+
+# 3. 部署 API
+kubectl apply -f deploy/k8s/realtalk-api.yaml
+kubectl rollout status deployment/realtalk-api
+
+# 4. 部署管理台和用户 Web 端（可选）
+kubectl apply -f deploy/k8s/admin-frontend.yaml
+kubectl apply -f deploy/k8s/web-frontend.yaml
+kubectl rollout status deployment/realtalk-admin
+kubectl rollout status deployment/realtalk-web
 ```
+
+`REDIS_URL` 指向 `redis-master` Service（Master Pod），采集上传的分块暂存通过 Redis 在 3 个 API 副本间共享。`API_UPSTREAM` 指向 API Service，管理台和 Web 端 Nginx 通过它反向代理后端接口。
+

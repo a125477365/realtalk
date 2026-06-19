@@ -1,0 +1,58 @@
+# RealTalk 管理台 K8s 部署
+#
+# Nginx 反向代理，通过 API_UPSTREAM 连接后端 API。
+# 镜像构建：docker build -f admin-frontend/Dockerfile -t your-registry/realtalk-admin:latest .
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtalk-admin
+  labels:
+    app: realtalk-admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: realtalk-admin
+  template:
+    metadata:
+      labels:
+        app: realtalk-admin
+    spec:
+      containers:
+        - name: nginx
+          image: your-registry/realtalk-admin:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          env:
+            - name: API_UPSTREAM
+              valueFrom:
+                configMapKeyRef:
+                  name: realtalk-api-config
+                  key: API_UPSTREAM
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+            timeoutSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtalk-admin
+spec:
+  selector:
+    app: realtalk-admin
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

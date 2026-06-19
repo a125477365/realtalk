@@ -335,20 +335,6 @@ ai_usage = Table(
 Index("idx_ai_usage_created", ai_usage.c.created_at)
 Index("idx_ai_usage_user_created", ai_usage.c.user_id, ai_usage.c.created_at)
 
-capture_upload_sessions = Table(
-    "capture_upload_sessions",
-    metadata,
-    Column("upload_id", Text, primary_key=True),
-    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-    Column("start_time", Text),
-    Column("end_time", Text),
-    Column("estimated_items", Integer, nullable=False, default=0),
-    Column("chunks_json", Text, nullable=False, default="[]"),
-    Column("created_at", Text, nullable=False),
-    Column("expires_at", Text, nullable=False),
-)
-Index("idx_capture_uploads_user", capture_upload_sessions.c.user_id)
-Index("idx_capture_uploads_expires", capture_upload_sessions.c.expires_at)
 
 
 class Database:
@@ -1188,87 +1174,6 @@ class Database:
                 update(payment_webhooks)
                 .where(payment_webhooks.c.id == webhook_id)
                 .values(status="failed", error_message=error_message[:500], processed_at=now)
-            )
-
-    # ── 采集分块上传会话（数据库存储，支持多容器分布式部署） ──
-
-    def create_capture_session(
-        self,
-        upload_id: str,
-        user_id: str,
-        start: str | None,
-        end: str | None,
-        estimated_items: int,
-    ) -> None:
-        now = _now()
-        expires = now + timedelta(hours=2)
-        with self.engine.begin() as conn:
-            conn.execute(
-                insert(capture_upload_sessions).values(
-                    upload_id=upload_id,
-                    user_id=user_id,
-                    start_time=start,
-                    end_time=end,
-                    estimated_items=estimated_items,
-                    chunks_json="[]",
-                    created_at=_iso(now),
-                    expires_at=_iso(expires),
-                )
-            )
-
-    def append_capture_chunk(self, upload_id: str, user_id: str, chunk_index: int, items: list[dict]) -> int:
-        """追加一个 chunk，返回当前已收到的 chunk 数量。"""
-        with self.engine.begin() as conn:
-            row = conn.execute(
-                select(capture_upload_sessions.c.chunks_json, capture_upload_sessions.c.user_id)
-                .where(capture_upload_sessions.c.upload_id == upload_id)
-            ).fetchone()
-            if row is None or row.user_id != user_id:
-                return -1
-            chunks = json.loads(row.chunks_json)
-            chunks.append({"chunk_index": chunk_index, "items": items})
-            conn.execute(
-                update(capture_upload_sessions)
-                .where(capture_upload_sessions.c.upload_id == upload_id)
-                .values(chunks_json=json.dumps(chunks, ensure_ascii=False))
-            )
-            return len(chunks)
-
-    def load_capture_items(self, upload_id: str, user_id: str) -> list[TranscriptItem] | None:
-        """加载所有 chunk 的 items，返回 None 表示会话不存在。"""
-        with self.engine.connect() as conn:
-            row = conn.execute(
-                select(capture_upload_sessions.c.chunks_json, capture_upload_sessions.c.user_id)
-                .where(capture_upload_sessions.c.upload_id == upload_id)
-            ).fetchone()
-        if row is None or row.user_id != user_id:
-            return None
-        chunks = json.loads(row.chunks_json)
-        items: list[TranscriptItem] = []
-        for chunk in sorted(chunks, key=lambda c: c["chunk_index"]):
-            for it in chunk["items"]:
-                items.append(TranscriptItem(**it))
-        return items
-
-    def get_capture_received_chunks(self, upload_id: str, user_id: str) -> list[int]:
-        with self.engine.connect() as conn:
-            row = conn.execute(
-                select(capture_upload_sessions.c.chunks_json, capture_upload_sessions.c.user_id)
-                .where(capture_upload_sessions.c.upload_id == upload_id)
-            ).fetchone()
-        if row is None or row.user_id != user_id:
-            return []
-        chunks = json.loads(row.chunks_json)
-        return [c["chunk_index"] for c in chunks]
-
-    def delete_capture_session(self, upload_id: str, user_id: str) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(
-                delete(capture_upload_sessions)
-                .where(
-                    capture_upload_sessions.c.upload_id == upload_id,
-                    capture_upload_sessions.c.user_id == user_id,
-                )
             )
 
     def insert_transcripts(self, user_id: str, items: list[TranscriptItem]) -> int:

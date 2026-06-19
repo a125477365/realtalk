@@ -1,0 +1,122 @@
+# Redis 主从部署：1 Master + 2 Replica
+# Pod1(redis-0) → Master（读写）
+# Pod2(redis-1) → Replica（只读）
+# Pod3(redis-2) → Replica（只读）
+#
+# API 只连 Master 写入，读取自动由 Redis 内部复制同步到 Replica。
+# 如 Master 故障，手动或自动（Sentinel）提升 Replica 为新 Master。
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  labels:
+    app: redis
+    role: master
+spec:
+  selector:
+    app: redis
+    role: master
+    statefulset.kubernetes.io/pod-name: redis-0
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-replica
+  labels:
+    app: redis
+    role: replica
+spec:
+  selector:
+    app: redis
+    role: replica
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# Headless Service 供 StatefulSet 内部 DNS 使用
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      initContainers:
+        # redis-0 为 Master，其余为 Replica
+        - name: init-redis-role
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              POD_INDEX=${HOSTNAME##*-}
+              if [ "$POD_INDEX" = "0" ]; then
+                echo "# Master: no extra config needed" > /config/role.conf
+              else
+                echo "replicaof redis-0.redis-headless 6379" > /config/role.conf
+              fi
+          volumeMounts:
+            - name: redis-config
+              mountPath: /config
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["redis-server"]
+          args:
+            - "--appendonly"
+            - "yes"
+            - "--include"
+            - "/config/role.conf"
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: redis-config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

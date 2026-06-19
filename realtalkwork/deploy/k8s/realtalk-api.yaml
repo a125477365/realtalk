@@ -1,3 +1,11 @@
+# RealTalk API 部署（3 副本 + Redis 主从）
+#
+# 环境变量来自两个资源：
+#   - realtalk-api-secret：数据库连接串、JWT 密钥、AI/微信/支付密钥
+#   - realtalk-api-config：区域、功能开关等非敏感配置
+#
+# REDIS_URL 指向 redis-master Service（只有 Master 接受写入）。
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
