@@ -231,21 +231,32 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     # 同步依赖：FastAPI 自动放到线程池执行，DB 查询不阻塞事件循环
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
-    user_id, device_id = verify_token(credentials.credentials)
-    user = db.get_user(user_id)
-    if user is None:
+    user_id, device_id, token_version = verify_token(credentials.credentials)
+    # 一次读取拿到全部会话上下文（存在性/封禁/设备/令牌版本/最近活跃）
+    session = db.get_user_session(user_id)
+    if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    user: UserOut = session["user"]
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
-    # 单设备登录：当前 token 的设备编号必须等于该用户最近一次登录绑定的设备，
-    # 否则说明账号已在别处登录，本设备需重新授权。
-    active_device = db.get_active_device(user.id)
+    # 单设备登录：token 的设备编号必须等于该账号最近绑定设备，否则需重新授权。
+    active_device = session["active_device_id"]
     if active_device is not None and active_device != device_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="您的账号已在其他设备登录，请重新登录",
         )
-    db.touch_user_seen(user.id)
+    # 令牌吊销：版本不一致说明已被服务端注销（改密/登出全部设备等）。
+    if token_version != session["token_version"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态已失效，请重新登录",
+        )
+    # 节流写入 last_seen：超过阈值才落库，避免每个请求都写一次。
+    last_seen = session["last_seen_at"]
+    now = datetime.now(timezone.utc)
+    if last_seen is None or (now - last_seen).total_seconds() > settings.last_seen_throttle_seconds:
+        db.touch_user_seen(user.id)
     return user
 
 
@@ -758,6 +769,12 @@ def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict
     return {"dev_mode": False, "auth_url": auth_url}
 
 
+def _issue_token_pair(user_id: str, device_id: str | None) -> tuple[str, str]:
+    """按用户当前令牌版本签发 access + refresh 令牌对。"""
+    tv = db.get_token_version(user_id)
+    return create_token(user_id, device_id, tv), create_refresh_token(user_id, device_id, tv)
+
+
 @app.post("/auth/wechat/login", response_model=AuthResponse)
 async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
     profile = await resolve_wechat_profile(request)
@@ -777,7 +794,8 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
     # 单设备登录：把本次登录的设备编号设为该账号唯一有效设备（顶掉其它设备）
     device_id = (request.device_id or uuid.uuid4().hex)[:128]
     db.set_active_device(user.id, device_id)
-    return AuthResponse(token=create_token(user.id, device_id), user=user)
+    access_token, refresh = _issue_token_pair(user.id, device_id)
+    return AuthResponse(token=access_token, refresh_token=refresh, user=user)
 
 
 # ---- Email/Password Auth for App Users ----
@@ -800,10 +818,11 @@ def register_password(
     user = db.create_user(normalized, salt, pw_hash)
     device_id = uuid.uuid4().hex
     db.set_active_device(user.id, device_id)
+    access_token, refresh = _issue_token_pair(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id, device_id),
-        refresh_token=create_refresh_token(user.id, device_id),
-        expires_in=int(settings.token_ttl_hours * 3600),
+        access_token=access_token,
+        refresh_token=refresh,
+        expires_in=settings.access_token_ttl_minutes * 60,
     )
 
 
@@ -830,10 +849,11 @@ def login_password(
     db.touch_user_seen(user.id)
     device_id = (request.device_id or uuid.uuid4().hex)[:128]
     db.set_active_device(user.id, device_id)
+    access_token, refresh = _issue_token_pair(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id, device_id),
-        refresh_token=create_refresh_token(user.id, device_id),
-        expires_in=int(settings.token_ttl_hours * 3600),
+        access_token=access_token,
+        refresh_token=refresh,
+        expires_in=settings.access_token_ttl_minutes * 60,
     )
 
 
@@ -850,11 +870,14 @@ def change_password(
     
     salt, pw_hash = hash_password(request.new_password)
     db.update_user_password(user.id, salt, pw_hash)
+    # 改密即吊销此前签发的所有令牌（其它设备/旧会话立即失效），再给当前设备发新令牌
+    db.bump_token_version(user.id)
     device_id = db.get_active_device(user.id)  # 保留当前设备绑定
+    access_token, refresh = _issue_token_pair(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id, device_id),
-        refresh_token=create_refresh_token(user.id, device_id),
-        expires_in=int(settings.token_ttl_hours * 3600),
+        access_token=access_token,
+        refresh_token=refresh,
+        expires_in=settings.access_token_ttl_minutes * 60,
     )
 
 
@@ -885,13 +908,15 @@ def confirm_password_reset(
     
     salt, pw_hash = hash_password(request.new_password)
     db.user_password_reset(result["user_id"], salt, pw_hash)
-    # 重置密码即在当前设备重新建立会话，顶掉其它设备
+    # 重置密码即吊销旧令牌并在当前设备重建会话，顶掉其它设备
+    db.bump_token_version(result["user_id"])
     device_id = uuid.uuid4().hex
     db.set_active_device(result["user_id"], device_id)
+    access_token, refresh = _issue_token_pair(result["user_id"], device_id)
     return AuthTokenResponse(
-        access_token=create_token(result["user_id"], device_id),
-        refresh_token=create_refresh_token(result["user_id"], device_id),
-        expires_in=int(settings.token_ttl_hours * 3600),
+        access_token=access_token,
+        refresh_token=refresh,
+        expires_in=settings.access_token_ttl_minutes * 60,
     )
 
 
@@ -899,25 +924,41 @@ def confirm_password_reset(
 def refresh_token(
     request: TokenRefreshRequest,
 ) -> AuthTokenResponse:
-    user_id, device_id = verify_refresh_token(request.refresh_token)
-    user = db.get_user(user_id)
-    if user is None:
+    user_id, device_id, token_version = verify_refresh_token(request.refresh_token)
+    session = db.get_user_session(user_id)
+    if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
+    user: UserOut = session["user"]
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
-    # 刷新令牌也必须来自当前绑定设备，否则旧设备能借刷新令牌续命
-    active_device = db.get_active_device(user.id)
+    # 刷新令牌也必须来自当前绑定设备、且令牌版本未被吊销，否则旧设备/已注销令牌不能续命
+    active_device = session["active_device_id"]
     if active_device is not None and active_device != device_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="您的账号已在其他设备登录，请重新登录",
         )
+    if token_version != session["token_version"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="登录状态已失效，请重新登录",
+        )
     db.touch_user_seen(user.id)
+    # 轮换：每次刷新都发新的 access + refresh
+    access_token, refresh = _issue_token_pair(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id, device_id),
-        refresh_token=create_refresh_token(user.id, device_id),
-        expires_in=int(settings.token_ttl_hours * 3600),
+        access_token=access_token,
+        refresh_token=refresh,
+        expires_in=settings.access_token_ttl_minutes * 60,
     )
+
+
+@app.post("/auth/logout", response_model=MessageResponse)
+def logout(user: UserOut = Depends(current_user)) -> MessageResponse:
+    """登出（注销全部设备）：递增令牌版本，使该账号此前所有 access/refresh 立即失效。"""
+    db.bump_token_version(user.id)
+    db.set_active_device(user.id, None)
+    return MessageResponse(message="已退出登录")
 
 
 @app.post("/auth/email/code")

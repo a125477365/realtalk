@@ -18,17 +18,54 @@ final class AuthStore: ObservableObject {
 
     private let api: APIClient
     private let tokenKey = "RealTalk.authToken"
+    private let refreshKey = "RealTalk.refreshToken"
     private let deviceKey = "RealTalk.deviceID"
+    private var refreshToken: String?
+    private var refreshTask: Task<String?, Never>?
 
     init(api: APIClient) {
         self.api = api
         let saved = UserDefaults.standard.string(forKey: tokenKey)
         token = saved
+        refreshToken = UserDefaults.standard.string(forKey: refreshKey)
         // 有本地 token：先进入「校验中」，必须等 /auth/me 通过才进主界面；没有 token 直接登录页
         phase = saved == nil ? .signedOut : .checking
-        // 账号被其它设备顶掉时，服务端返回 401 → 自动退出回到登录页
+        // 账号被其它设备顶掉/令牌被吊销时，服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { [weak self] in
             self?.handleForcedLogout()
+        }
+        // access 过期时用 refresh 续期（单飞，避免并发请求重复刷新）
+        api.onNeedsRefresh = { [weak self] in
+            await self?.refreshAccessTokenIfPossible()
+        }
+    }
+
+    /// 用 refresh 令牌换新的 access；并发调用合并为一次刷新。续期失败返回 nil 并清登录态。
+    private func refreshAccessTokenIfPossible() async -> String? {
+        if let task = refreshTask { return await task.value }
+        let task = Task { [weak self] () -> String? in
+            guard let self else { return nil }
+            defer { self.refreshTask = nil }
+            guard let refresh = self.refreshToken else { return nil }
+            do {
+                let resp = try await self.api.refreshToken(refreshToken: refresh)
+                self.applyTokens(access: resp.accessToken, refresh: resp.refreshToken)
+                return resp.accessToken
+            } catch {
+                self.clearSession(message: "登录已过期，请重新登录")
+                return nil
+            }
+        }
+        refreshTask = task
+        return await task.value
+    }
+
+    private func applyTokens(access: String, refresh: String?) {
+        token = access
+        UserDefaults.standard.set(access, forKey: tokenKey)
+        if let refresh {
+            refreshToken = refresh
+            UserDefaults.standard.set(refresh, forKey: refreshKey)
         }
     }
 
@@ -123,15 +160,23 @@ final class AuthStore: ObservableObject {
     }
 
     func logout() {
+        if let token {
+            // 尽力注销服务端会话（吊销令牌/解绑设备），失败不影响本地清理
+            Task { await api.serverLogout(token: token) }
+        }
         clearSession(message: "已退出登录")
     }
 
-    /// 统一清理登录态并回到登录页（同时清掉本地 token，避免下次启动又用旧 token 进主界面）。
+    /// 统一清理登录态并回到登录页（清掉本地 access + refresh，避免下次启动又用旧 token 进主界面）。
     private func clearSession(message: String) {
+        refreshTask?.cancel()
+        refreshTask = nil
         token = nil
+        refreshToken = nil
         user = nil
         phase = .signedOut
         UserDefaults.standard.removeObject(forKey: tokenKey)
+        UserDefaults.standard.removeObject(forKey: refreshKey)
         statusMessage = message
     }
 
@@ -141,10 +186,9 @@ final class AuthStore: ObservableObject {
 
         do {
             let response = try await action()
-            token = response.token
+            applyTokens(access: response.token, refresh: response.refreshToken)
             user = response.user
             phase = .signedIn
-            UserDefaults.standard.set(response.token, forKey: tokenKey)
             statusMessage = "登录成功"
         } catch {
             statusMessage = error.localizedDescription

@@ -5,6 +5,7 @@
 var API = "";
 var state = {
   token: localStorage.getItem("rt_token") || "",
+  refresh: localStorage.getItem("rt_refresh") || "",
   user: null,
   usage: null,
   ledger: [],
@@ -40,17 +41,30 @@ function toast(msg, type) {
   el._t = setTimeout(function () { el.className = "toast"; }, 3200);
 }
 
-function api(path, options) {
+function api(path, options, _retried) {
   options = options || {};
-  var headers = options.headers || {};
+  var headers = {};
+  var k;
+  for (k in (options.headers || {})) headers[k] = options.headers[k];
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  if (options.body && !(options.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-    options.body = JSON.stringify(options.body);
-  }
-  return fetch(API + path, { method: options.method || "GET", headers: headers, body: options.body })
+  var isJson = options.body && !(options.body instanceof FormData);
+  if (isJson) headers["Content-Type"] = "application/json";
+  // 注意：不改写 options.body（保留原始对象），以便 401 续期后能原样重试
+  var bodyToSend = isJson ? JSON.stringify(options.body) : options.body;
+  return fetch(API + path, { method: options.method || "GET", headers: headers, body: bodyToSend })
     .then(function (r) {
-      if (r.status === 401) { doLogout(true); throw new Error("登录已失效，请重新登录"); }
+      if (r.status === 401) {
+        // 已登录请求：access 多半过期，先用 refresh 续期并重试一次
+        if (state.token && state.refresh && !_retried) {
+          return refreshAccessToken().then(function (ok) {
+            if (ok) return api(path, options, true);
+            doLogout(true);
+            throw new Error("登录已失效，请重新登录");
+          });
+        }
+        doLogout(true);
+        throw new Error("登录已失效，请重新登录");
+      }
       return r.json().catch(function () { return {}; }).then(function (d) {
         if (!r.ok) throw new Error(d.detail || "请求失败 (" + r.status + ")");
         return d;
@@ -58,11 +72,45 @@ function api(path, options) {
     });
 }
 
+// 单飞刷新：并发 401 只触发一次刷新
+function refreshAccessToken() {
+  if (state._refreshing) return state._refreshing;
+  if (!state.refresh) return Promise.resolve(false);
+  state._refreshing = fetch(API + "/auth/token/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: state.refresh }),
+  })
+    .then(function (r) {
+      if (!r.ok) return false;
+      return r.json().then(function (d) {
+        state.token = d.access_token;
+        state.refresh = d.refresh_token;
+        localStorage.setItem("rt_token", d.access_token);
+        localStorage.setItem("rt_refresh", d.refresh_token);
+        return true;
+      });
+    })
+    .catch(function () { return false; })
+    .then(function (ok) { state._refreshing = null; return ok; });
+  return state._refreshing;
+}
+
 /* ---------- 认证 ---------- */
 function doLogout(silent) {
+  // 用户主动登出时尽力注销服务端会话（吊销令牌）
+  if (!silent && state.token) {
+    fetch(API + "/auth/logout", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + state.token, "Content-Type": "application/json" },
+      body: "{}",
+    }).catch(function () {});
+  }
   state.token = "";
+  state.refresh = "";
   state.user = null;
   localStorage.removeItem("rt_token");
+  localStorage.removeItem("rt_refresh");
   if (jobPoller) { clearInterval(jobPoller); jobPoller = null; }
   render();
   if (!silent) toast("已退出登录", "success");
@@ -76,7 +124,7 @@ function loginWithWeChat() {
         var seed = localStorage.getItem("rt_dev_wechat") || ("web-dev-" + Math.random().toString(36).slice(2) + Date.now());
         localStorage.setItem("rt_dev_wechat", seed);
         return api("/auth/wechat/login", { method: "POST", body: { code: seed, nickname: "微信用户", client: "web" } })
-          .then(function (d) { onAuthed(d.token); toast("登录成功，新用户自动获得首月基础会员试用 🎉", "success"); });
+          .then(function (d) { onAuthed(d.token, d.refresh_token); toast("登录成功，新用户自动获得首月基础会员试用 🎉", "success"); });
       }
       // 生产：跳转微信开放平台扫码授权，回调携带 ?code=
       location.href = cfg.auth_url;
@@ -90,14 +138,16 @@ function handleWeChatCallback() {
   if (!code) return false;
   history.replaceState(null, "", location.pathname); // 清掉 ?code，避免刷新重复使用
   api("/auth/wechat/login", { method: "POST", body: { code: code, client: "web" } })
-    .then(function (d) { onAuthed(d.token); toast("微信登录成功", "success"); })
+    .then(function (d) { onAuthed(d.token, d.refresh_token); toast("微信登录成功", "success"); })
     .catch(function (e) { toast(e.message, "error"); render(); });
   return true;
 }
 
-function onAuthed(token) {
+function onAuthed(token, refresh) {
   state.token = token;
+  state.refresh = refresh || "";
   localStorage.setItem("rt_token", token);
+  if (refresh) localStorage.setItem("rt_refresh", refresh); else localStorage.removeItem("rt_refresh");
   state.tab = "overview";
   loadAccount().then(render);
 }

@@ -11,6 +11,10 @@ class AuthStore(context: Context) {
         get() = prefs.getString("token", null)
         set(value) = prefs.edit().putString("token", value).apply()
 
+    var refreshToken: String?
+        get() = prefs.getString("refresh_token", null)
+        set(value) = prefs.edit().putString("refresh_token", value).apply()
+
     var baseUrl: String
         get() = prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
         set(value) = prefs.edit().putString("base_url", value.trim().trimEnd('/')).apply()
@@ -68,7 +72,7 @@ class AuthStore(context: Context) {
         }
 
     fun clear() {
-        prefs.edit().remove("token").apply()
+        prefs.edit().remove("token").remove("refresh_token").apply()
     }
 
     companion object {

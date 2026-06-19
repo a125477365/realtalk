@@ -41,7 +41,8 @@ class EmailRegisterRequest(AuthRequest):
 
 
 class AuthResponse(BaseModel):
-    token: str
+    token: str  # access token（短效，过期用 refresh_token 续）
+    refresh_token: str | None = None
     user: UserOut
 
 

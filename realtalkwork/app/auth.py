@@ -93,13 +93,15 @@ def verify_admin_password(admin: dict, password: str) -> bool:
     return verify_password(password, admin["password_salt"], admin["password_hash"])
 
 
-def create_token(user_id: str, device_id: str | None = None) -> str:
+def create_token(user_id: str, device_id: str | None = None, token_version: int = 1) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
-        "did": device_id,  # 绑定登录设备唯一编号，实现「同账号单设备登录」
+        "did": device_id,            # 绑定登录设备唯一编号，实现「同账号单设备登录」
+        "tv": int(token_version),    # 令牌版本，递增即可服务端批量吊销该用户全部令牌
+        "jti": os.urandom(6).hex(),  # 每次签发唯一，保证轮换出的令牌互不相同
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(hours=settings.token_ttl_hours)).timestamp()),
+        "exp": int((now + timedelta(minutes=settings.access_token_ttl_minutes)).timestamp()),
         "type": "access",
     }
     payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -107,8 +109,50 @@ def create_token(user_id: str, device_id: str | None = None) -> str:
     return f"{payload_b64}.{signature}"
 
 
-def verify_token(token: str) -> tuple[str, str | None]:
-    """返回 (user_id, device_id)。device_id 用于单设备登录校验。"""
+def verify_token(token: str) -> tuple[str, str | None, int]:
+    """返回 (user_id, device_id, token_version)。device_id/tv 用于单设备与吊销校验。"""
+    payload = _decode_token(token, expected_type="access", expired_detail="登录已过期")
+    user_id = payload.get("sub")
+    if not isinstance(user_id, str) or not user_id:
+        raise _unauthorized()
+    device_id = payload.get("did")
+    return (
+        user_id,
+        (device_id if isinstance(device_id, str) and device_id else None),
+        int(payload.get("tv", 1) or 1),
+    )
+
+
+def create_refresh_token(user_id: str, device_id: str | None = None, token_version: int = 1) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "did": device_id,
+        "tv": int(token_version),
+        "jti": os.urandom(6).hex(),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=settings.refresh_token_ttl_days)).timestamp()),
+        "type": "refresh",
+    }
+    payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = _sign(payload_b64)
+    return f"{payload_b64}.{signature}"
+
+
+def verify_refresh_token(token: str) -> tuple[str, str | None, int]:
+    payload = _decode_token(token, expected_type="refresh", expired_detail="刷新令牌已过期")
+    user_id = payload.get("sub")
+    if not isinstance(user_id, str) or not user_id:
+        raise _unauthorized()
+    device_id = payload.get("did")
+    return (
+        user_id,
+        (device_id if isinstance(device_id, str) and device_id else None),
+        int(payload.get("tv", 1) or 1),
+    )
+
+
+def _decode_token(token: str, expected_type: str, expired_detail: str) -> dict:
     try:
         payload_b64, signature = token.split(".", 1)
     except ValueError as exc:
@@ -122,58 +166,12 @@ def verify_token(token: str) -> tuple[str, str | None]:
     except (json.JSONDecodeError, ValueError) as exc:
         raise _unauthorized() from exc
 
-    if payload.get("type") != "access":
-        raise _unauthorized("无效的访问令牌")
+    if payload.get("type") != expected_type:
+        raise _unauthorized("无效的令牌")
 
     if int(payload.get("exp", 0)) < int(time.time()):
-        raise _unauthorized("登录已过期")
-
-    user_id = payload.get("sub")
-    if not isinstance(user_id, str) or not user_id:
-        raise _unauthorized()
-    device_id = payload.get("did")
-    return user_id, (device_id if isinstance(device_id, str) and device_id else None)
-
-
-def create_refresh_token(user_id: str, device_id: str | None = None) -> str:
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": user_id,
-        "did": device_id,
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(days=30)).timestamp()),
-        "type": "refresh",
-    }
-    payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    signature = _sign(payload_b64)
-    return f"{payload_b64}.{signature}"
-
-
-def verify_refresh_token(token: str) -> tuple[str, str | None]:
-    try:
-        payload_b64, signature = token.split(".", 1)
-    except ValueError:
-        raise _unauthorized()
-
-    if hmac.compare_digest(_sign(payload_b64), signature) is False:
-        raise _unauthorized()
-
-    try:
-        payload = json.loads(_unb64(payload_b64))
-    except (json.JSONDecodeError, ValueError):
-        raise _unauthorized()
-
-    if payload.get("type") != "refresh":
-        raise _unauthorized("无效的刷新令牌")
-
-    if int(payload.get("exp", 0)) < int(time.time()):
-        raise _unauthorized("刷新令牌已过期")
-
-    user_id = payload.get("sub")
-    if not isinstance(user_id, str) or not user_id:
-        raise _unauthorized()
-    device_id = payload.get("did")
-    return user_id, (device_id if isinstance(device_id, str) and device_id else None)
+        raise _unauthorized(expired_detail)
+    return payload
 
 
 def create_password_reset_token() -> tuple[str, str]:

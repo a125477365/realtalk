@@ -24,6 +24,8 @@ final class APIClient {
     private let decoder: JSONDecoder
     /// 已登录请求收到 401（如账号被其它设备顶掉）时回调，用于自动退出登录。
     var onUnauthorized: (@MainActor () -> Void)?
+    /// access 过期时回调：用 refresh 令牌续期，返回新的 access；返回 nil 表示续期失败。
+    var onNeedsRefresh: (@MainActor () async -> String?)?
 
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -82,6 +84,15 @@ final class APIClient {
 
     func currentUser(token: String) async throws -> AppUser {
         try await get("/auth/me", token: token, queryItems: [])
+    }
+
+    func refreshToken(refreshToken: String) async throws -> AuthTokenResponse {
+        try await post("/auth/token/refresh", body: TokenRefreshRequest(refreshToken: refreshToken), token: nil)
+    }
+
+    /// 服务端登出（注销全部设备 / 吊销令牌）。尽力而为，失败不影响本地清理。
+    func serverLogout(token: String) async {
+        _ = try? await post("/auth/logout", body: EmptyBody(), token: token) as OKResponse
     }
 
     func aiChat(
@@ -425,15 +436,25 @@ final class APIClient {
         baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
     }
 
-    private func send<Response: Decodable>(_ request: URLRequest) async throws -> Response {
+    private struct EmptyBody: Encodable {}
+    private struct OKResponse: Decodable {}
+
+    private func send<Response: Decodable>(_ request: URLRequest, allowRefresh: Bool = true) async throws -> Response {
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIClientError.invalidResponse
         }
 
         if httpResponse.statusCode == 401 {
-            // 仅对「已带登录凭证」的请求触发自动退出（登录请求本身的 401 不算）
+            // 仅对「已带登录凭证」的请求处理（登录/刷新请求本身的 401 不算）
             if request.value(forHTTPHeaderField: "Authorization") != nil {
+                // access 多半是过期：先用 refresh 续期并原样重试一次
+                if allowRefresh, let newToken = await onNeedsRefresh?() {
+                    var retried = request
+                    retried.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                    return try await send(retried, allowRefresh: false)
+                }
+                // 续期失败（refresh 也失效/被吊销/换设备）→ 强制退出
                 onUnauthorized?()
             }
             throw APIClientError.unauthorized

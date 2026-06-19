@@ -24,6 +24,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.time.Instant
 import java.time.LocalTime
@@ -73,6 +75,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var answerTimeoutJob: Job? = null
     private var captureScheduleJob: Job? = null
     private var autoCaptureRunning = false
+    private val refreshMutex = Mutex()
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
 
@@ -87,8 +90,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
         voice.onStateChange = { isSpeaking.value = it }
         voice.onLevel = { aiAudioLevel.value = it }
-        // 账号被其它设备顶掉时服务端返回 401 → 自动退出回到登录页
+        // 账号被其它设备顶掉/令牌被吊销时服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { viewModelScope.launch { forceLogout() } }
+        // access 过期时用 refresh 续期（单飞）
+        api.onNeedsRefresh = { oldAccess -> refreshAccessToken(oldAccess) }
 
         appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或用底部按钮采集。")
         bootstrap()
@@ -126,6 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
                 .onSuccess {
                     auth.token = it.token
+                    auth.refreshToken = it.refreshToken
                     user.value = it.user
                     statusMessage.value = "登录成功"
                     refreshBilling(); loadTodayScenarios(); loadPlans()
@@ -136,13 +142,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        val token = auth.token
+        if (token != null) viewModelScope.launch { api.serverLogout(token) }  // 尽力注销服务端会话
         auth.clear()
         user.value = null
         billing.value = null
         statusMessage.value = "已退出登录"
     }
 
-    /** 账号被其它设备顶掉：自动退出并回到登录页，需重新授权。 */
+    /** access 过期：用 refresh 令牌换新 access；并发调用合并为一次刷新，失败则强制登出。 */
+    private suspend fun refreshAccessToken(oldAccess: String?): String? = refreshMutex.withLock {
+        val current = auth.token
+        if (current != null && current != oldAccess) return@withLock current  // 已被别的请求刷新过
+        val refresh = auth.refreshToken ?: return@withLock null
+        runCatching { api.refreshToken(refresh) }.fold(
+            onSuccess = {
+                auth.token = it.accessToken
+                auth.refreshToken = it.refreshToken
+                it.accessToken
+            },
+            onFailure = {
+                viewModelScope.launch { forceLogout() }
+                null
+            },
+        )
+    }
+
+    /** 账号被其它设备顶掉/令牌吊销：自动退出并回到登录页，需重新授权。 */
     private fun forceLogout() {
         if (auth.token == null && user.value == null) return
         auth.clear()

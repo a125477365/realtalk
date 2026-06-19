@@ -98,6 +98,7 @@ users = Table(
     Column("last_seen_at", Text),
     Column("plan_expires_at", Text),
     Column("active_device_id", Text),  # 当前唯一允许登录的设备编号（单设备登录）
+    Column("token_version", Integer, nullable=False, default=1),  # 递增即吊销该用户全部令牌
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -375,6 +376,7 @@ class Database:
             self._ensure_column(conn, "users", "last_seen_at", "TEXT")
             self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
             self._ensure_column(conn, "users", "active_device_id", "TEXT")
+            self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
@@ -532,6 +534,41 @@ class Database:
                 select(users.c.active_device_id).where(users.c.id == user_id)
             ).fetchone()
         return row[0] if row and row[0] else None
+
+    def get_token_version(self, user_id: str) -> int:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(users.c.token_version).where(users.c.id == user_id)
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 1
+
+    def bump_token_version(self, user_id: str) -> int:
+        """递增令牌版本：使该用户此前签发的所有 access/refresh 令牌立即失效。"""
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(token_version=users.c.token_version + 1)
+            )
+            row = conn.execute(
+                select(users.c.token_version).where(users.c.id == user_id)
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 1
+
+    def get_user_session(self, user_id: str) -> dict[str, Any] | None:
+        """一次读取构建鉴权所需的全部会话上下文，避免每请求多次查库。
+
+        返回 {user(UserOut), active_device_id, token_version, last_seen_at}；用户不存在则 None。
+        """
+        row = self.get_user_row(user_id)
+        if row is None:
+            return None
+        return {
+            "user": _user_from_row(row),
+            "active_device_id": row["active_device_id"] if row.get("active_device_id") else None,
+            "token_version": int(row["token_version"]) if row.get("token_version") is not None else 1,
+            "last_seen_at": _parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,
+        }
 
     def get_monthly_price_cents(self) -> int:
         return self.get_app_setting_int("monthly_price_cents", settings.monthly_price_cents)

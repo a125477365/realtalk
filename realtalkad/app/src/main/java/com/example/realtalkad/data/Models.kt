@@ -26,7 +26,27 @@ data class AppUser(
 }
 
 @Serializable
-data class AuthResponse(val token: String, val user: AppUser)
+data class AuthResponse(
+    val token: String,
+    @SerialName("refresh_token") val refreshToken: String? = null,
+    val user: AppUser,
+)
+
+@Serializable
+data class AuthTokenResponse(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("refresh_token") val refreshToken: String,
+    @SerialName("expires_in") val expiresIn: Int = 0,
+)
+
+@Serializable
+data class TokenRefreshRequest(@SerialName("refresh_token") val refreshToken: String)
+
+@Serializable
+data class MessageResponse(val message: String = "")
+
+@Serializable
+class EmptyBody
 
 @Serializable
 data class ErrorResponse(val detail: String = "请求失败")

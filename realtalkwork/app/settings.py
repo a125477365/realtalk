@@ -73,6 +73,11 @@ class Settings:
     # 对话采集分块暂存：配置后用 Redis（TTL 自动过期、跨节点共享），否则回退本地文件
     redis_url: str | None = os.getenv("REDIS_URL")
     token_ttl_hours: int = int(os.getenv("TOKEN_TTL_HOURS", "720"))
+    # 短效访问令牌 + 长效刷新令牌（参考成熟 App：缩小令牌被盗用的时间窗，配合刷新轮换）
+    access_token_ttl_minutes: int = int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", "60"))
+    refresh_token_ttl_days: int = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
+    # 会话「最近活跃」节流写入：超过该秒数才更新 last_seen，避免每请求一次写库
+    last_seen_throttle_seconds: int = int(os.getenv("LAST_SEEN_THROTTLE_SECONDS", "120"))
     retention_days: int = int(os.getenv("RETENTION_DAYS", "3"))
     history_retention_days: int = int(os.getenv("HISTORY_RETENTION_DAYS", "90"))
     roleplay_accept_score: float = float(os.getenv("ROLEPLAY_ACCEPT_SCORE", "0.72"))

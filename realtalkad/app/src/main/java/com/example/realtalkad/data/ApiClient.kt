@@ -32,28 +32,42 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         .writeTimeout(1800, TimeUnit.SECONDS)
         .build()
 
-    /** 已登录请求收到 401（如账号被其它设备顶掉）时回调，用于自动退出登录。 */
+    /** 已登录请求收到 401（如账号被其它设备顶掉/令牌被吊销）时回调，用于自动退出登录。 */
     var onUnauthorized: (() -> Unit)? = null
+
+    /** access 过期时回调：传入旧 access，用 refresh 续期并返回新 access；返回 null 表示续期失败。 */
+    var onNeedsRefresh: (suspend (String?) -> String?)? = null
 
     private fun url(path: String) = baseUrlProvider().trimEnd('/') + path
 
-    private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            if (response.code == 401) {
-                // 仅对「已带登录凭证」的请求触发自动退出（登录请求本身的 401 不算）
-                if (request.header("Authorization") != null) onUnauthorized?.invoke()
-                val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
-                    .getOrDefault("请先登录")
-                throw ApiException(detail)
-            }
-            if (!response.isSuccessful) {
-                val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
-                    .getOrDefault("请求失败：HTTP ${response.code}")
-                throw ApiException(detail)
-            }
-            body
+    private suspend fun execute(request: Request, allowRefresh: Boolean = true): String = withContext(Dispatchers.IO) {
+        val (code, body, successful) = client.newCall(request).execute().use { response ->
+            Triple(response.code, response.body?.string().orEmpty(), response.isSuccessful)
         }
+        if (code == 401) {
+            // 仅对「已带登录凭证」的请求处理（登录/刷新请求本身的 401 不算）
+            if (request.header("Authorization") != null) {
+                // access 多半是过期：先用 refresh 续期并原样重试一次
+                if (allowRefresh) {
+                    val oldAccess = request.header("Authorization")?.removePrefix("Bearer ")?.trim()
+                    val newToken = onNeedsRefresh?.invoke(oldAccess)
+                    if (newToken != null) {
+                        val retried = request.newBuilder().header("Authorization", "Bearer $newToken").build()
+                        return@withContext execute(retried, allowRefresh = false)
+                    }
+                }
+                onUnauthorized?.invoke()
+            }
+            val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
+                .getOrDefault("请先登录")
+            throw ApiException(detail)
+        }
+        if (!successful) {
+            val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
+                .getOrDefault("请求失败：HTTP $code")
+            throw ApiException(detail)
+        }
+        body
     }
 
     private suspend inline fun <reified T> get(path: String, token: String? = null): T {
@@ -74,6 +88,14 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         post("/auth/wechat/login", WeChatLoginRequest(code, nickname, deviceId = deviceId))
 
     suspend fun currentUser(token: String): AppUser = get("/auth/me", token)
+
+    suspend fun refreshToken(refresh: String): AuthTokenResponse =
+        post("/auth/token/refresh", TokenRefreshRequest(refresh))
+
+    /** 服务端登出（注销全部设备/吊销令牌）。尽力而为，失败不影响本地清理。 */
+    suspend fun serverLogout(token: String) {
+        runCatching { post<EmptyBody, MessageResponse>("/auth/logout", EmptyBody(), token) }
+    }
 
     // ---- 对话采集 ----
     suspend fun uploadTranscripts(items: List<TranscriptItem>, token: String): TranscriptUploadResponse =
