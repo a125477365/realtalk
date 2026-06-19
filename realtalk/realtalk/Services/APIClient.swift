@@ -23,7 +23,7 @@ final class APIClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     /// 已登录请求收到 401（如账号被其它设备顶掉）时回调，用于自动退出登录。
-    var onUnauthorized: (@Sendable () -> Void)?
+    var onUnauthorized: (@MainActor () -> Void)?
 
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()

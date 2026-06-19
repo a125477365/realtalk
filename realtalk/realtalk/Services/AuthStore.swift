@@ -17,7 +17,7 @@ final class AuthStore: ObservableObject {
         token = UserDefaults.standard.string(forKey: tokenKey)
         // 账号被其它设备顶掉时，服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { [weak self] in
-            Task { @MainActor in self?.handleForcedLogout() }
+            self?.handleForcedLogout()
         }
     }
 
