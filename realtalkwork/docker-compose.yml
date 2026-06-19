@@ -1,9 +1,10 @@
 # RealTalk 容器编排：按 profile 选择部署哪些应用（支持分布式拆机部署）
 #
-#   backend     后端 API（DATABASE_URL 留空时连内置 postgres）
-#   backend-db  内置 PostgreSQL（使用外部数据库时不要启用）
-#   admin       管理台
-#   web         用户 Web 端
+#   backend       后端 API（DATABASE_URL 留空时连内置 postgres）
+#   backend-db    内置 PostgreSQL（使用外部数据库时不要启用）
+#   backend-redis 内置 Redis（采集分块暂存；用远程 Redis 时不要启用）
+#   admin         管理台
+#   web           用户 Web 端
 #
 # 用法（推荐通过 bash setup.sh 交互式生成 .env 与 COMPOSE_PROFILES）：
 #   COMPOSE_PROFILES=backend,backend-db,admin,web docker compose up -d --build
@@ -27,6 +28,20 @@ services:
       retries: 10
     restart: unless-stopped
 
+  redis:
+    profiles: ["backend-redis"]
+    image: redis:7-alpine
+    # 采集分块只是短命数据（带 TTL、用完即删），开 appendonly 仅为重启不丢正在进行的上传
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    volumes:
+      - ${REDIS_DATA_DIR:-./data/redis}:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   api:
     profiles: ["backend"]
     build:
@@ -41,6 +56,8 @@ services:
       # 手动运行且未设置时，用与内置 postgres 默认账号一致的连接串兜底。
       # 注意：compose 插值不支持嵌套 ${}，默认值必须是字面量。
       DATABASE_URL: "${DATABASE_URL:-postgresql+psycopg://realtalk:realtalk@postgres:5432/realtalk?sslmode=disable}"
+      # 采集分块暂存：留空=本地文件兜底；内置 Redis 时 setup.sh 写为 redis://redis:6379/0
+      REDIS_URL: "${REDIS_URL:-}"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:

@@ -167,16 +167,30 @@ class _RedisBackend:
 
 def _build_store():
     url = settings.redis_url
-    if url:
-        try:
-            import redis  # type: ignore
+    if not url:
+        return _FileBackend()
+    try:
+        import redis  # type: ignore
+    except ImportError:
+        print("[capture] 未安装 redis 库，回退本地文件暂存", flush=True)
+        return _FileBackend()
 
-            client = redis.Redis.from_url(url, decode_responses=True, socket_timeout=3, socket_connect_timeout=3)
+    client = redis.Redis.from_url(
+        url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5, retry_on_timeout=True
+    )
+    # 容器编排下 api 可能先于 redis 就绪：短暂重试，避免误判为不可用而回退
+    import time as _time
+
+    for attempt in range(5):
+        try:
             client.ping()
             print("[capture] 采集分块暂存使用 Redis", flush=True)
             return _RedisBackend(client)
-        except Exception as exc:  # noqa: BLE001 — Redis 不可用时优雅回退
-            print(f"[capture] Redis 不可用，回退本地文件暂存：{str(exc)[:120]}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 4:
+                print(f"[capture] Redis 暂不可用，回退本地文件暂存：{str(exc)[:120]}", flush=True)
+                return _FileBackend()
+            _time.sleep(1)
     return _FileBackend()
 
 

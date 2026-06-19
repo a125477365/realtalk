@@ -126,13 +126,37 @@ if $DEPLOY_BACKEND; then
     ENV_LINES+=("DATABASE_URL=$REPLY_VALUE")
   fi
 
-  ask "JWT 密钥（回车自动生成）" "$(rand 48)"
+  # ---- 采集分块暂存 Redis（与数据库同样的安装要求：内置容器 / 远程地址 / 不用）----
+  echo
+  note "对话采集分块暂存用 Redis（带 TTL 自动回收、跨节点共享、用完即删、不写主库；多节点强烈建议）。"
+  echo "    1) 内置 Redis 容器（与内置数据库一样在本机起一个）"
+  echo "    2) 远程 / 已有 Redis（填写连接串）"
+  echo "    3) 不用 Redis（回退本地文件，仅单机够用）"
+  ask "选择采集暂存方式" "1"
+  REDIS_CHOICE="$REPLY_VALUE"
+  if [ "$REDIS_CHOICE" = "1" ]; then
+    PROFILES+=("backend-redis")
+    ask "Redis 数据目录" "./data/redis"
+    ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
+    ENV_LINES+=("REDIS_URL=redis://redis:6379/0")
+  elif [ "$REDIS_CHOICE" = "2" ]; then
+    note "示例：redis://:你的密码@redis.example.com:6379/0（走 TLS 用 rediss://）"
+    ask "Redis 连接串 REDIS_URL" ""
+    [ -n "$REPLY_VALUE" ] || { say "选择远程 Redis 必须填写连接串"; exit 1; }
+    ENV_LINES+=("REDIS_URL=$REPLY_VALUE")
+  else
+    ENV_LINES+=("REDIS_URL=")
+  fi
+
+  ask "JWT 密钥（回车自动生成强随机密钥）" "$(rand 48)"
   ENV_LINES+=("JWT_SECRET=$REPLY_VALUE")
 
   ask "管理员用户名" "admin"
   ENV_LINES+=("ADMIN_USERNAME=$REPLY_VALUE")
-  ask "管理员初始密码（至少 8 位，登录后请改密）" "admin123456"
-  ENV_LINES+=("ADMIN_PASSWORD=$REPLY_VALUE")
+  note "管理员初始密码默认自动生成强随机值（请记下，登录后可在管理台改密）。"
+  ask "管理员初始密码（回车=自动生成）" "$(rand 16)"
+  ADMIN_PW_VALUE="$REPLY_VALUE"
+  ENV_LINES+=("ADMIN_PASSWORD=$ADMIN_PW_VALUE")
 
   note "AI 模型可跳过，部署后在管理台「系统设置 → AI 模型对接」配置（推荐）。"
   ask "AI Base URL（回车跳过）" ""
@@ -258,6 +282,8 @@ if $DEPLOY_BACKEND; then
     "UPLOAD_DATA_DIR=./data/uploads"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
+    "# 安全：生产默认关闭内购校验旁路（接 Apple 内购前保持 false）"
+    "APPLE_IAP_DEV_BYPASS=false"
     "# 邮箱注册默认关闭，仅微信认证"
     "EMAIL_AUTH_ENABLED=false"
     "EMAIL_DEV_MODE=true"
@@ -327,7 +353,23 @@ say "=============================================="
 $DEPLOY_BACKEND && echo "  后端 API：    http://<本机IP>:${API_PORT:-8000}  （App 服务地址指向这里）"
 $DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
 $DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"
+
+if $DEPLOY_BACKEND; then
+  echo
+  say "管理员登录账号：${ADMIN_USERNAME:-admin}　密码：${ADMIN_PW_VALUE:-（见 .env ADMIN_PASSWORD）}"
+  note "请立即记下并妥善保管，登录管理台后尽快改密。"
+  echo
+  say "⚠️  代码层安全已就绪（单设备登录 / 服务端会员鉴权与到期 / 限流 / 强 JWT 密钥 / 危险旁路告警）。"
+  say "    以下基础设施/平台层安全需运维在部署后另行设置（代码无法代办）："
+  note "HTTPS/TLS：在 API、管理台、Web 前都挂反向代理（Nginx/Caddy）启用证书，App 只连 https。"
+  note "防火墙：仅放行必要端口；数据库/Redis 不要暴露公网（用内网或 SSH 隧道）。"
+  note "抗 DDoS / WAF：在 CDN 或网关层做（应用内限流只是兜底，单机粒度）。"
+  note "客户端防篡改：上线后接 iOS App Attest / Android Play Integrity，在登录与付款接口校验设备完整性。"
+  note "上线前确认：PAYMENT_DEV_AUTO_CONFIRM / WECHAT_AUTH_DEV_MODE / APPLE_IAP_DEV_BYPASS 均为 false。"
+fi
+
 cat <<'EOF'
+
  常用命令：docker compose ps / logs -f api / down
  跨机部署：在其他机器重复运行 bash setup.sh，只勾选该机的应用并填写后端地址。
 EOF

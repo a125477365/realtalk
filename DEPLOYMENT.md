@@ -46,6 +46,36 @@ curl -s http://localhost:8000/health   # 存活
 curl -s http://localhost:8000/ready    # 数据库连通
 ```
 
+### 1.7 采集分块暂存 Redis（可选，多节点必配）
+
+对话采集分块是「攒齐即删」的短命数据，用 Redis 暂存（带 TTL 自动回收、用完即删、不写主库、跨节点共享）。`setup.sh` 会询问：内置 Redis 容器 / 远程 Redis / 不用（回退本地文件）。手动配置则在 `.env` 设 `REDIS_URL`（如 `redis://redis:6379/0`）。**单机可不配（自动回退本地文件）；多节点部署务必配同一个 Redis**，否则各节点的分块无法汇总。
+
+### 1.8 安全清单（上线前必读）
+
+**代码层已内置（无需额外操作）：**
+- 同账号单设备登录：新设备登录顶掉旧设备，旧端自动退出需重新授权。
+- 会员鉴权与到期在服务端强制：未付费/过期/非会员无法使用会员功能，客户端篡改也绕不过。
+- 强 JWT 密钥：未配 `JWT_SECRET` 时自动落到持久化随机密钥，杜绝弱默认值。
+- 接口限流：认证类防撞库、其余防洪泛（应用内兜底，单机粒度）。
+- 启动告警：检测到危险开发旁路 / 弱配置会在日志醒目提示。
+
+**`.env` 上线前必须确认（`setup.sh` 选择"正式"时已自动设为 false）：**
+```
+PAYMENT_DEV_AUTO_CONFIRM=false   # 否则用户不付款也能确认到账
+WECHAT_AUTH_DEV_MODE=false       # 否则任意设备可直登，未校验真实身份
+APPLE_IAP_DEV_BYPASS=false       # 否则内购校验被绕过
+EMAIL_DEV_MODE=false             # 若启用邮箱注册
+JWT_SECRET=<长随机串>            # 多节点共享同一值
+ADMIN_PASSWORD=<强密码>          # 不要用默认值
+```
+
+**基础设施 / 平台层（代码无法代办，运维必做）：**
+- **HTTPS/TLS**：API、管理台、Web 前挂反向代理（Nginx/Caddy）启用证书；App 只连 `https://`，可做证书绑定（pinning）。
+- **网络隔离**：数据库、Redis 不暴露公网；只放行必要端口（API/管理台/Web）。
+- **抗 DDoS / WAF**：在 CDN 或网关层做（应用内限流仅兜底）。
+- **客户端防篡改**：接 iOS App Attest / Android Play Integrity，在登录与付款接口校验设备完整性，防止破解版/模拟器伪造请求。
+- **密钥与备份**：`.env`、`.jwt_secret.key`、数据库定期备份并妥善保管，绝不入库（已在 `.gitignore`）。
+
 ---
 
 ## 2. iOS 客户端部署
