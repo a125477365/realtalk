@@ -94,19 +94,20 @@ struct TimeFilterPicker: View {
                     DatePicker("结束", selection: $model.customEnd)
                 }
                 .datePickerStyle(.compact)
-                .font(.subheadline)
+                .font(.system(size: 15 * model.fontScale))
             }
         }
     }
 }
 
 struct StatusBanner: View {
+    @EnvironmentObject private var model: AppModel
     let text: String
 
     var body: some View {
         if text.isEmpty == false {
             Text(text)
-                .font(.footnote)
+                .font(.system(size: 13 * model.fontScale))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
@@ -116,14 +117,14 @@ struct StatusBanner: View {
 }
 
 struct TranscriptRow: View {
+    @EnvironmentObject private var model: AppModel
     let segment: TranscriptSegment
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(segment.shortTime)
-                    .font(.caption)
-                    .fontWeight(.medium)
+                    .font(.system(size: 12 * model.fontScale, weight: .medium))
                     .foregroundStyle(.secondary)
 
                 Spacer()
@@ -135,7 +136,7 @@ struct TranscriptRow: View {
             }
 
             Text(segment.text)
-                .font(.body)
+                .font(.system(size: 17 * model.fontScale))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(12)

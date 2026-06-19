@@ -46,6 +46,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -118,12 +120,15 @@ fun MainChatScreen(model: AppViewModel) {
     val isWorking by model.isWorking.collectAsState()
     val user by model.user.collectAsState()
     val showImmersive by model.showImmersive.collectAsState()
+    val status by model.statusMessage.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
 
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
     var scenarioScope by remember { mutableStateOf("today") }
 
     val statusText = when {
+        status.isNotEmpty() -> status
         isSpeaking -> "AI 正在说话…"
         isListening -> "正在听你说英语…"
         isRecording -> "正在采集真实对话…"
@@ -136,6 +141,13 @@ fun MainChatScreen(model: AppViewModel) {
         isListening -> RT.Success
         isWorking -> RT.Accent
         else -> RT.TextSecondary
+    }
+
+    val context = LocalContext.current
+    LaunchedEffect(status) {
+        if (status.isNotEmpty()) {
+            Toast.makeText(context, status, Toast.LENGTH_SHORT).show()
+        }
     }
 
     Column(Modifier.fillMaxSize().background(RT.Background).imePadding()) {
@@ -154,7 +166,7 @@ fun MainChatScreen(model: AppViewModel) {
             Spacer(Modifier.width(10.dp))
             Column {
                 Text("RealTalk", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
-                Text("场景列表与日期选择", fontSize = 11.sp, color = RT.TextSecondary)
+                Text("场景列表与日期选择", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
             }
             Spacer(Modifier.weight(1f))
         }
@@ -166,7 +178,7 @@ fun MainChatScreen(model: AppViewModel) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(Modifier.size(6.dp).background(statusColor, CircleShape))
-            Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = RT.TextSecondary)
+            Text(statusText, fontSize = (12 * fontScale).sp, fontWeight = FontWeight.Medium, color = RT.TextSecondary)
         }
         Spacer(Modifier.height(12.dp))
 
@@ -195,7 +207,7 @@ fun MainChatScreen(model: AppViewModel) {
         // 场景列表
         Text(
             if (scenarioScope == "today") "今日场景" else "全部场景",
-            fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
+            fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
         if (scenarios.isEmpty()) {
@@ -209,11 +221,11 @@ fun MainChatScreen(model: AppViewModel) {
             ) {
                 Text(
                     "今天还没有场景",
-                    fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = RT.TextPrimary,
+                    fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
-                    fontSize = 12.sp, color = RT.TextSecondary)
+                    fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
             }
         } else {
             LazyRow(
@@ -228,13 +240,13 @@ fun MainChatScreen(model: AppViewModel) {
                             .clickable { roleDialogFor = summary }
                             .padding(12.dp),
                     ) {
-                        Text(summary.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                        Text(summary.title, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp,
                             color = RT.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(3.dp))
-                        Text(summary.summary, fontSize = 12.sp, color = RT.TextSecondary,
+                        Text(summary.summary, fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(4.dp))
-                        Text("${summary.lineCount} 句", fontSize = 10.sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+                        Text("${summary.lineCount} 句", fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
                     }
                 }
             }
@@ -267,7 +279,7 @@ fun MainChatScreen(model: AppViewModel) {
             title = { Text("练习「${summary.title}」") },
             text = {
                 Column {
-                    Text("你想扮演谁？", color = RT.TextSecondary, fontSize = 13.sp)
+                    Text("你想扮演谁？", color = RT.TextSecondary, fontSize = (13 * fontScale).sp)
                     Spacer(Modifier.height(10.dp))
                     summary.roles.filter { it.isUserCandidate }.forEach { role ->
                         OutlinedButton(

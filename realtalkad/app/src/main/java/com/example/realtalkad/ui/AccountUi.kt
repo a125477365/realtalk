@@ -57,6 +57,7 @@ fun AccountSheet(model: AppViewModel) {
     val user by model.user.collectAsState()
     val billing by model.billing.collectAsState()
     val status by model.statusMessage.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
     var showUpload by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -90,7 +91,7 @@ fun AccountSheet(model: AppViewModel) {
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 user?.tierName ?: "",
-                                fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                fontSize = (10 * fontScale).sp, fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 modifier = Modifier
                                     .background(Color.White.copy(alpha = 0.22f), RoundedCornerShape(99.dp))
@@ -98,12 +99,12 @@ fun AccountSheet(model: AppViewModel) {
                             )
                         }
                         user?.planExpiresAt?.let {
-                            Text("有效期至 ${it.take(10)}", fontSize = 11.sp, color = Color.White.copy(alpha = 0.85f))
+                            Text("有效期至 ${it.take(10)}", fontSize = (11 * fontScale).sp, color = Color.White.copy(alpha = 0.85f))
                         }
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text(money(user?.balanceCents ?: 0), fontWeight = FontWeight.Bold, fontSize = 19.sp, color = Color.White)
-                        Text("余额", fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f))
+                        Text(money(user?.balanceCents ?: 0), fontWeight = FontWeight.Bold, fontSize = (19 * fontScale).sp, color = Color.White)
+                        Text("余额", fontSize = (10 * fontScale).sp, color = Color.White.copy(alpha = 0.85f))
                     }
                 }
                 billing?.usage?.let { usage ->
@@ -111,7 +112,7 @@ fun AccountSheet(model: AppViewModel) {
                     Text(
                         "今日 AI 用量 ${usage.todayTokens} / ${usage.dailyLimit} tokens" +
                             if (usage.overLimit) "（已达上限，明天恢复）" else "",
-                        fontSize = 11.sp,
+                        fontSize = (11 * fontScale).sp,
                         color = Color.White.copy(alpha = if (usage.overLimit) 1f else 0.85f),
                     )
                     Spacer(Modifier.height(5.dp))
@@ -132,6 +133,7 @@ fun AccountSheet(model: AppViewModel) {
                 title = "设置",
                 subtitle = "字体、字幕、自动录音、会员与充值",
                 modifier = Modifier.fillMaxWidth(),
+                fontScale = fontScale,
             ) { showSettings = true }
         }
 
@@ -146,42 +148,42 @@ fun AccountSheet(model: AppViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("上传录音生成场景", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("上传录音生成场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
                     Text(
                         if (user?.planTier == "premium") "本地文件或蓝牙录音笔 · 最长 6 小时 / 300MB"
                         else "高级会员专属功能，升级后可用",
-                        fontSize = 11.sp, color = RT.TextSecondary,
+                        fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
                     )
                 }
-                Text(if (user?.planTier == "premium") "›" else "🔒", fontSize = 16.sp, color = RT.TextSecondary)
+                Text(if (user?.planTier == "premium") "›" else "🔒", fontSize = (16 * fontScale).sp, color = RT.TextSecondary)
             }
         }
 
         // 账单
-        item { Text("账单", fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
+        item { Text("账单", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp) }
         items(billing?.ledger.orEmpty(), key = { it.id }) { item ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(item.title, fontSize = 13.sp)
-                    Text(item.createdAt.take(16).replace("T", " "), fontSize = 10.sp, color = RT.TextSecondary)
+                    Text(item.title, fontSize = (13 * fontScale).sp)
+                    Text(item.createdAt.take(16).replace("T", " "), fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Text(
                     (if (item.amountCents >= 0) "+" else "") + money(item.amountCents),
-                    fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    fontSize = (13 * fontScale).sp, fontWeight = FontWeight.Medium,
                     color = if (item.amountCents >= 0) Color(0xFF16A34A) else RT.TextPrimary,
                 )
             }
         }
 
         item {
-            if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = RT.TextSecondary)
+            if (status.isNotBlank()) Text(status, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
             TextButton(onClick = { model.logout() }) { Text("退出登录", color = Color.Red) }
         }
     }
 }
 
 @Composable
-private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = Modifier, fontScale: Float = 1f, onClick: () -> Unit) {
     Column(
         modifier
             .background(RT.Surface, RoundedCornerShape(16.dp))
@@ -189,9 +191,9 @@ private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = 
             .clickable { onClick() }
             .padding(14.dp),
     ) {
-        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = RT.TextPrimary)
+        Text(title, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
         Spacer(Modifier.height(3.dp))
-        Text(subtitle, fontSize = 11.sp, color = RT.TextSecondary)
+        Text(subtitle, fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
     }
 }
 
@@ -205,6 +207,7 @@ private fun BillingSheetContent(
     val plans by model.plans.collectAsState()
     val order by model.rechargeOrder.collectAsState()
     val status by model.statusMessage.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -246,7 +249,7 @@ private fun BillingSheetContent(
                     Text(plan.title, fontWeight = FontWeight.SemiBold, color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent)
                     Text(
                         if (plan.months > 1) "每月 ${money(plan.perMonthCents)} · 共 ${money(plan.priceCents)}" else "每月 ${money(plan.perMonthCents)}",
-                        fontSize = 11.sp,
+                        fontSize = (11 * fontScale).sp,
                         color = RT.TextSecondary,
                     )
                 }
@@ -266,9 +269,9 @@ private fun BillingSheetContent(
                 ) {
                     Text("待支付", fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
-                    Text(o.message, fontSize = 13.sp)
-                    o.receiverAccount?.let { Text("收款账号：$it", fontSize = 12.sp, color = RT.TextSecondary) }
-                    Text("订单号：${o.orderId}", fontSize = 10.sp, color = RT.TextSecondary)
+                    Text(o.message, fontSize = (13 * fontScale).sp)
+                    o.receiverAccount?.let { Text("收款账号：$it", fontSize = (12 * fontScale).sp, color = RT.TextSecondary) }
+                    Text("订单号：${o.orderId}", fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { model.confirmRecharge() },
@@ -279,7 +282,7 @@ private fun BillingSheetContent(
             }
         }
         item {
-            if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = RT.TextSecondary)
+            if (status.isNotBlank()) Text(status, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
         }
     }
 }
@@ -317,7 +320,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("显示双语字幕", fontWeight = FontWeight.SemiBold)
-                    Text("对话字幕中显示中文辅助内容", fontSize = 11.sp, color = RT.TextSecondary)
+                    Text("对话字幕中显示中文辅助内容", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = showSubtitles, onCheckedChange = { model.setShowSubtitles(it) })
             }
@@ -326,7 +329,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("自动朗读 AI 台词", fontWeight = FontWeight.SemiBold)
-                    Text("AI 回应时自动用英文朗读", fontSize = 11.sp, color = RT.TextSecondary)
+                    Text("AI 回应时自动用英文朗读", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = autoSpeak, onCheckedChange = { model.setAutoSpeakAI(it) })
             }
@@ -335,7 +338,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("连续语音对话", fontWeight = FontWeight.SemiBold)
-                    Text("一句结束后自动继续听你说下一句", fontSize = 11.sp, color = RT.TextSecondary)
+                    Text("一句结束后自动继续听你说下一句", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = continuousVoice, onCheckedChange = { model.setContinuousVoice(it) })
             }
@@ -361,7 +364,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("按时段自动录音", fontWeight = FontWeight.SemiBold)
-                    Text("后台录音需系统允许麦克风与后台运行", fontSize = 11.sp, color = RT.TextSecondary)
+                    Text("后台录音需系统允许麦克风与后台运行", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = autoEnabled, onCheckedChange = { model.setAutoCaptureEnabled(it) })
             }
@@ -369,8 +372,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         if (autoEnabled) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TimeField("开始", autoStart, Modifier.weight(1f)) { model.setAutoCaptureStart(it) }
-                    TimeField("结束", autoEnd, Modifier.weight(1f)) { model.setAutoCaptureEnd(it) }
+                    TimeField("开始", autoStart, Modifier.weight(1f), fontScale = fontScale) { model.setAutoCaptureStart(it) }
+                    TimeField("结束", autoEnd, Modifier.weight(1f), fontScale = fontScale) { model.setAutoCaptureEnd(it) }
                 }
             }
         }
@@ -379,6 +382,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                 title = "会员与充值",
                 subtitle = "套餐、支付订单",
                 modifier = Modifier.fillMaxWidth(),
+                fontScale = fontScale,
             ) { showBilling = true }
         }
     }
@@ -387,7 +391,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
 /** 时间选择：点击弹出系统风格时钟选择器，输出 HH:mm，避免手输无效字符串。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TimeField(label: String, value: String, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
+private fun TimeField(label: String, value: String, modifier: Modifier = Modifier, fontScale: Float = 1f, onChange: (String) -> Unit) {
     var showDialog by remember { mutableStateOf(false) }
     val parts = value.split(":")
     val hour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 9
@@ -400,9 +404,9 @@ private fun TimeField(label: String, value: String, modifier: Modifier = Modifie
             .clickable { showDialog = true }
             .padding(horizontal = 14.dp, vertical = 12.dp),
     ) {
-        Text(label, fontSize = 11.sp, color = RT.TextSecondary)
+        Text(label, fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
         Spacer(Modifier.height(2.dp))
-        Text("%02d:%02d".format(hour, minute), fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = RT.TextPrimary)
+        Text("%02d:%02d".format(hour, minute), fontWeight = FontWeight.SemiBold, fontSize = (18 * fontScale).sp, color = RT.TextPrimary)
     }
 
     if (showDialog) {
@@ -429,6 +433,7 @@ fun UploadSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val jobs by model.audioJobs.collectAsState()
     val isUploading by model.isUploadingAudio.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
     val recorder = remember { RecorderBleClient(context) }
     val blePhase by recorder.phase.collectAsState()
     val bleFiles by recorder.files.collectAsState()
@@ -487,7 +492,7 @@ fun UploadSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
         }
         if (bleFiles.isNotEmpty()) {
-            item { Text("录音笔中的文件", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+            item { Text("录音笔中的文件", fontSize = (13 * fontScale).sp, fontWeight = FontWeight.SemiBold) }
             items(bleFiles, key = { it.name }) { file ->
                 Row(
                     Modifier.fillMaxWidth()
@@ -498,26 +503,26 @@ fun UploadSheetContent(model: AppViewModel, onBack: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(file.name, fontSize = 13.sp)
-                        Text("%.1f MB".format(file.sizeBytes / 1024.0 / 1024.0), fontSize = 10.sp, color = RT.TextSecondary)
+                        Text(file.name, fontSize = (13 * fontScale).sp)
+                        Text("%.1f MB".format(file.sizeBytes / 1024.0 / 1024.0), fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                     }
-                    Text("下载并上传", fontSize = 12.sp, color = RT.Accent)
+                    Text("下载并上传", fontSize = (12 * fontScale).sp, color = RT.Accent)
                 }
             }
         }
         if (isUploading) {
-            item { Text("正在上传并转写…", fontSize = 13.sp, color = RT.TextSecondary) }
+            item { Text("正在上传并转写…", fontSize = (13 * fontScale).sp, color = RT.TextSecondary) }
         }
         if (jobs.isNotEmpty()) {
-            item { Text("处理记录", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+            item { Text("处理记录", fontSize = (13 * fontScale).sp, fontWeight = FontWeight.SemiBold) }
             items(jobs, key = { it.id }) { job ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(job.filename, fontSize = 13.sp, maxLines = 1)
-                        Text(job.createdAt.take(16).replace("T", " "), fontSize = 10.sp, color = RT.TextSecondary)
+                        Text(job.filename, fontSize = (13 * fontScale).sp, maxLines = 1)
+                        Text(job.createdAt.take(16).replace("T", " "), fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                     }
                     Text(
-                        job.statusText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        job.statusText, fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold,
                         color = when (job.status) {
                             "completed" -> Color(0xFF16A34A)
                             "failed" -> Color.Red

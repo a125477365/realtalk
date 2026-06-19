@@ -127,7 +127,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                             .background(Color.White.copy(alpha = 0.12f), CircleShape)
                             .clickable { model.closeImmersive() },
                         contentAlignment = Alignment.Center,
-                    ) { Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = 15.sp) }
+                    ) { Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp) }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

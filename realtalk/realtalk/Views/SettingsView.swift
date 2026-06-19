@@ -25,7 +25,7 @@ struct SettingsView: View {
                         Text("大")
                     }
                     Text("当前字体 \(Int(model.fontScale * 100))%")
-                        .font(.caption)
+                        .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(.secondary)
                 }
 
@@ -37,8 +37,10 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("真实对话采集")
+                        .font(.system(size: 13 * model.fontScale))
                 } footer: {
                     Text("开启后，App 在前台运行时会在设定时间窗内自动采集并转写周围对话，采集期间状态栏会有明显提示。请在征得在场人员同意后使用。")
+                        .font(.system(size: 12 * model.fontScale))
                 }
 
                 Section("账号") {
@@ -97,9 +99,9 @@ private struct BillingSettingsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(plan.title).font(.headline)
+                                Text(plan.title).font(.system(size: 17 * model.fontScale, weight: .semibold))
                                 Text(plan.months > 1 ? "每月 \(settingsMoney(plan.perMonthCents)) · 共 \(settingsMoney(plan.priceCents))" : "每月 \(settingsMoney(plan.perMonthCents))")
-                                    .font(.caption)
+                                    .font(.system(size: 12 * model.fontScale))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()

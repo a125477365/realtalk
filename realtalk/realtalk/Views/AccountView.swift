@@ -55,7 +55,7 @@ struct AccountPanelView: View {
                 ZStack {
                     Circle().fill(.white.opacity(0.25))
                     Text((auth.user?.displayName ?? "我").prefix(1))
-                        .font(.title3.weight(.bold))
+                        .font(.system(size: 20 * model.fontScale, weight: .bold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 48, height: 48)
@@ -63,10 +63,10 @@ struct AccountPanelView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         Text(auth.user?.displayName ?? "微信用户")
-                            .font(.headline)
+                            .font(.system(size: 17 * model.fontScale, weight: .semibold))
                             .foregroundStyle(.white)
                         Text(auth.user?.tierName ?? "免费用户")
-                            .font(.caption2.weight(.bold))
+                            .font(.system(size: 11 * model.fontScale, weight: .bold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
                             .background(.white.opacity(0.22), in: Capsule())
@@ -74,17 +74,17 @@ struct AccountPanelView: View {
                     }
                     if let expires = auth.user?.planExpiresAt {
                         Text("有效期至 \(expires.formatted(date: .abbreviated, time: .omitted))")
-                            .font(.caption)
+                            .font(.system(size: 12 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.85))
                     }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(money(auth.user?.balanceCents ?? 0))
-                        .font(.title3.weight(.bold))
+                        .font(.system(size: 20 * model.fontScale, weight: .bold))
                         .foregroundStyle(.white)
                     Text("余额")
-                        .font(.caption2)
+                        .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(.white.opacity(0.85))
                 }
             }
@@ -93,18 +93,18 @@ struct AccountPanelView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text("今日 AI 用量")
-                            .font(.caption)
+                            .font(.system(size: 12 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.85))
                         Spacer()
                         Text("\(usage.todayTokens) / \(usage.dailyLimit) tokens")
-                            .font(.caption.monospacedDigit())
+                            .font(.system(size: 12 * model.fontScale).monospacedDigit())
                             .foregroundStyle(.white.opacity(usage.overLimit ? 1 : 0.85))
                     }
                     ProgressView(value: Double(usage.todayTokens), total: Double(max(1, usage.dailyLimit)))
                         .tint(.white)
                     if usage.overLimit {
                         Text("已达今日上限，明天自动恢复；不使用 AI 的功能不受影响")
-                            .font(.caption2)
+                            .font(.system(size: 11 * model.fontScale))
                             .foregroundStyle(.white)
                     }
                 }
@@ -127,12 +127,12 @@ struct AccountPanelView: View {
                     .foregroundStyle(auth.user?.effectiveTier == "premium" ? RTTheme.accent : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("上传录音生成场景")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
                         .foregroundStyle(RTTheme.textPrimary)
                     Text(auth.user?.effectiveTier == "premium"
                          ? "本地文件或蓝牙录音笔 · 最长 6 小时 / 300MB"
                          : "高级会员专属功能，升级后可用")
-                        .font(.caption)
+                        .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -160,7 +160,7 @@ struct AccountPanelView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("账单")
-                    .font(.headline)
+                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
                 Spacer()
                 Button {
                     Task { await model.loadBillingAccount() }
@@ -172,7 +172,7 @@ struct AccountPanelView: View {
 
             if model.billingAccount?.ledger.isEmpty != false {
                 Text("暂无账单")
-                    .font(.subheadline)
+                    .font(.system(size: 15 * model.fontScale))
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 6)
             } else {
@@ -180,14 +180,14 @@ struct AccountPanelView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.title)
-                                .font(.subheadline)
+                                .font(.system(size: 15 * model.fontScale))
                             Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption2)
+                                .font(.system(size: 11 * model.fontScale))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Text((item.amountCents >= 0 ? "+" : "") + money(item.amountCents))
-                            .font(.subheadline.monospacedDigit().weight(.medium))
+                            .font(.system(size: 15 * model.fontScale, weight: .medium).monospacedDigit())
                             .foregroundStyle(item.amountCents >= 0 ? .green : RTTheme.textPrimary)
                     }
                     .padding(.vertical, 5)
@@ -245,9 +245,9 @@ struct UploadRecordingView: View {
                                 HStack {
                                     Image(systemName: "waveform")
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(file.name).font(.subheadline)
+                                        Text(file.name).font(.system(size: 15 * model.fontScale))
                                         Text(String(format: "%.1f MB", Double(file.sizeBytes) / 1024 / 1024))
-                                            .font(.caption2)
+                                            .font(.system(size: 11 * model.fontScale))
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer()
@@ -263,7 +263,7 @@ struct UploadRecordingView: View {
                 if case .downloading(let name, let progress) = recorder.phase {
                     Section("正在从录音笔读取") {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(name).font(.caption)
+                            Text(name).font(.system(size: 12 * model.fontScale))
                             ProgressView(value: progress)
                         }
                     }
@@ -274,7 +274,7 @@ struct UploadRecordingView: View {
                         HStack(spacing: 10) {
                             ProgressView()
                             Text("正在上传并转写…")
-                                .font(.subheadline)
+                                .font(.system(size: 15 * model.fontScale))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -285,14 +285,14 @@ struct UploadRecordingView: View {
                         ForEach(model.audioJobs) { job in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(job.filename).font(.subheadline).lineLimit(1)
+                                    Text(job.filename).font(.system(size: 15 * model.fontScale)).lineLimit(1)
                                     Text(job.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.caption2)
+                                        .font(.system(size: 11 * model.fontScale))
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Text(job.statusText)
-                                    .font(.caption.weight(.semibold))
+                                    .font(.system(size: 12 * model.fontScale, weight: .semibold))
                                     .foregroundStyle(jobColor(job.status))
                             }
                         }

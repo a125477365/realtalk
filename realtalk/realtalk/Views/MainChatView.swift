@@ -101,7 +101,7 @@ struct MainChatView: View {
                 ZStack {
                     Circle().fill(RTTheme.brandGradient)
                     Text((auth.user?.displayName ?? "我").prefix(1))
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 34, height: 34)
@@ -113,7 +113,7 @@ struct MainChatView: View {
                     .font(.headline)
                     .foregroundStyle(RTTheme.textPrimary)
                 Text("场景列表与日期选择")
-                    .font(.caption2)
+                    .font(.system(size: 11 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
             }
 
@@ -129,7 +129,7 @@ struct MainChatView: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 6, height: 6)
-            Text(statusText)
+            Text(model.statusMessage.isEmpty ? statusText : model.statusMessage)
                 .font(.system(size: 12 * model.fontScale, weight: .medium))
                 .foregroundStyle(RTTheme.textSecondary)
         }
@@ -140,7 +140,9 @@ struct MainChatView: View {
     private var scenarioScopePicker: some View {
         Picker("场景日期", selection: $scenarioScope) {
             Text("今天").tag("today")
+                .font(.system(size: 15 * model.fontScale))
             Text("全部").tag("all")
+                .font(.system(size: 15 * model.fontScale))
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, 16)
@@ -162,7 +164,7 @@ struct MainChatView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(scenarioScope == "today" ? "今日场景" : "全部场景")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 12 * model.fontScale, weight: .semibold))
                     .foregroundStyle(RTTheme.textSecondary)
                 Spacer()
                 Button {
@@ -187,10 +189,10 @@ struct MainChatView: View {
                             .foregroundStyle(RTTheme.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(model.isLoadingScenarios ? "正在加载今日场景…" : "今天还没有场景")
-                                .font(.subheadline.weight(.semibold))
+                                .font(.system(size: 15 * model.fontScale, weight: .semibold))
                                 .foregroundStyle(RTTheme.textPrimary)
                             Text("点底部按钮采集今天的真实对话，停止后自动生成英语场景")
-                                .font(.caption)
+                                .font(.system(size: 12 * model.fontScale))
                                 .foregroundStyle(RTTheme.textSecondary)
                         }
                         Spacer()
@@ -211,15 +213,15 @@ struct MainChatView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(summary.title)
-                                        .font(.subheadline.weight(.semibold))
+                                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
                                         .foregroundStyle(RTTheme.textPrimary)
                                         .lineLimit(1)
                                     Text(summary.summary)
-                                        .font(.caption)
+                                        .font(.system(size: 12 * model.fontScale))
                                         .foregroundStyle(RTTheme.textSecondary)
                                         .lineLimit(2)
                                     Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
-                                        .font(.caption2)
+                                        .font(.system(size: 11 * model.fontScale))
                                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                                 }
                                 .padding(12)
