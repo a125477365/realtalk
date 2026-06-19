@@ -10,14 +10,37 @@ final class AuthStore: ObservableObject {
 
     private let api: APIClient
     private let tokenKey = "RealTalk.authToken"
+    private let deviceKey = "RealTalk.deviceID"
 
     init(api: APIClient) {
         self.api = api
         token = UserDefaults.standard.string(forKey: tokenKey)
+        // 账号被其它设备顶掉时，服务端返回 401 → 自动退出回到登录页
+        api.onUnauthorized = { [weak self] in
+            Task { @MainActor in self?.handleForcedLogout() }
+        }
     }
 
     var isAuthenticated: Bool {
         token != nil
+    }
+
+    /// 本机唯一安全编号：用于单设备登录绑定，持久化在本地。
+    var deviceID: String {
+        if let saved = UserDefaults.standard.string(forKey: deviceKey) {
+            return saved
+        }
+        let created = "ios-\(UUID().uuidString)"
+        UserDefaults.standard.set(created, forKey: deviceKey)
+        return created
+    }
+
+    private func handleForcedLogout() {
+        guard token != nil else { return }
+        token = nil
+        user = nil
+        UserDefaults.standard.removeObject(forKey: tokenKey)
+        statusMessage = "账号已在其他设备登录，请重新授权登录"
     }
 
     func restoreSession() async {
@@ -61,7 +84,7 @@ final class AuthStore: ObservableObject {
             if WeChatAuthManager.shared.isAvailable {
                 // 真实微信一键登录：拉起微信授权拿 code，交后端用移动应用凭据换 openid
                 let code = try await WeChatAuthManager.shared.authorize()
-                return try await api.wechatLogin(code: code, nickname: nil, avatarUrl: nil)
+                return try await api.wechatLogin(code: code, nickname: nil, avatarUrl: nil, deviceId: deviceID)
             }
             // 未集成 SDK 或未配置 AppID：开发模拟登录
             let key = "RealTalk.devWeChatCode"
@@ -73,7 +96,7 @@ final class AuthStore: ObservableObject {
                 UserDefaults.standard.set(created, forKey: key)
                 deviceSeed = created
             }
-            return try await api.wechatLogin(code: deviceSeed, nickname: "微信用户", avatarUrl: nil)
+            return try await api.wechatLogin(code: deviceSeed, nickname: "微信用户", avatarUrl: nil, deviceId: deviceID)
         }
     }
 

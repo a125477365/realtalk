@@ -22,6 +22,8 @@ final class APIClient {
     private let session: URLSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    /// 已登录请求收到 401（如账号被其它设备顶掉）时回调，用于自动退出登录。
+    var onUnauthorized: (@Sendable () -> Void)?
 
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -70,10 +72,10 @@ final class APIClient {
         try await post("/auth/login", body: AuthRequest(email: email, password: password), token: nil)
     }
 
-    func wechatLogin(code: String, nickname: String?, avatarUrl: String?) async throws -> AuthResponse {
+    func wechatLogin(code: String, nickname: String?, avatarUrl: String?, deviceId: String?) async throws -> AuthResponse {
         try await post(
             "/auth/wechat/login",
-            body: WeChatLoginRequest(code: code, nickname: nickname, avatarUrl: avatarUrl),
+            body: WeChatLoginRequest(code: code, nickname: nickname, avatarUrl: avatarUrl, deviceId: deviceId),
             token: nil
         )
     }
@@ -430,6 +432,10 @@ final class APIClient {
         }
 
         if httpResponse.statusCode == 401 {
+            // 仅对「已带登录凭证」的请求触发自动退出（登录请求本身的 401 不算）
+            if request.value(forHTTPHeaderField: "Authorization") != nil {
+                onUnauthorized?()
+            }
             throw APIClientError.unauthorized
         }
 

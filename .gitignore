@@ -5,6 +5,8 @@
 .env
 .env.*
 !.env.example
+.jwt_secret.key
+**/.jwt_secret.key
 
 # Python
 __pycache__/

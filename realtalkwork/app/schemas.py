@@ -50,6 +50,8 @@ class WeChatLoginRequest(BaseModel):
     nickname: str | None = Field(default=None, max_length=80)
     avatar_url: str | None = Field(default=None, max_length=1000)
     client: Literal["app", "web"] = "app"  # 网站应用与移动应用是两套微信凭据
+    # 设备唯一安全编号：用于「同一账号同一时间只允许一台设备登录」。新设备登录会顶掉旧设备。
+    device_id: str | None = Field(default=None, max_length=128)
 
 
 class TranscriptItem(BaseModel):
@@ -455,6 +457,7 @@ class RoleplaySessionRecord(BaseModel):
 class PasswordLoginRequest(BaseModel):
     email: str = Field(min_length=5, max_length=120)
     password: str = Field(min_length=6, max_length=128)
+    device_id: str | None = Field(default=None, max_length=128)
 
 
 class PasswordRegisterRequest(BaseModel):

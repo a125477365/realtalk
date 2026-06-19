@@ -8,7 +8,10 @@ import os
 import re
 import secrets
 import shutil
+import threading
+import time as _time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -112,6 +115,7 @@ from .schemas import (
     SubscribeRequest,
     TokenUsageInfo,
 )
+from .capture_store import capture_store
 from .settings import settings
 from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
 
@@ -152,12 +156,72 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """进程内限流：缓解暴力破解与请求洪泛（资源耗尽）。
+
+    认证类接口限制更严（防撞库），其余接口给较宽松上限以不影响正常分块上传/轮询。
+    多节点部署时为单机粒度；真正的分布式限流与抗 DDoS 建议在网关/CDN/WAF 层做。
+    """
+
+    _EXEMPT = ("/health", "/ready", "/payment/", "/audio/internal/")
+
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if request.method == "OPTIONS" or any(path.startswith(p) for p in self._EXEMPT):
+            return await call_next(request)
+        ip = request.client.host if request.client else "unknown"
+        is_auth = path.startswith("/auth/") or path.startswith("/admin/login")
+        limit, window = (40, 60) if is_auth else (600, 60)
+        bucket = f"{ip}:{'a' if is_auth else 'g'}"
+        now = _time.monotonic()
+        with self._lock:
+            dq = self._hits[bucket]
+            while dq and dq[0] <= now - window:
+                dq.popleft()
+            if len(dq) >= limit:
+                return Response(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content=_json.dumps({"detail": "请求过于频繁，请稍后再试"}),
+                    media_type="application/json",
+                )
+            dq.append(now)
+        return await call_next(request)
+
+
+# 先加限流（内层），再加 CORS（外层）：429 响应也能带上 CORS 头
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(DynamicCORSMiddleware)
+
+
+def _warn_insecure_config() -> None:
+    """启动时对危险的开发旁路 / 弱配置发出醒目告警（不阻断启动）。"""
+    warnings: list[str] = []
+    if settings.jwt_secret_is_default:
+        warnings.append("未设置 JWT_SECRET（已用持久化随机密钥兜底；生产请显式配置）")
+    if settings.payment_dev_auto_confirm:
+        warnings.append("PAYMENT_DEV_AUTO_CONFIRM=true（用户可不实际付款即确认到账，务必生产关闭）")
+    if settings.wechat_auth_dev_mode:
+        warnings.append("WECHAT_AUTH_DEV_MODE=true（微信登录走开发模拟，未校验真实身份）")
+    if settings.apple_iap_dev_bypass:
+        warnings.append("APPLE_IAP_DEV_BYPASS=true（内购校验被绕过）")
+    if settings.admin_password == "admin123456":
+        warnings.append("使用默认管理员密码 admin123456（务必修改）")
+    if warnings:
+        print(
+            "[security] ⚠️ 上线前请处理以下开发旁路 / 弱配置：\n  - " + "\n  - ".join(warnings),
+            flush=True,
+        )
 
 
 @app.on_event("startup")
 async def startup() -> None:
     from .auth import seed_default_admin
+    _warn_insecure_config()
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
     seed_default_admin()
@@ -167,12 +231,20 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     # 同步依赖：FastAPI 自动放到线程池执行，DB 查询不阻塞事件循环
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
-    user_id = verify_token(credentials.credentials)
+    user_id, device_id = verify_token(credentials.credentials)
     user = db.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
+    # 单设备登录：当前 token 的设备编号必须等于该用户最近一次登录绑定的设备，
+    # 否则说明账号已在别处登录，本设备需重新授权。
+    active_device = db.get_active_device(user.id)
+    if active_device is not None and active_device != device_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="您的账号已在其他设备登录，请重新登录",
+        )
     db.touch_user_seen(user.id)
     return user
 
@@ -702,7 +774,10 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="微信账号已存在") from exc
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
-    return AuthResponse(token=create_token(user.id), user=user)
+    # 单设备登录：把本次登录的设备编号设为该账号唯一有效设备（顶掉其它设备）
+    device_id = (request.device_id or uuid.uuid4().hex)[:128]
+    db.set_active_device(user.id, device_id)
+    return AuthResponse(token=create_token(user.id, device_id), user=user)
 
 
 # ---- Email/Password Auth for App Users ----
@@ -723,9 +798,11 @@ def register_password(
     
     salt, pw_hash = hash_password(request.password)
     user = db.create_user(normalized, salt, pw_hash)
+    device_id = uuid.uuid4().hex
+    db.set_active_device(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_token(user.id, device_id),
+        refresh_token=create_refresh_token(user.id, device_id),
         expires_in=int(settings.token_ttl_hours * 3600),
     )
 
@@ -751,9 +828,11 @@ def login_password(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
     
     db.touch_user_seen(user.id)
+    device_id = (request.device_id or uuid.uuid4().hex)[:128]
+    db.set_active_device(user.id, device_id)
     return AuthTokenResponse(
-        access_token=create_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_token(user.id, device_id),
+        refresh_token=create_refresh_token(user.id, device_id),
         expires_in=int(settings.token_ttl_hours * 3600),
     )
 
@@ -771,9 +850,10 @@ def change_password(
     
     salt, pw_hash = hash_password(request.new_password)
     db.update_user_password(user.id, salt, pw_hash)
+    device_id = db.get_active_device(user.id)  # 保留当前设备绑定
     return AuthTokenResponse(
-        access_token=create_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_token(user.id, device_id),
+        refresh_token=create_refresh_token(user.id, device_id),
         expires_in=int(settings.token_ttl_hours * 3600),
     )
 
@@ -805,10 +885,12 @@ def confirm_password_reset(
     
     salt, pw_hash = hash_password(request.new_password)
     db.user_password_reset(result["user_id"], salt, pw_hash)
-    
+    # 重置密码即在当前设备重新建立会话，顶掉其它设备
+    device_id = uuid.uuid4().hex
+    db.set_active_device(result["user_id"], device_id)
     return AuthTokenResponse(
-        access_token=create_token(result["user_id"]),
-        refresh_token=create_refresh_token(result["user_id"]),
+        access_token=create_token(result["user_id"], device_id),
+        refresh_token=create_refresh_token(result["user_id"], device_id),
         expires_in=int(settings.token_ttl_hours * 3600),
     )
 
@@ -817,17 +899,23 @@ def confirm_password_reset(
 def refresh_token(
     request: TokenRefreshRequest,
 ) -> AuthTokenResponse:
-    user_id = verify_refresh_token(request.refresh_token)
+    user_id, device_id = verify_refresh_token(request.refresh_token)
     user = db.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
-    
+    # 刷新令牌也必须来自当前绑定设备，否则旧设备能借刷新令牌续命
+    active_device = db.get_active_device(user.id)
+    if active_device is not None and active_device != device_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="您的账号已在其他设备登录，请重新登录",
+        )
     db.touch_user_seen(user.id)
     return AuthTokenResponse(
-        access_token=create_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_token(user.id, device_id),
+        refresh_token=create_refresh_token(user.id, device_id),
         expires_in=int(settings.token_ttl_hours * 3600),
     )
 
@@ -1200,56 +1288,6 @@ _CAPTURE_BATCH_MAX_ITEMS = 80
 _CAPTURE_BATCH_MAX_CHARS = 18000
 
 
-def _capture_root() -> Path:
-    root = settings.upload_dir / "capture_text"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _safe_upload_id(upload_id: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "", upload_id)
-    if not safe or safe != upload_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传会话无效")
-    return safe
-
-
-def _capture_session_dir(user_id: str, upload_id: str) -> Path:
-    return _capture_root() / user_id / _safe_upload_id(upload_id)
-
-
-def _capture_chunk_path(user_id: str, upload_id: str, chunk_index: int) -> Path:
-    return _capture_session_dir(user_id, upload_id) / "chunks" / f"{chunk_index:06d}.json"
-
-
-def _received_capture_chunks(user_id: str, upload_id: str) -> list[int]:
-    chunks_dir = _capture_session_dir(user_id, upload_id) / "chunks"
-    if not chunks_dir.exists():
-        return []
-    indexes: list[int] = []
-    for path in chunks_dir.glob("*.json"):
-        try:
-            indexes.append(int(path.stem))
-        except ValueError:
-            continue
-    return sorted(indexes)
-
-
-def _load_capture_items(user_id: str, upload_id: str) -> list[TranscriptItem]:
-    session_dir = _capture_session_dir(user_id, upload_id)
-    chunks_dir = session_dir / "chunks"
-    if not chunks_dir.exists():
-        return []
-    items: list[TranscriptItem] = []
-    for path in sorted(chunks_dir.glob("*.json")):
-        try:
-            payload = _json.loads(path.read_text(encoding="utf-8"))
-            raw_items = payload.get("items", [])
-            items.extend(TranscriptItem.model_validate(item) for item in raw_items)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"采集分块损坏：{path.name}") from exc
-    return sorted(clean_transcript_items(items), key=lambda item: item.timestamp)
-
-
 def _scenario_batches(items: list[TranscriptItem]) -> list[list[TranscriptItem]]:
     batches: list[list[TranscriptItem]] = []
     current: list[TranscriptItem] = []
@@ -1285,16 +1323,16 @@ def capture_upload_init(
 ) -> CaptureUploadInitResponse:
     require_ai_access(user)
     upload_id = uuid.uuid4().hex
-    session_dir = _capture_session_dir(user.id, upload_id)
-    (session_dir / "chunks").mkdir(parents=True, exist_ok=True)
-    meta = {
-        "user_id": user.id,
-        "start": request.start.isoformat() if request.start else None,
-        "end": request.end.isoformat() if request.end else None,
-        "estimated_items": request.estimated_items,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    (session_dir / "meta.json").write_text(_json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    capture_store.init_session(
+        upload_id=upload_id,
+        user_id=user.id,
+        meta={
+            "start": request.start.isoformat() if request.start else None,
+            "end": request.end.isoformat() if request.end else None,
+            "estimated_items": request.estimated_items,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     return CaptureUploadInitResponse(
         upload_id=upload_id,
         received_chunks=[],
@@ -1308,23 +1346,20 @@ def capture_upload_chunk(
     user: UserOut = Depends(current_user),
 ) -> CaptureUploadChunkResponse:
     require_ai_access(user)
-    session_dir = _capture_session_dir(user.id, request.upload_id)
-    if not session_dir.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
     items = clean_transcript_items(request.items)
-    path = _capture_chunk_path(user.id, request.upload_id, request.chunk_index)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "chunk_index": request.chunk_index,
-        "items": [item.model_dump(mode="json") for item in items],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    count = capture_store.append_chunk(
+        upload_id=request.upload_id,
+        user_id=user.id,
+        chunk_index=request.chunk_index,
+        items=[item.model_dump(mode="json") for item in items],
+    )
+    if count < 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
     return CaptureUploadChunkResponse(
         upload_id=request.upload_id,
         chunk_index=request.chunk_index,
         accepted_items=len(items),
-        received_chunks=_received_capture_chunks(user.id, request.upload_id),
+        received_chunks=capture_store.received_chunks(request.upload_id, user.id),
     )
 
 
@@ -1334,15 +1369,14 @@ async def capture_upload_complete(
     user: UserOut = Depends(current_user),
 ) -> CaptureUploadCompleteResponse:
     require_ai_access(user)
-    session_dir = _capture_session_dir(user.id, request.upload_id)
-    if not session_dir.exists():
+    items = await asyncio.to_thread(capture_store.load_items, request.upload_id, user.id)
+    if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
-    items = _load_capture_items(user.id, request.upload_id)
     if not items:
-        shutil.rmtree(session_dir, ignore_errors=True)
+        await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="本次采集没有可生成场景的对话")
     scenarios = await _generate_and_save_capture_scenarios(user.id, items)
-    shutil.rmtree(session_dir, ignore_errors=True)
+    await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
     return CaptureUploadCompleteResponse(
         accepted_items=len(items),
         generated=len(scenarios),

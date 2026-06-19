@@ -87,6 +87,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
         voice.onStateChange = { isSpeaking.value = it }
         voice.onLevel = { aiAudioLevel.value = it }
+        // 账号被其它设备顶掉时服务端返回 401 → 自动退出回到登录页
+        api.onUnauthorized = { viewModelScope.launch { forceLogout() } }
 
         appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或用底部按钮采集。")
         bootstrap()
@@ -116,10 +118,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     // 真实微信一键登录：拉起微信授权拿 code，交后端用移动应用凭据换 openid
                     statusMessage.value = "正在打开微信…"
                     val code = com.example.realtalkad.wechat.WeChatAuth.authorize(ctx)
-                    api.wechatLogin(code, null)
+                    api.wechatLogin(code, null, auth.deviceId)
                 } else {
                     // 未配置 AppID 或未装微信：开发模拟登录
-                    api.wechatLogin(auth.devWeChatCode, "微信用户")
+                    api.wechatLogin(auth.devWeChatCode, "微信用户", auth.deviceId)
                 }
             }
                 .onSuccess {
@@ -138,6 +140,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         user.value = null
         billing.value = null
         statusMessage.value = "已退出登录"
+    }
+
+    /** 账号被其它设备顶掉：自动退出并回到登录页，需重新授权。 */
+    private fun forceLogout() {
+        if (auth.token == null && user.value == null) return
+        auth.clear()
+        isVoiceActive.value = false
+        showImmersive.value = false
+        runCatching { practice.stop() }
+        runCatching { voice.stop() }
+        if (capture.isRecording) runCatching { capture.stop() }
+        user.value = null
+        billing.value = null
+        statusMessage.value = "账号已在其他设备登录，请重新授权登录"
     }
 
     // ---- 采集 ----

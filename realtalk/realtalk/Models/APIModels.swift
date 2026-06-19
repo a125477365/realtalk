@@ -162,11 +162,13 @@ struct WeChatLoginRequest: Codable {
     let code: String
     let nickname: String?
     let avatarUrl: String?
+    let deviceId: String?
 
     enum CodingKeys: String, CodingKey {
         case code
         case nickname
         case avatarUrl = "avatar_url"
+        case deviceId = "device_id"
     }
 }
 

@@ -57,6 +57,16 @@ class AuthStore(context: Context) {
             return created
         }
 
+    /** 本机唯一安全编号：用于单设备登录绑定，持久化在本地。 */
+    val deviceId: String
+        get() {
+            val existing = prefs.getString("device_id", null)
+            if (existing != null) return existing
+            val created = "android-${UUID.randomUUID()}"
+            prefs.edit().putString("device_id", created).apply()
+            return created
+        }
+
     fun clear() {
         prefs.edit().remove("token").apply()
     }

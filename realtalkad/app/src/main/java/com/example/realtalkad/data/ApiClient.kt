@@ -32,12 +32,21 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         .writeTimeout(1800, TimeUnit.SECONDS)
         .build()
 
+    /** 已登录请求收到 401（如账号被其它设备顶掉）时回调，用于自动退出登录。 */
+    var onUnauthorized: (() -> Unit)? = null
+
     private fun url(path: String) = baseUrlProvider().trimEnd('/') + path
 
     private suspend fun execute(request: Request): String = withContext(Dispatchers.IO) {
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (response.code == 401) throw ApiException("请先登录")
+            if (response.code == 401) {
+                // 仅对「已带登录凭证」的请求触发自动退出（登录请求本身的 401 不算）
+                if (request.header("Authorization") != null) onUnauthorized?.invoke()
+                val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
+                    .getOrDefault("请先登录")
+                throw ApiException(detail)
+            }
             if (!response.isSuccessful) {
                 val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
                     .getOrDefault("请求失败：HTTP ${response.code}")
@@ -61,8 +70,8 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     }
 
     // ---- 认证 ----
-    suspend fun wechatLogin(code: String, nickname: String?): AuthResponse =
-        post("/auth/wechat/login", WeChatLoginRequest(code, nickname))
+    suspend fun wechatLogin(code: String, nickname: String?, deviceId: String? = null): AuthResponse =
+        post("/auth/wechat/login", WeChatLoginRequest(code, nickname, deviceId = deviceId))
 
     suspend fun currentUser(token: String): AppUser = get("/auth/me", token)
 

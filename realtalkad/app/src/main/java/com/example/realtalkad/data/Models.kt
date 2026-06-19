@@ -304,6 +304,7 @@ data class WeChatLoginRequest(
     val code: String,
     val nickname: String? = null,
     @SerialName("avatar_url") val avatarUrl: String? = null,
+    @SerialName("device_id") val deviceId: String? = null,
 )
 
 /** 主界面聊天消息（本地 UI 模型） */
