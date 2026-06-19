@@ -7,14 +7,35 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if auth.isAuthenticated {
+            switch auth.phase {
+            case .checking:
+                // 安全：本地有 token 也不直接进主界面，先向服务端校验会话有效性
+                SessionCheckingView()
+            case .signedIn:
                 MainChatView()
-            } else {
+            case .signedOut:
                 LoginView()
             }
         }
         .task {
             await model.bootstrap()
+        }
+    }
+}
+
+/// 启动校验过渡页：避免「本地有 token 就先闪进主界面」这种不安全的体验。
+private struct SessionCheckingView: View {
+    var body: some View {
+        ZStack {
+            DreamyBackdrop()
+            VStack(spacing: 16) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+                Text("正在验证登录…")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.9))
+            }
         }
     }
 }

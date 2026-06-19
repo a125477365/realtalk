@@ -3,8 +3,16 @@ import Foundation
 
 @MainActor
 final class AuthStore: ObservableObject {
+    /// 会话状态。安全要点：本地有 token 不等于已登录，必须经服务端校验通过才放行主界面。
+    enum SessionPhase {
+        case checking      // 启动后正在向服务端校验本地 token
+        case signedIn      // 服务端确认会话有效
+        case signedOut     // 未登录 / 校验失败 / 已退出
+    }
+
     @Published private(set) var token: String?
     @Published private(set) var user: AppUser?
+    @Published private(set) var phase: SessionPhase
     @Published private(set) var isBusy = false
     @Published var statusMessage = ""
 
@@ -14,7 +22,10 @@ final class AuthStore: ObservableObject {
 
     init(api: APIClient) {
         self.api = api
-        token = UserDefaults.standard.string(forKey: tokenKey)
+        let saved = UserDefaults.standard.string(forKey: tokenKey)
+        token = saved
+        // 有本地 token：先进入「校验中」，必须等 /auth/me 通过才进主界面；没有 token 直接登录页
+        phase = saved == nil ? .signedOut : .checking
         // 账号被其它设备顶掉时，服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { [weak self] in
             self?.handleForcedLogout()
@@ -22,7 +33,7 @@ final class AuthStore: ObservableObject {
     }
 
     var isAuthenticated: Bool {
-        token != nil
+        phase == .signedIn
     }
 
     /// 本机唯一安全编号：用于单设备登录绑定，持久化在本地。
@@ -37,19 +48,26 @@ final class AuthStore: ObservableObject {
 
     private func handleForcedLogout() {
         guard token != nil else { return }
-        token = nil
-        user = nil
-        UserDefaults.standard.removeObject(forKey: tokenKey)
-        statusMessage = "账号已在其他设备登录，请重新授权登录"
+        clearSession(message: "账号已在其他设备登录，请重新授权登录")
     }
 
+    /// 启动时校验本地会话：只有服务端确认 token 有效（用户仍存在、设备未被顶掉）才进主界面。
+    /// 服务器换库 / 用户被删 / 密钥变更 → /auth/me 返回 401 → 清登录态回登录页。
     func restoreSession() async {
-        guard let token else { return }
+        guard let token else {
+            phase = .signedOut
+            return
+        }
         do {
             user = try await api.currentUser(token: token)
+            phase = .signedIn
+        } catch APIClientError.unauthorized {
+            // 服务端明确否决：登录态无效，强制重新授权
+            clearSession(message: "登录已失效，请重新登录")
         } catch {
-            logout()
-            statusMessage = error.localizedDescription
+            // 网络等暂时性错误：不放行进入主界面（安全优先），回登录页可重试
+            phase = .signedOut
+            statusMessage = "无法连接服务器，请重新登录"
         }
     }
 
@@ -105,10 +123,16 @@ final class AuthStore: ObservableObject {
     }
 
     func logout() {
+        clearSession(message: "已退出登录")
+    }
+
+    /// 统一清理登录态并回到登录页（同时清掉本地 token，避免下次启动又用旧 token 进主界面）。
+    private func clearSession(message: String) {
         token = nil
         user = nil
+        phase = .signedOut
         UserDefaults.standard.removeObject(forKey: tokenKey)
-        statusMessage = "已退出登录"
+        statusMessage = message
     }
 
     private func authenticate(_ action: () async throws -> AuthResponse) async {
@@ -119,6 +143,7 @@ final class AuthStore: ObservableObject {
             let response = try await action()
             token = response.token
             user = response.user
+            phase = .signedIn
             UserDefaults.standard.set(response.token, forKey: tokenKey)
             statusMessage = "登录成功"
         } catch {
