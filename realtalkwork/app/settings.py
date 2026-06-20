@@ -150,6 +150,12 @@ class Settings:
     ai_input_price_per_1m_cents: float = float(os.getenv("AI_INPUT_PRICE_PER_1M_CENTS", "80"))
     ai_output_price_per_1m_cents: float = float(os.getenv("AI_OUTPUT_PRICE_PER_1M_CENTS", "200"))
 
+    # 高级会员实时语音大模型（OpenAI 兼容 Realtime API，WebSocket）。后端只做转发+护栏注入+结束评分。
+    realtime_base_url: str = os.getenv("REALTIME_BASE_URL", "wss://api.openai.com/v1/realtime")
+    realtime_api_key: str | None = os.getenv("REALTIME_API_KEY")
+    realtime_model: str = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
+    realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
+
     ark_api_key: str | None = os.getenv("ARK_API_KEY")
     ark_base_url: str = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
     ark_model: str = os.getenv("ARK_MODEL", "doubao-seed-1-6-251015")

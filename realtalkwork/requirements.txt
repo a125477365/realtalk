@@ -7,4 +7,6 @@ SQLAlchemy>=2.0
 psycopg[binary]>=3.2
 # 采集分块暂存（可选）：配置 REDIS_URL 时启用，未装/未配置则自动回退本地文件
 redis>=5.0
+# 高级会员实时语音大模型对练：后端做 WebSocket 转发（OpenAI 兼容 Realtime API）
+websockets>=14.0
 eval_type_backport>=0.2; python_version < "3.10"

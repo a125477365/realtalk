@@ -553,6 +553,15 @@ class ModelSettingsUpdateRequest(BaseModel):
     output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
 
 
+class RealtimeSettingsRequest(BaseModel):
+    """高级会员实时语音大模型配置（OpenAI 兼容 Realtime API）。"""
+
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
+    voice: str | None = Field(default=None, max_length=40)
+
+
 class ScenarioSummary(BaseModel):
     scene_id: str
     title: str

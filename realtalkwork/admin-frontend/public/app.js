@@ -1099,8 +1099,51 @@ function renderSettingsPage() {
     "  </div>",
     "</div>",
 
+    '<div class="card">',
+    '  <h2>高级会员实时语音大模型 <span class="subtitle">OpenAI 兼容 Realtime API（WebSocket）；后端只转发音频并注入场景/护栏，结束评分</span></h2>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>Base URL（wss://）</label><input type="text" id="rt-base-url" placeholder="wss://api.openai.com/v1/realtime" /></div>',
+    '    <div class="form-group"><label>模型</label><input type="text" id="rt-model" placeholder="gpt-4o-realtime-preview" /></div>',
+    '    <div class="form-group"><label>音色</label><input type="text" id="rt-voice" placeholder="alloy" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="rt-key-status"></span></label>',
+    '      <input type="password" id="rt-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    "  </div>",
+    '  <div class="hint" style="margin:6px 0 12px">仅高级会员、且选择「沉浸式 + 语音大模型」时使用；未配置时该功能不可用。</div>',
+    '  <button class="btn btn-primary" onclick="saveRealtimeSettings()">保存语音模型配置</button>',
+    "</div>",
+
     renderPlanQuotaCards(),
   ].join("");
+}
+
+function loadRealtimeSettings() {
+  apiGet("/admin/api/settings/realtime").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("rt-base-url")) getEl("rt-base-url").value = d.base_url || "";
+      if (getEl("rt-model")) getEl("rt-model").value = d.model || "";
+      if (getEl("rt-voice")) getEl("rt-voice").value = d.voice || "";
+      var ks = getEl("rt-key-status");
+      if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : "（未配置）";
+    });
+  });
+}
+
+function saveRealtimeSettings() {
+  var body = {
+    base_url: (getEl("rt-base-url") || { value: "" }).value.trim(),
+    model: (getEl("rt-model") || { value: "" }).value.trim(),
+    voice: (getEl("rt-voice") || { value: "" }).value.trim(),
+  };
+  var apiKey = (getEl("rt-api-key") || { value: "" }).value.trim();
+  if (apiKey) body.api_key = apiKey;
+  apiPost("/admin/api/settings/realtime", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    getEl("rt-api-key").value = "";
+    toast("语音模型配置已保存", "success");
+    loadRealtimeSettings();
+  });
 }
 
 function applyModelPreset() {
@@ -1180,6 +1223,7 @@ function testModelSettings() {
 
 function loadSettings() {
   loadModelSettings();
+  loadRealtimeSettings();
   loadPlanQuotaAsr();
 }
 

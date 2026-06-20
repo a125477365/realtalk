@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, status
 from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -116,6 +116,13 @@ from .schemas import (
     TokenUsageInfo,
 )
 from .capture_store import capture_store
+from .realtime_voice import (
+    build_session_instructions,
+    proxy_session,
+    resolve_realtime_config,
+    score_voice_session,
+)
+from .schemas import RealtimeSettingsRequest
 from .settings import settings
 from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
 
@@ -227,37 +234,32 @@ async def startup() -> None:
     seed_default_admin()
 
 
-def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UserOut:
-    # 同步依赖：FastAPI 自动放到线程池执行，DB 查询不阻塞事件循环
-    if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
-    user_id, device_id, token_version = verify_token(credentials.credentials)
-    # 一次读取拿到全部会话上下文（存在性/封禁/设备/令牌版本/最近活跃）
+def _authenticate_token(token: str) -> UserOut:
+    """校验 access token（存在性/封禁/单设备/令牌版本），返回用户。供 HTTP 与 WebSocket 共用。"""
+    user_id, device_id, token_version = verify_token(token)
     session = db.get_user_session(user_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     user: UserOut = session["user"]
     if user.is_banned:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用")
-    # 单设备登录：token 的设备编号必须等于该账号最近绑定设备，否则需重新授权。
     active_device = session["active_device_id"]
     if active_device is not None and active_device != device_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="您的账号已在其他设备登录，请重新登录",
-        )
-    # 令牌吊销：版本不一致说明已被服务端注销（改密/登出全部设备等）。
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="您的账号已在其他设备登录，请重新登录")
     if token_version != session["token_version"]:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="登录状态已失效，请重新登录",
-        )
-    # 节流写入 last_seen：超过阈值才落库，避免每个请求都写一次。
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效，请重新登录")
     last_seen = session["last_seen_at"]
     now = datetime.now(timezone.utc)
     if last_seen is None or (now - last_seen).total_seconds() > settings.last_seen_throttle_seconds:
         db.touch_user_seen(user.id)
     return user
+
+
+def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> UserOut:
+    # 同步依赖：FastAPI 自动放到线程池执行，DB 查询不阻塞事件循环
+    if credentials is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
+    return _authenticate_token(credentials.credentials)
 
 
 def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> dict:
@@ -520,6 +522,38 @@ async def admin_update_model_settings(
 @app.post("/admin/api/settings/model/test")
 async def admin_test_model_settings(admin: dict = Depends(current_admin)) -> dict:
     return await test_ai_connection()
+
+
+# ---- 高级会员实时语音大模型配置 ----
+
+@app.get("/admin/api/settings/realtime")
+async def admin_get_realtime_settings(admin: dict = Depends(current_admin)) -> dict:
+    config = resolve_realtime_config()
+    return {
+        "base_url": config.base_url,
+        "model": config.model,
+        "voice": config.voice,
+        "api_key_masked": _masked_key(config.api_key),
+        "api_key_configured": config.enabled,
+    }
+
+
+@app.post("/admin/api/settings/realtime")
+async def admin_set_realtime_settings(
+    request: RealtimeSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if request.base_url is not None:
+        db.set_app_setting("realtime_base_url", request.base_url.strip())
+    if request.api_key is not None:
+        db.set_app_setting("realtime_api_key", request.api_key.strip())
+    if request.model is not None:
+        db.set_app_setting("realtime_model", request.model.strip())
+    if request.voice is not None:
+        db.set_app_setting("realtime_voice", request.voice.strip())
+    return await admin_get_realtime_settings(admin)
 
 
 @app.get("/admin/api/settings/plans", response_model=PlanCatalogResponse)
@@ -1853,6 +1887,52 @@ async def roleplay_evaluate(
     messages = db.list_roleplay_messages(user.id, session.session_id)
     review = format_final_roleplay_review(session, messages)
     return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
+
+
+@app.websocket("/roleplay/voice")
+async def roleplay_voice(
+    websocket: WebSocket,
+    token: str = Query(...),
+    session_id: str = Query(...),
+) -> None:
+    """高级会员实时语音对练：后端在客户端与语音大模型之间转发音频，注入场景与护栏，结束给评分。
+
+    鉴权走 query 里的 access token（WebSocket 不便带 Authorization 头）。
+    """
+    try:
+        user = _authenticate_token(token)
+        require_premium(user)
+        require_ai_access(user)
+    except HTTPException as exc:
+        await websocket.close(code=4401, reason=str(exc.detail)[:120])
+        return
+    session = db.get_roleplay_session(user.id, session_id)
+    scenario = db.get_scenario(user.id, session.scene_id) if session else None
+    if session is None or scenario is None:
+        await websocket.close(code=4404, reason="场景练习不存在")
+        return
+    config = resolve_realtime_config()
+    if not config.enabled:
+        await websocket.close(code=4503, reason="语音大模型未配置，请联系管理员")
+        return
+
+    await websocket.accept()
+    instructions = build_session_instructions(scenario, session.selected_role)
+    try:
+        transcript = await proxy_session(websocket, instructions, config)
+    except Exception:  # noqa: BLE001 — 转发期间任一端异常即结束并评分
+        transcript = []
+    review = await score_voice_session(transcript, scenario, user.id)
+    try:
+        await websocket.send_text(_json.dumps({"type": "realtalk.review", **review}, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        pass
+    session.status = "completed"
+    db.update_roleplay_session(session)
+    try:
+        await websocket.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)

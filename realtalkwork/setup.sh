@@ -169,6 +169,19 @@ if $DEPLOY_BACKEND; then
     ENV_LINES+=("AI_BASE_URL=" "AI_API_KEY=" "AI_MODEL=")
   fi
 
+  # ---- 高级会员实时语音大模型（OpenAI 兼容 Realtime API，可跳过）----
+  note "高级会员实时语音对练（可跳过，建议部署后在管理台「系统设置」配置）。"
+  ask "实时语音 Base URL（OpenAI 兼容 Realtime WSS，回车跳过）" ""
+  RT_BASE="$REPLY_VALUE"
+  if [ -n "$RT_BASE" ]; then
+    ask_secret "实时语音 API Key"; RT_KEY="$REPLY_VALUE"
+    ask "实时语音模型" "gpt-4o-realtime-preview"; RT_MODEL="$REPLY_VALUE"
+    ask "语音音色" "alloy"; RT_VOICE="$REPLY_VALUE"
+    ENV_LINES+=("REALTIME_BASE_URL=$RT_BASE" "REALTIME_API_KEY=$RT_KEY" "REALTIME_MODEL=$RT_MODEL" "REALTIME_VOICE=$RT_VOICE")
+  else
+    ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
+  fi
+
   ask "worker 进程数（建议=CPU核数）" "4"
   ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
 
