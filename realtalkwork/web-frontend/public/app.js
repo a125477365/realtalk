@@ -171,6 +171,7 @@ function render() {
     state.tab === "plans" ? renderPlans() : "",
     state.tab === "scenes" ? renderScenes() : "",
     state.tab === "upload" ? renderUpload() : "",
+    state.tab === "tickets" ? renderTickets() : "",
     "</div>",
   ].join("");
   bindPage();
@@ -214,6 +215,7 @@ function renderNav() {
     item("plans", "会员套餐"),
     item("scenes", "我的场景"),
     item("upload", "上传录音"),
+    item("tickets", "客服工单"),
     "  </nav>",
     '  <button class="user-chip" onclick="doLogout()" title="退出登录">',
     '    <span class="avatar">' + esc(String(name).slice(0, 1).toUpperCase()) + "</span>",
@@ -230,39 +232,78 @@ function go(tab) {
   if (tab === "plans") loadPlans();
   if (tab === "scenes") loadScenes();
   if (tab === "upload") loadJobs(true);
+  if (tab === "tickets") loadTickets();
+}
+
+/* ---------- 客服工单 ---------- */
+function loadTickets() {
+  api("/support/tickets").then(function (d) { state.tickets = d.items || []; render(); })
+    .catch(function () {});
+}
+
+function ticketStatusText(s) {
+  return s === "open" ? "待处理" : s === "processing" ? "处理中" : s === "resolved" ? "已解决" : s === "closed" ? "已关闭" : s;
+}
+
+function renderTickets() {
+  var cat = state.ticketCat || "feedback";
+  var cats = [["feedback", "反馈"], ["refund", "退款"], ["bug", "问题"], ["other", "其他"]];
+  var list = (state.tickets || []).map(function (t) {
+    return [
+      '<div class="card" style="margin-bottom:10px">',
+      '  <div style="display:flex;justify-content:space-between"><b>' + esc(t.subject) + "</b><span>" + ticketStatusText(t.status) + "</span></div>",
+      '  <div class="meta" style="margin-top:4px">' + esc(t.body) + "</div>",
+      t.admin_reply ? '<div class="meta" style="margin-top:6px;color:var(--accent,#2997F5)">客服回复：' + esc(t.admin_reply) + "</div>" : "",
+      "</div>",
+    ].join("");
+  }).join("");
+  return [
+    '<div class="card"><h3>客服工单 <span class="sub">反馈问题、申请退款等</span></h3>',
+    '<div class="pay-methods" style="flex-wrap:wrap">',
+    cats.map(function (c) { return '<button class="' + (cat === c[0] ? "sel" : "") + '" onclick="state.ticketCat=\'' + c[0] + "';render()\">" + c[1] + "</button>"; }).join(""),
+    "</div>",
+    '<input id="tk-subject" placeholder="标题" style="width:100%;margin-top:10px;padding:10px;border:1px solid var(--line,#e3e6ec);border-radius:8px" />',
+    '<textarea id="tk-body" placeholder="详细描述" rows="4" style="width:100%;margin-top:10px;padding:10px;border:1px solid var(--line,#e3e6ec);border-radius:8px"></textarea>',
+    '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="submitTicket()">提交工单</button>',
+    "</div>",
+    list ? '<div style="margin-top:14px"><h3 style="margin:0 0 10px">我的工单</h3>' + list + "</div>" : "",
+  ].join("");
+}
+
+function submitTicket() {
+  var subject = ($("tk-subject") || {}).value || "";
+  var body = ($("tk-body") || {}).value || "";
+  if (!subject.trim() || !body.trim()) { toast("请填写标题和内容", "error"); return; }
+  api("/support/tickets", { method: "POST", body: { category: state.ticketCat || "feedback", subject: subject.trim(), body: body.trim() } })
+    .then(function () { toast("工单已提交", "success"); loadTickets(); })
+    .catch(function (e) { toast(e.message, "error"); });
 }
 
 /* ---------- 概览 ---------- */
-function tierName(t) { return t === "premium" ? "高级会员" : t === "basic" ? "基础会员" : "免费用户"; }
+function tierName(t) { return t === "premium" ? "高级会员" : t === "basic" ? "基础会员" : "非会员"; }
 
 function renderOverview() {
   var u = state.user, usage = state.usage || {};
-  var ratio = usage.month_budget_cents ? Math.min(100, Math.round((usage.month_cost_cents || 0) / usage.month_budget_cents * 100)) : 0;
-  var rows = (state.ledger || []).slice(0, 8).map(function (l) {
-    return "<tr><td>" + fmtDT(l.created_at) + "</td><td>" + esc(l.title) + '</td><td style="font-weight:600;color:' +
-      (l.amount_cents >= 0 ? "var(--good)" : "var(--bad)") + '">' + (l.amount_cents >= 0 ? "+" : "") + yuan(l.amount_cents) + "</td></tr>";
-  }).join("");
+  // 只展示已用百分比，不暴露金额额度（避免「月费一半」的疑惑，金额属内部口径）
+  var pct = Math.min(100, Math.round(usage.usage_percent || 0));
+  var usageLabel = usage.is_member ? "本月额度用量" : "今日免费用量";
   return [
     '<div class="hero-card">',
     "  <div>",
     '    <div class="name">' + esc(u.display_name || u.login_identifier) +
     '      <span class="tier-badge ' + (u.plan_tier === "premium" ? "tier-premium" : "") + '">' + tierName(u.plan_tier) + "</span></div>",
-    '    <div class="meta">' + (u.plan_expires_at ? "会员有效期至 " + String(u.plan_expires_at).slice(0, 10) : "试用已结束，订阅后继续使用 AI 功能") + "</div>",
-    '    <div class="meta">本月 AI 费用额度 ' + yuan(usage.month_cost_cents || 0) + " / " + yuan(usage.month_budget_cents || 0) +
-    (usage.over_budget ? "（已用完，下月恢复）" : "（含文字+语音，会员月费50%）") + "</div>",
-    '    <div class="progress ' + (ratio >= 80 ? "warn" : "") + '" style="max-width:340px"><i style="width:' + ratio + '%"></i></div>',
+    '    <div class="meta">' + (u.plan_expires_at ? "会员有效期至 " + String(u.plan_expires_at).slice(0, 10) : "升级会员解锁更多用量与高级功能") + "</div>",
+    '    <div class="meta">' + usageLabel + " " + pct + "%" + (usage.over_budget ? (usage.is_member ? "（已用完，下月恢复）" : "（已用完，升级解锁更多）") : "") + "</div>",
+    '    <div class="progress ' + (pct >= 80 ? "warn" : "") + '" style="max-width:340px"><i style="width:' + pct + '%"></i></div>',
     "  </div>",
-    '  <div class="balance"><div class="num">' + yuan(u.balance_cents) + '</div><div class="lbl">账户余额</div>',
-    '    <div style="margin-top:10px"><button class="btn btn-sm" style="background:rgba(255,255,255,.2);color:#fff" onclick="go(\'recharge\')">去充值</button></div></div>',
+    '  <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">',
+    '    <button class="btn btn-sm" style="background:rgba(255,255,255,.2);color:#fff" onclick="go(\'plans\')">' + (u.plan_tier === "premium" ? "续费会员" : "升级会员") + "</button>",
+    '    <button class="btn btn-sm" style="background:rgba(255,255,255,.2);color:#fff" onclick="go(\'tickets\')">客服工单</button>',
+    "  </div>",
     "</div>",
     '<div class="stat-row">',
-    '  <div class="mini-stat"><div class="v">' + fmtTokens(usage.remaining_tokens) + '</div><div class="k">今日剩余 tokens</div></div>',
-    '  <div class="mini-stat"><div class="v">' + tierName(u.plan_tier) + '</div><div class="k">当前套餐 · 会员有 token 限额</div></div>',
+    '  <div class="mini-stat"><div class="v">' + tierName(u.plan_tier) + '</div><div class="k">当前身份</div></div>',
     '  <div class="mini-stat"><div class="v">' + (u.plan_tier === "premium" ? "已开通" : "未开通") + '</div><div class="k">录音文件上传（高级会员）</div></div>',
-    "</div>",
-    '<div class="card" style="margin-top:18px"><h3>最近账单</h3>',
-    rows ? '<table class="list"><thead><tr><th>时间</th><th>项目</th><th>金额</th></tr></thead><tbody>' + rows + "</tbody></table>"
-         : '<div class="empty">暂无账单记录</div>',
     "</div>",
   ].join("");
 }
@@ -277,11 +318,15 @@ function renderPlans() {
   if (!state.plans.length) return '<div class="card"><div class="empty">套餐加载中…</div></div>';
   var benefit = {
     basic: ["App 实时录音转写生成场景", "AI 逐句陪练与纠错", "今日场景自动生成", "口语训练与表达卡片"],
-    premium: ["包含基础会员全部功能", "App / 网页上传录音文件（≤6 小时 / 300MB）", "音频自动转写并生成场景", "更高每日 token 限额"],
+    premium: ["包含基础会员全部功能", "App / 网页上传录音文件（≤6 小时 / 300MB）", "音频自动转写并生成场景", "更高每月用量额度"],
   };
-  var cards = state.plans.map(function (p) {
+  // 按当前身份可选套餐：非会员=全部；基础=续费基础+升级高级；高级=续费高级
+  var tier = (state.user || {}).plan_tier;
+  var plans = state.plans.filter(function (p) { return tier === "premium" ? p.tier === "premium" : true; });
+  var cards = plans.map(function (p) {
     var monthly = p.months > 1;
     var save = monthly ? Math.round((1 - p.per_month_cents / (p.tier === "premium" ? 5000 : 3000)) * 100) : 0;
+    var label = p.tier === tier ? "续费" : (p.tier === "premium" && tier === "basic" ? "升级" : "立即开通");
     return [
       '<div class="plan-card ' + (p.tier === "premium" ? "premium" : "") + '">',
       save > 0 ? '<span class="save-tag">省 ' + save + "%</span>" : "",
@@ -289,19 +334,30 @@ function renderPlans() {
       '  <div class="price">' + yuan(p.per_month_cents) + "<small> /月</small></div>",
       '  <div class="total">' + (monthly ? "一次支付 " + yuan(p.price_cents) + "（" + p.months + " 个月）" : "按月订阅") + "</div>",
       "  <ul>" + benefit[p.tier].map(function (b) { return "<li>" + b + "</li>"; }).join("") + "</ul>",
-      '  <button class="btn btn-primary btn-block" onclick="subscribe(\'' + p.id + "','" + esc(p.title) + "'," + p.price_cents + ')">立即开通</button>',
+      '  <button class="btn btn-primary btn-block" onclick="pickPlan(\'' + p.id + "','" + esc(p.title) + "'," + p.price_cents + ')">' + label + "</button>",
       "</div>",
     ].join("");
   }).join("");
+  var sel = state.selectedPlan;
   var method = state.payMethod || "wechat";
   var order = state.order;
   return [
-    '<div class="card"><h3>会员套餐 <span class="sub">直接付款开通；会员每日有 token 用量限额，超出后当天暂停 AI 功能</span></h3>',
-    '<div class="pay-methods">',
-    '  <button class="' + (method === "wechat" ? "sel" : "") + '" onclick="setMethod(\'wechat\')">💚 微信支付</button>',
-    '  <button class="' + (method === "alipay" ? "sel" : "") + '" onclick="setMethod(\'alipay\')">💙 支付宝</button>',
-    "</div>",
+    '<div class="card"><h3>会员套餐 <span class="sub">选择套餐后再选择付款方式开通</span></h3>',
     '<div class="plan-grid">' + cards + "</div>",
+    // 选中套餐后才出现付款方式
+    (sel && !order) ? [
+      '<div class="order-panel">',
+      "  <div><b>" + esc(sel.title) + " · " + yuan(sel.price) + "</b></div>",
+      '  <div class="pay-methods" style="margin-top:10px">',
+      '    <button class="' + (method === "wechat" ? "sel" : "") + '" onclick="setMethod(\'wechat\')">💚 微信支付</button>',
+      '    <button class="' + (method === "alipay" ? "sel" : "") + '" onclick="setMethod(\'alipay\')">💙 支付宝</button>',
+      "  </div>",
+      '  <div style="margin-top:12px;display:flex;gap:10px">',
+      '    <button class="btn btn-primary btn-sm" onclick="confirmSubscribe()">确认开通</button>',
+      '    <button class="btn btn-ghost btn-sm" onclick="state.selectedPlan=null;render()">取消</button>',
+      "  </div>",
+      "</div>",
+    ].join("") : "",
     order ? [
       '<div class="order-panel">',
       "  <div><b>" + esc(order.message) + "</b></div>",
@@ -320,10 +376,17 @@ function renderPlans() {
 
 function setMethod(m) { state.payMethod = m; render(); }
 
-function subscribe(planId, title, price) {
-  // 直接生成套餐支付订单，支付成功后激活会员
-  api("/billing/recharge", { method: "POST", body: { plan_id: planId, method: state.payMethod || "wechat" } })
-    .then(function (d) { state.order = d; render(); })
+function pickPlan(planId, title, price) {
+  state.selectedPlan = { id: planId, title: title, price: price };
+  state.order = null;
+  render();
+}
+
+function confirmSubscribe() {
+  var sel = state.selectedPlan;
+  if (!sel) return;
+  api("/billing/recharge", { method: "POST", body: { plan_id: sel.id, method: state.payMethod || "wechat" } })
+    .then(function (d) { state.order = d; state.selectedPlan = null; render(); })
     .catch(function (e) { toast(e.message, "error"); });
 }
 
@@ -526,7 +589,9 @@ window.loginWithWeChat = loginWithWeChat;
 window.doLogout = doLogout;
 window.setMethod = setMethod;
 window.confirmOrder = confirmOrder;
-window.subscribe = subscribe;
+window.pickPlan = pickPlan;
+window.confirmSubscribe = confirmSubscribe;
+window.submitTicket = submitTicket;
 window.openScene = openScene;
 window.state = state;
 window.render = render;
