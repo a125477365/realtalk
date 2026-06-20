@@ -8,15 +8,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("对话方式", selection: $model.conversationPreference) {
+                        ForEach(AppModel.ConversationPreference.allCases) { Text($0.title).tag($0) }
+                    }
+                    Picker("AI 指导方式", selection: $model.guidancePreference) {
+                        ForEach(AppModel.GuidancePreference.allCases) { Text($0.title).tag($0) }
+                    }
+                } header: {
+                    Text("对话方式").font(.system(size: 13 * model.fontScale))
+                } footer: {
+                    Text("对话方式与指导方式只能在这里设置、对话中不可切换。选「每次开始对话前询问」会在开练前弹出选择（可勾选以后不再询问）。手工触发式：长按说话、向左滑取消、向右滑发送。")
+                        .font(.system(size: 12 * model.fontScale))
+                }
+
                 Section("对话与字幕") {
                     Toggle("显示双语字幕", isOn: $model.showDialogueContent)
                     Toggle("自动朗读 AI 台词", isOn: $model.autoSpeakAI)
                     Toggle("连续语音对话", isOn: $model.continuousVoiceMode)
-                    Picker("默认指导方式", selection: $model.guidanceMode) {
-                        ForEach(AppModel.GuidanceMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
                     Slider(value: $model.fontScale, in: 0.85...1.35, step: 0.05) {
                         Text("字体大小")
                     } minimumValueLabel: {
@@ -71,7 +80,8 @@ struct SettingsView: View {
             .onChange(of: model.autoCaptureStart) { _, _ in model.saveCaptureSchedule() }
             .onChange(of: model.autoCaptureEnd) { _, _ in model.saveCaptureSchedule() }
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
-            .onChange(of: model.guidanceMode) { _, _ in model.savePracticePreferences() }
+            .onChange(of: model.guidancePreference) { _, _ in model.savePracticePreferences() }
+            .onChange(of: model.conversationPreference) { _, _ in model.savePracticePreferences() }
         }
     }
 

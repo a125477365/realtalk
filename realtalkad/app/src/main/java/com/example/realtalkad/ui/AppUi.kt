@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
@@ -227,32 +228,37 @@ fun MainChatScreen(model: AppViewModel) {
                 Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
                     fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
             }
+            Spacer(Modifier.weight(1f))
         } else {
-            LazyRow(
+            // 竖排列表，方便逐条选择
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(scenarios, key = { it.sceneId }) { summary ->
-                    Column(
-                        Modifier.width(200.dp)
+                    Row(
+                        Modifier.fillMaxWidth()
                             .background(RT.Surface, RoundedCornerShape(14.dp))
                             .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
                             .clickable { roleDialogFor = summary }
-                            .padding(12.dp),
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(summary.title, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp,
-                            color = RT.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(3.dp))
-                        Text(summary.summary, fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
-                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(4.dp))
-                        Text("${summary.lineCount} 句", fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+                        Column(Modifier.weight(1f)) {
+                            Text(summary.title, fontWeight = FontWeight.SemiBold, fontSize = (15 * fontScale).sp,
+                                color = RT.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height(3.dp))
+                            Text(summary.summary, fontSize = (13 * fontScale).sp, color = RT.TextSecondary,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height(4.dp))
+                            Text("${summary.lineCount} 句", fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+                        }
+                        Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
                     }
                 }
             }
         }
-
-        Spacer(Modifier.weight(1f))
 
         // 主操作按钮：录音中为红色，其余用品牌渐变（Box 才能铺渐变）
         Box(
@@ -298,6 +304,9 @@ fun MainChatScreen(model: AppViewModel) {
         )
     }
 
+    // 对话前询问（指导/对话方式设为 ask 时）
+    PrePracticeDialog(model)
+
     if (showAccount) {
         ModalBottomSheet(onDismissRequest = { showAccount = false }) {
             AccountSheet(model)
@@ -306,4 +315,75 @@ fun MainChatScreen(model: AppViewModel) {
 
     // 沉浸式对练字幕：开练后全屏覆盖在主界面之上
     if (showImmersive) ImmersiveRoleplayScreen(model)
+}
+
+/** 对话前询问：指导/对话方式设为「每次询问」时，开练前选择本次方式（可勾选以后不再询问）。 */
+@Composable
+private fun PrePracticeDialog(model: AppViewModel) {
+    val pending by model.pendingPractice.collectAsState()
+    val convPref by model.conversationPreference.collectAsState()
+    val guidPref by model.guidancePreference.collectAsState()
+    if (pending == null) return
+
+    var conversation by remember { mutableStateOf("immersive") }
+    var guidance by remember { mutableStateOf("realtime") }
+    var rememberConv by remember { mutableStateOf(false) }
+    var rememberGuid by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { model.cancelPendingPractice() },
+        title = { Text("开始练习") },
+        text = {
+            Column {
+                if (convPref == "ask") {
+                    Text("对话方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("immersive" to "沉浸式", "manual" to "手工触发").forEach { (k, l) ->
+                            OutlinedButton(
+                                onClick = { conversation = k },
+                                modifier = Modifier.weight(1f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (conversation == k) RT.Accent else RT.Hairline),
+                            ) { Text(l, color = if (conversation == k) RT.Accent else RT.TextSecondary) }
+                        }
+                    }
+                    CheckRow(rememberConv) { rememberConv = it }
+                    Spacer(Modifier.height(12.dp))
+                }
+                if (guidPref == "ask") {
+                    Text("指导方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("realtime" to "实时指导", "final" to "结束后指导").forEach { (k, l) ->
+                            OutlinedButton(
+                                onClick = { guidance = k },
+                                modifier = Modifier.weight(1f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (guidance == k) RT.Accent else RT.Hairline),
+                            ) { Text(l, color = if (guidance == k) RT.Accent else RT.TextSecondary) }
+                        }
+                    }
+                    CheckRow(rememberGuid) { rememberGuid = it }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val conv = if (convPref == "ask") conversation else if (convPref == "manual") "manual" else "immersive"
+                val guid = if (guidPref == "ask") guidance else if (guidPref == "final") "final" else "realtime"
+                model.confirmPendingPractice(conv, guid, rememberConv, rememberGuid)
+            }) { Text("开始") }
+        },
+        dismissButton = { TextButton(onClick = { model.cancelPendingPractice() }) { Text("取消") } },
+    )
+}
+
+@Composable
+private fun CheckRow(checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.clickable { onChange(!checked) },
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onChange)
+        Text("以后不再询问，按此方式", fontSize = 12.sp, color = RT.TextSecondary)
+    }
 }

@@ -74,7 +74,11 @@ class SpeechCapture(private val context: Context) {
     }
 }
 
-/** 口语对练：英文识别（en-US），带实时字幕，静音自动提交。 */
+/**
+ * 口语对练：英文识别（en-US），带实时字幕。
+ * - 沉浸式（autoSubmit=true）：拉长静音判定，停顿思考不算说完；静音到阈值才自动提交。
+ * - 手工触发式（autoSubmit=false）：不自动提交，允许停顿（识别段落累积），由用户松手时提交/取消。
+ */
 class PracticeSpeech(private val context: Context) {
     var isListening = false
         private set
@@ -85,32 +89,57 @@ class PracticeSpeech(private val context: Context) {
 
     private var recognizer: SpeechRecognizer? = null
     private var lastPartial = ""
+    private var accumulated = ""
+    private var manualMode = false
 
-    fun start() {
+    private fun combined(): String = ("$accumulated $lastPartial").trim()
+    private fun appendSeg(seg: String) {
+        accumulated = if (accumulated.isBlank()) seg else "$accumulated $seg"
+    }
+
+    fun start(autoSubmit: Boolean = true) {
         if (isListening) return
         if (!SpeechRecognizer.isRecognitionAvailable(context)) return
-        isListening = true
+        manualMode = !autoSubmit
+        accumulated = ""
         lastPartial = ""
+        isListening = true
         onStateChange?.invoke(true)
+        startSession()
+    }
+
+    private fun startSession() {
+        recognizer?.destroy()
         recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { r ->
             r.setRecognitionListener(object : RecognitionListener {
                 override fun onPartialResults(partialResults: Bundle?) {
                     partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull()
-                        ?.let { lastPartial = it; onPartial?.invoke(it) }
+                        ?.let { lastPartial = it; onPartial?.invoke(combined()) }
                 }
 
                 override fun onResults(results: Bundle) {
                     val text = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         ?.firstOrNull() ?: lastPartial
-                    stop()
-                    text.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+                    if (manualMode) {
+                        if (text.isNotBlank()) appendSeg(text)
+                        lastPartial = ""
+                        onPartial?.invoke(combined())
+                        if (isListening) startSession()  // 继续听，允许停顿
+                    } else {
+                        stop()
+                        text.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+                    }
                 }
 
                 override fun onError(error: Int) {
-                    val pending = lastPartial
-                    stop()
-                    pending.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+                    if (manualMode) {
+                        if (isListening) startSession()  // 静音/超时就重启继续听
+                    } else {
+                        val pending = lastPartial
+                        stop()
+                        pending.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+                    }
                 }
 
                 override fun onReadyForSpeech(params: Bundle?) {}
@@ -126,12 +155,29 @@ class PracticeSpeech(private val context: Context) {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                // 拉长静音判定，给思考停顿留时间（参考主流口语 App）
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
             })
         }
     }
 
+    /** 手工触发式：松手发送，提交累积文本。 */
+    fun stopAndEmit() {
+        val text = combined()
+        stop()
+        text.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+    }
+
+    /** 手工触发式：滑到取消区，丢弃本次。 */
+    fun cancel() = stop()
+
     fun stop() {
         isListening = false
+        manualMode = false
+        accumulated = ""
+        lastPartial = ""
         onPartial?.invoke("")
         onLevel?.invoke(0f)
         recognizer?.destroy()

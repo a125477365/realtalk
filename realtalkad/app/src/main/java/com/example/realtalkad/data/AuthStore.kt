@@ -23,9 +23,15 @@ class AuthStore(context: Context) {
         get() = prefs.getBoolean("show_subtitles", true)
         set(value) = prefs.edit().putBoolean("show_subtitles", value).apply()
 
-    var guidanceMode: String
-        get() = prefs.getString("guidance_mode", "realtime") ?: "realtime"
-        set(value) = prefs.edit().putString("guidance_mode", if (value == "final") "final" else "realtime").apply()
+    // 指导方式偏好：ask / realtime / final（默认 ask=每次询问）。对话中不可切换。
+    var guidancePreference: String
+        get() = prefs.getString("guidance_pref", "ask") ?: "ask"
+        set(value) = prefs.edit().putString("guidance_pref", value).apply()
+
+    // 对话方式偏好：ask / immersive / manual（默认 ask）。
+    var conversationPreference: String
+        get() = prefs.getString("conversation_pref", "ask") ?: "ask"
+        set(value) = prefs.edit().putString("conversation_pref", value).apply()
 
     var autoSpeakAI: Boolean
         get() = prefs.getBoolean("auto_speak_ai", true)

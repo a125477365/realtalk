@@ -16,6 +16,47 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 指导方式偏好：可选「每次开始对话前询问」。对话中不可切换。
+    enum GuidancePreference: String, CaseIterable, Identifiable {
+        case ask
+        case realtime
+        case final
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .ask: return "每次开始对话前询问"
+            case .realtime: return "实时指导"
+            case .final: return "结束后指导"
+            }
+        }
+    }
+
+    /// 对话方式（当前会话生效，不可中途切换）。
+    enum ConversationMode: String { case immersive, manual }
+
+    /// 对话方式偏好：可选「每次开始对话前询问」。
+    enum ConversationPreference: String, CaseIterable, Identifiable {
+        case ask
+        case immersive
+        case manual
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .ask: return "每次开始对话前询问"
+            case .immersive: return "沉浸式对话"
+            case .manual: return "手工触发式对话"
+            }
+        }
+    }
+
+    /// 待开始的练习（用于「对话前询问」弹窗）。
+    struct PendingPractice {
+        let summary: ScenarioSummary
+        let roleId: String
+    }
+
     let transcripts: TranscriptStore
     let speech: SpeechCaptureManager
     let api: APIClient
@@ -51,7 +92,11 @@ final class AppModel: ObservableObject {
     @Published var autoSpeakAI = true
     @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
-    @Published var guidanceMode: GuidanceMode = .realtime
+    @Published var guidanceMode: GuidanceMode = .realtime            // 当前会话生效（不可中途切）
+    @Published var guidancePreference: GuidancePreference = .ask     // 设置里的偏好
+    @Published var conversationMode: ConversationMode = .immersive   // 当前会话生效
+    @Published var conversationPreference: ConversationPreference = .ask
+    @Published var pendingPractice: PendingPractice?                 // 非空时弹「对话前询问」
     @Published var autoCaptureEnabled = false
     @Published var autoCaptureStart = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
     @Published var autoCaptureEnd = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
@@ -75,7 +120,8 @@ final class AppModel: ObservableObject {
         static let autoCaptureStart = "realtalk.autoCaptureStart"
         static let autoCaptureEnd = "realtalk.autoCaptureEnd"
         static let fontScale = "realtalk.fontScale"
-        static let guidanceMode = "realtalk.guidanceMode"
+        static let guidancePreference = "realtalk.guidancePreference"
+        static let conversationPreference = "realtalk.conversationPreference"
     }
 
     init() {
@@ -93,9 +139,13 @@ final class AppModel: ObservableObject {
         if savedFontScale > 0 {
             fontScale = min(max(savedFontScale, 0.85), 1.35)
         }
-        if let rawMode = defaults.string(forKey: DefaultsKey.guidanceMode),
-           let savedMode = GuidanceMode(rawValue: rawMode) {
-            guidanceMode = savedMode
+        if let raw = defaults.string(forKey: DefaultsKey.guidancePreference),
+           let pref = GuidancePreference(rawValue: raw) {
+            guidancePreference = pref
+        }
+        if let raw = defaults.string(forKey: DefaultsKey.conversationPreference),
+           let pref = ConversationPreference(rawValue: raw) {
+            conversationPreference = pref
         }
 
         speech.onSegment = { [weak self] text, date in
@@ -200,7 +250,47 @@ final class AppModel: ObservableObject {
     }
 
     /// 从「今日场景」卡片直接进入练习：拉取场景详情 → 选角色 → 开始对练
+    /// 进入练习前：若指导/对话方式设为「每次询问」，先弹窗让用户选择（不可中途切换）。
     func startScenarioPractice(_ summary: ScenarioSummary, roleId: String) async {
+        guard auth.token != nil else {
+            statusMessage = "请先登录"
+            return
+        }
+        if guidancePreference == .ask || conversationPreference == .ask {
+            pendingPractice = PendingPractice(summary: summary, roleId: roleId)
+            return
+        }
+        conversationMode = conversationPreference == .manual ? .manual : .immersive
+        guidanceMode = guidancePreference == .final ? .final : .realtime
+        await beginPractice(summary, roleId: roleId)
+    }
+
+    /// 「对话前询问」弹窗确认后：按所选模式开始，并按需记住偏好。
+    func confirmPendingPractice(
+        conversation: ConversationMode,
+        guidance: GuidanceMode,
+        rememberConversation: Bool,
+        rememberGuidance: Bool
+    ) async {
+        guard let pending = pendingPractice else { return }
+        conversationMode = conversation
+        guidanceMode = guidance
+        if rememberConversation {
+            conversationPreference = conversation == .manual ? .manual : .immersive
+        }
+        if rememberGuidance {
+            guidancePreference = guidance == .final ? .final : .realtime
+        }
+        savePracticePreferences()
+        pendingPractice = nil
+        await beginPractice(pending.summary, roleId: pending.roleId)
+    }
+
+    func cancelPendingPractice() {
+        pendingPractice = nil
+    }
+
+    private func beginPractice(_ summary: ScenarioSummary, roleId: String) async {
         guard let token = auth.token else {
             statusMessage = "请先登录"
             return
@@ -222,6 +312,7 @@ final class AppModel: ObservableObject {
     func toggleRecording() async {
         if speech.isRecording {
             speech.stop(savePartial: true)
+            statusMessage = "已停止采集，正在发送给后台并生成场景…"
             try? await Task.sleep(nanoseconds: 400_000_000)
             let uploaded = await uploadPending()
             if uploaded > 0 {
@@ -242,7 +333,8 @@ final class AppModel: ObservableObject {
 
     func savePracticePreferences() {
         defaults.set(fontScale, forKey: DefaultsKey.fontScale)
-        defaults.set(guidanceMode.rawValue, forKey: DefaultsKey.guidanceMode)
+        defaults.set(guidancePreference.rawValue, forKey: DefaultsKey.guidancePreference)
+        defaults.set(conversationPreference.rawValue, forKey: DefaultsKey.conversationPreference)
     }
 
     /// 上传待同步的转写，返回成功上传的条数（-1=出错，0=无内容）。
@@ -260,12 +352,13 @@ final class AppModel: ObservableObject {
         }
 
         do {
+            statusMessage = "已发布给后台，正在生成场景…（\(pending.count) 句）"
             let response = try await api.uploadCaptureSegments(pending, token: token)
             transcripts.markUploaded(ids: pending.map(\.id))
-            statusMessage = "已采集 \(response.acceptedItems) 条，生成 \(response.generated) 个场景"
+            statusMessage = "已生成 \(response.generated) 个场景，可在列表中选择练习"
             return response.acceptedItems
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = "上传失败：\(error.localizedDescription)"
             return -1
         }
     }
@@ -797,11 +890,34 @@ final class AppModel: ObservableObject {
 
     private func listenForNextRoleplayTurn() async {
         guard isVoiceConversationActive else { return }
+        // 手工触发式：不自动开麦，等用户长按说话
+        guard conversationMode == .immersive else { return }
         guard continuousVoiceMode else { return }
         guard roleplay?.completed == false, roleplay?.nextLine != nil else { return }
         guard practiceSpeech.isListening == false, voice.isSpeaking == false else { return }
         await practiceSpeech.start()
         scheduleAnswerTimeout()
+    }
+
+    // MARK: 手工触发式对话（长按说话，滑动取消/发送）
+
+    /// 长按开始：停掉 AI、开麦但不自动提交（由松手决定）。
+    func beginManualUtterance() async {
+        guard isVoiceConversationActive else { return }
+        cancelAnswerTimeout()
+        voice.stop()
+        guard practiceSpeech.isListening == false else { return }
+        await practiceSpeech.start(autoSubmit: false)
+    }
+
+    /// 松手发送：把已识别内容提交给后端（经 onUtterance → submitRoleplayUtterance）。
+    func sendManualUtterance() {
+        practiceSpeech.stop(emit: true)
+    }
+
+    /// 滑到取消区：丢弃本次，不提交。
+    func cancelManualUtterance() {
+        practiceSpeech.stop(emit: false)
     }
 
     /// 用户长时间没开口时，AI 主动暂停并给出指导，再继续等待回答

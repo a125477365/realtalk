@@ -36,9 +36,16 @@ final class SpeechPracticeManager: ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
     private var emittedText = ""
+    /// 沉浸式：静音一段时间自动提交；手工触发式：关闭自动提交，由用户松手时提交。
+    private var autoSubmitOnSilence = true
+    /// 静音判定时长：参考主流口语 App，给思考停顿留足时间，避免没说完就当作说完。
+    private let silenceThreshold: TimeInterval = 2.6
 
-    func start() async {
+    var currentPartial: String { partialText }
+
+    func start(autoSubmit: Bool = true) async {
         guard isListening == false else { return }
+        autoSubmitOnSilence = autoSubmit
         lastError = nil
         partialText = ""
         emittedText = ""
@@ -157,9 +164,12 @@ final class SpeechPracticeManager: ObservableObject {
     private func handleRecognition(result: SFSpeechRecognitionResult?, error: Error?) {
         if let result {
             partialText = result.bestTranscription.formattedString
-            scheduleAutoSubmit()
-            if result.isFinal {
-                stop(emit: true)
+            // 手工触发式：不自动提交，由用户松手决定
+            if autoSubmitOnSilence {
+                scheduleAutoSubmit()
+                if result.isFinal {
+                    stop(emit: true)
+                }
             }
         }
 
@@ -173,7 +183,7 @@ final class SpeechPracticeManager: ObservableObject {
 
     private func scheduleAutoSubmit() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { [weak self] _ in
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceThreshold, repeats: false) { [weak self] _ in
             guard let manager = self else { return }
             Task { @MainActor in
                 manager.stop(emit: true)

@@ -49,7 +49,6 @@ struct MainChatView: View {
                     statusPill
                     scenarioScopePicker
                     scenarioStrip
-                    Spacer(minLength: 0)
                     captureButton
                 }
             }
@@ -59,6 +58,12 @@ struct MainChatView: View {
             }
             .fullScreenCover(isPresented: $showImmersive) {
                 ImmersiveRoleplayView()
+            }
+            .sheet(isPresented: Binding(
+                get: { model.pendingPractice != nil },
+                set: { if $0 == false { model.cancelPendingPractice() } }
+            )) {
+                PrePracticeSheet()
             }
             .task {
                 // 登录后进入主界面时加载数据（bootstrap 在登录前已跑过、那时无 token 被跳过）
@@ -205,27 +210,34 @@ struct MainChatView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
+                // 竖排列表，方便逐条选择
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 10) {
                         ForEach(model.todayScenarios) { summary in
                             Button {
                                 roleDialogScenario = summary
                             } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(summary.title)
-                                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
-                                        .foregroundStyle(RTTheme.textPrimary)
-                                        .lineLimit(1)
-                                    Text(summary.summary)
-                                        .font(.system(size: 12 * model.fontScale))
-                                        .foregroundStyle(RTTheme.textSecondary)
-                                        .lineLimit(2)
-                                    Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
-                                        .font(.system(size: 11 * model.fontScale))
-                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                                HStack(spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(summary.title)
+                                            .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                                            .foregroundStyle(RTTheme.textPrimary)
+                                            .lineLimit(1)
+                                        Text(summary.summary)
+                                            .font(.system(size: 13 * model.fontScale))
+                                            .foregroundStyle(RTTheme.textSecondary)
+                                            .lineLimit(2)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
+                                            .font(.system(size: 11 * model.fontScale))
+                                            .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .font(.footnote)
+                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
                                 }
-                                .padding(12)
-                                .frame(width: 200, alignment: .leading)
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
                                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
                             }
@@ -233,9 +245,11 @@ struct MainChatView: View {
                         }
                     }
                     .padding(.horizontal, 16)
+                    .padding(.top, 4)
                 }
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .padding(.bottom, 8)
     }
 
@@ -281,4 +295,67 @@ struct MainChatView: View {
         return RTTheme.textSecondary
     }
 
+}
+
+/// 「对话前询问」：指导/对话方式设为每次询问时，开练前选择本次方式（可勾选以后不再询问）。
+private struct PrePracticeSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var conversation: AppModel.ConversationMode = .immersive
+    @State private var guidance: AppModel.GuidanceMode = .realtime
+    @State private var rememberConversation = false
+    @State private var rememberGuidance = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if model.conversationPreference == .ask {
+                    Section("对话方式") {
+                        Picker("对话方式", selection: $conversation) {
+                            Text("沉浸式对话").tag(AppModel.ConversationMode.immersive)
+                            Text("手工触发式对话").tag(AppModel.ConversationMode.manual)
+                        }
+                        .pickerStyle(.segmented)
+                        Toggle("以后不再询问，按此设置", isOn: $rememberConversation)
+                    }
+                }
+                if model.guidancePreference == .ask {
+                    Section("指导方式") {
+                        Picker("指导方式", selection: $guidance) {
+                            Text("实时指导").tag(AppModel.GuidanceMode.realtime)
+                            Text("结束后指导").tag(AppModel.GuidanceMode.final)
+                        }
+                        .pickerStyle(.segmented)
+                        Toggle("以后不再询问，按此设置", isOn: $rememberGuidance)
+                    }
+                }
+            }
+            .navigationTitle("开始练习")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { model.cancelPendingPractice() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("开始") {
+                        let conv: AppModel.ConversationMode = model.conversationPreference == .ask
+                            ? conversation
+                            : (model.conversationPreference == .manual ? .manual : .immersive)
+                        let guid: AppModel.GuidanceMode = model.guidancePreference == .ask
+                            ? guidance
+                            : (model.guidancePreference == .final ? .final : .realtime)
+                        Task {
+                            await model.confirmPendingPractice(
+                                conversation: conv,
+                                guidance: guid,
+                                rememberConversation: rememberConversation,
+                                rememberGuidance: rememberGuidance
+                            )
+                        }
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
 }

@@ -58,7 +58,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val audioJobs = MutableStateFlow<List<AudioJob>>(emptyList())
     val isUploadingAudio = MutableStateFlow(false)
     val showSubtitles = MutableStateFlow(auth.showSubtitles)
-    val guidanceMode = MutableStateFlow(auth.guidanceMode)
+    val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
+    val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
+    val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
+    val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/immersive/manual
+    val pendingPractice = MutableStateFlow<Pair<ScenarioSummary, String>?>(null) // 非空时弹「对话前询问」
     val fontScale = MutableStateFlow(auth.fontScale)
     val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
     val continuousVoice = MutableStateFlow(auth.continuousVoice)
@@ -201,6 +205,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!capture.isRecording) return
         capture.stop()
         autoCaptureRunning = false
+        statusMessage.value = "已停止采集，正在发送给后台并生成场景…"
         uploadPendingAndRefresh()
     }
 
@@ -213,13 +218,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage.value = "没采到声音"
                 return@launch
             }
+            statusMessage.value = "已发布给后台，正在生成场景…（${items.size} 句）"
             runCatching { api.uploadCaptureItems(items, token) }
                 .onSuccess {
                     transcriptStore.remove(items.map { item -> item.id }.toSet())
-                    statusMessage.value = "已采集 ${it.acceptedItems} 条，生成 ${it.generated} 个场景"
+                    statusMessage.value = "已生成 ${it.generated} 个场景，可在列表中选择练习"
                     loadTodayScenarios()
                 }
-                .onFailure { statusMessage.value = it.message ?: "上传失败，请重试" }
+                .onFailure { statusMessage.value = "上传失败：${it.message ?: ""}" }
         }
     }
 
@@ -271,7 +277,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 进入练习前：若指导/对话方式设为 ask，先弹窗让用户选择（对话中不可切换）。 */
     fun startScenarioPractice(summary: ScenarioSummary, roleId: String) {
+        if (auth.token == null) { statusMessage.value = "请先登录"; return }
+        if (guidancePreference.value == "ask" || conversationPreference.value == "ask") {
+            pendingPractice.value = summary to roleId
+            return
+        }
+        conversationMode.value = if (conversationPreference.value == "manual") "manual" else "immersive"
+        guidanceMode.value = if (guidancePreference.value == "final") "final" else "realtime"
+        beginPractice(summary, roleId)
+    }
+
+    /** 「对话前询问」确认：按所选模式开始，并按需记住偏好。 */
+    fun confirmPendingPractice(
+        conversation: String,
+        guidance: String,
+        rememberConversation: Boolean,
+        rememberGuidance: Boolean,
+    ) {
+        val pending = pendingPractice.value ?: return
+        conversationMode.value = if (conversation == "manual") "manual" else "immersive"
+        guidanceMode.value = if (guidance == "final") "final" else "realtime"
+        if (rememberConversation) { conversationPreference.value = conversationMode.value; auth.conversationPreference = conversationMode.value }
+        if (rememberGuidance) { guidancePreference.value = guidanceMode.value; auth.guidancePreference = guidanceMode.value }
+        pendingPractice.value = null
+        beginPractice(pending.first, pending.second)
+    }
+
+    fun cancelPendingPractice() { pendingPractice.value = null }
+
+    private fun beginPractice(summary: ScenarioSummary, roleId: String) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             isWorking.value = true
@@ -281,7 +317,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 appendChat(ChatMessage.Sender.USER, "练习：${summary.title}（扮演${roleName(roleId)}）")
                 val state = api.startRoleplay(summary.sceneId, roleId, token)
                 isVoiceActive.value = true
-                showImmersive.value = true   // 进入沉浸式字幕
+                showImmersive.value = true   // 进入对话字幕全屏
                 handleRoleplayState(state)
             }.onFailure { statusMessage.value = it.message ?: "开始失败" }
             isWorking.value = false
@@ -356,10 +392,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setGuidanceMode(mode: String) {
-        val normalized = if (mode == "final") "final" else "realtime"
-        guidanceMode.value = normalized
-        auth.guidanceMode = normalized
+    fun setGuidancePreference(value: String) {
+        val v = if (value in listOf("realtime", "final", "ask")) value else "ask"
+        guidancePreference.value = v
+        auth.guidancePreference = v
+    }
+
+    fun setConversationPreference(value: String) {
+        val v = if (value in listOf("immersive", "manual", "ask")) value else "ask"
+        conversationPreference.value = v
+        auth.conversationPreference = v
     }
 
     fun setShowSubtitles(value: Boolean) {
@@ -467,11 +509,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun listenForNextTurn() {
         if (!isVoiceActive.value) return
+        // 手工触发式：不自动开麦，等用户长按说话
+        if (conversationMode.value != "immersive") return
         if (!continuousVoice.value) return
         if (roleplay?.completed != false || roleplay?.nextLine == null) return
         practice.start()
         scheduleAnswerTimeout()
     }
+
+    // ---- 手工触发式：长按说话、滑动取消/发送 ----
+
+    fun beginManualUtterance() {
+        if (!isVoiceActive.value) return
+        cancelAnswerTimeout()
+        voice.stop()
+        practice.start(autoSubmit = false)
+    }
+
+    fun sendManualUtterance() = practice.stopAndEmit()
+
+    fun cancelManualUtterance() = practice.cancel()
 
     private fun startCaptureScheduleLoop() {
         if (captureScheduleJob != null) return

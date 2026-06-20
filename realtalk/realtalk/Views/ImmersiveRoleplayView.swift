@@ -6,6 +6,11 @@ struct ImmersiveRoleplayView: View {
     @EnvironmentObject private var voice: VoicePromptPlayer
     @Environment(\.dismiss) private var dismiss
 
+    // 手工触发式：长按说话的手势状态
+    @State private var manualPressing = false
+    @State private var manualDragX: CGFloat = 0
+    private let manualCancelThreshold: CGFloat = -70
+
     private enum Palette {
         // 深蓝调暗色背景（呼应品牌渐变的蓝端，同时保证字幕可读）
         static let top = Color(red: 0.07, green: 0.11, blue: 0.22)
@@ -58,13 +63,12 @@ struct ImmersiveRoleplayView: View {
                 .buttonStyle(.plain)
             }
 
-            Picker("指导方式", selection: $model.guidanceMode) {
-                ForEach(AppModel.GuidanceMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
+            // 对话中不可切换：只读展示当前方式（在设置里改）
+            HStack(spacing: 8) {
+                modeChip(model.conversationMode == .manual ? "手工触发式" : "沉浸式")
+                modeChip(model.guidanceMode == .final ? "结束后指导" : "实时指导")
+                Spacer()
             }
-            .pickerStyle(.segmented)
-            .onChange(of: model.guidanceMode) { _, _ in model.savePracticePreferences() }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -123,34 +127,11 @@ struct ImmersiveRoleplayView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            Button {
-                if voice.isSpeaking {
-                    model.interruptAIAndContinue()
-                } else if model.roleplay?.completed != true && model.isWorking == false {
-                    Task { await model.toggleVoiceConversation() }
-                }
-            } label: {
-                TimelineView(.animation) { timeline in
-                    ZStack {
-                        Circle()
-                            .fill(circleColor)
-                            .frame(width: 86, height: 86)
-                            .scaleEffect(circleScale(at: timeline.date))
-                            .shadow(color: circleColor.opacity(0.35), radius: 24, y: 8)
-                        if model.isWorking {
-                            ProgressView()
-                                .tint(.white)
-                                .scaleEffect(1.2)
-                        } else {
-                            Image(systemName: circleIcon)
-                                .font(.system(size: 30, weight: .semibold))
-                                .foregroundStyle(model.roleplay?.completed == true ? .black.opacity(0.35) : .white)
-                        }
-                    }
-                }
+            if model.conversationMode == .manual && isUserTurnNow {
+                manualTalkControl
+            } else {
+                circleButton
             }
-            .buttonStyle(.plain)
-            .disabled(model.roleplay?.completed == true)
 
             Text(controlText)
                 .font(.system(size: 13 * model.fontScale, weight: .medium))
@@ -191,6 +172,112 @@ struct ImmersiveRoleplayView: View {
         .animation(.easeOut(duration: 0.22), value: promptText)
     }
 
+    private func modeChip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11 * model.fontScale, weight: .medium))
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.white.opacity(0.12), in: Capsule())
+    }
+
+    private var isUserTurnNow: Bool {
+        model.roleplay?.completed == false
+            && !model.isWorking
+            && !voice.isSpeaking
+            && model.roleplay?.nextLine != nil
+            && model.isVoiceConversationActive
+    }
+
+    // 沉浸式：点击/自动聆听的圆形按钮
+    private var circleButton: some View {
+        Button {
+            if voice.isSpeaking {
+                model.interruptAIAndContinue()
+            } else if model.roleplay?.completed != true && model.isWorking == false {
+                Task { await model.toggleVoiceConversation() }
+            }
+        } label: {
+            TimelineView(.animation) { timeline in
+                ZStack {
+                    Circle()
+                        .fill(circleColor)
+                        .frame(width: 86, height: 86)
+                        .scaleEffect(circleScale(at: timeline.date))
+                        .shadow(color: circleColor.opacity(0.35), radius: 24, y: 8)
+                    if model.isWorking {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(1.2)
+                    } else {
+                        Image(systemName: circleIcon)
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(model.roleplay?.completed == true ? .black.opacity(0.35) : .white)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.roleplay?.completed == true)
+    }
+
+    // 手工触发式：长按说话，左滑取消、右滑（或居中松手）发送
+    private var manualTalkControl: some View {
+        let willCancel = manualPressing && manualDragX < manualCancelThreshold
+        return VStack(spacing: 14) {
+            if manualPressing {
+                Text(practiceSpeech.partialText.isEmpty ? "请说英文…" : practiceSpeech.partialText)
+                    .font(.system(size: 16 * model.fontScale))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 20)
+                HStack {
+                    Label("取消", systemImage: "xmark")
+                        .foregroundStyle(willCancel ? .red : .white.opacity(0.55))
+                        .scaleEffect(willCancel ? 1.15 : 1)
+                    Spacer()
+                    Label("发送", systemImage: "paperplane.fill")
+                        .foregroundStyle(willCancel ? .white.opacity(0.55) : Palette.listen)
+                        .scaleEffect(willCancel ? 1 : 1.15)
+                }
+                .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                .padding(.horizontal, 40)
+            }
+            ZStack {
+                Circle()
+                    .fill(willCancel ? Color.red : (manualPressing ? Palette.listen : Palette.thinking))
+                    .frame(width: 92, height: 92)
+                    .scaleEffect(manualPressing ? 1.08 : 1)
+                    .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
+                Image(systemName: manualPressing ? (willCancel ? "xmark" : "waveform") : "mic.fill")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !manualPressing {
+                            manualPressing = true
+                            Task { await model.beginManualUtterance() }
+                        }
+                        manualDragX = value.translation.width
+                    }
+                    .onEnded { _ in
+                        let cancel = manualDragX < manualCancelThreshold
+                        manualPressing = false
+                        manualDragX = 0
+                        if cancel {
+                            model.cancelManualUtterance()
+                        } else {
+                            model.sendManualUtterance()
+                        }
+                    }
+            )
+            .animation(.easeOut(duration: 0.15), value: manualPressing)
+        }
+    }
+
     private var promptText: String? {
         guard model.roleplay?.completed == false else { return nil }
         guard model.isWorking == false, voice.isSpeaking == false else { return nil }
@@ -203,8 +290,11 @@ struct ImmersiveRoleplayView: View {
         if model.roleplay?.completed == true { return "本轮已完成" }
         if model.isWorking { return "等待后台处理" }
         if voice.isSpeaking { return "AI 正在说话，点击可停止" }
-        if practiceSpeech.isListening { return "正在听你说英语" }
+        if practiceSpeech.isListening {
+            return model.conversationMode == .manual ? "松开发送 · 向左滑取消" : "正在听你说英语"
+        }
         if model.isVoiceConversationActive == false { return "已暂停" }
+        if model.conversationMode == .manual && isUserTurnNow { return "请长按并说话" }
         return "准备进入下一句"
     }
 

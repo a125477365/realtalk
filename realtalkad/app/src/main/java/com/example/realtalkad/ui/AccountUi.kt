@@ -292,7 +292,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val showSubtitles by model.showSubtitles.collectAsState()
     val autoSpeak by model.autoSpeakAI.collectAsState()
     val continuousVoice by model.continuousVoice.collectAsState()
-    val guidanceMode by model.guidanceMode.collectAsState()
+    val guidancePref by model.guidancePreference.collectAsState()
+    val conversationPref by model.conversationPreference.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
     val autoStart by model.autoCaptureStart.collectAsState()
@@ -344,17 +345,36 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
         }
         item {
-            Text("默认指导方式", fontWeight = FontWeight.SemiBold)
+            Text("对话方式", fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("realtime" to "实时指导", "final" to "结束后指导").forEach { (key, label) ->
+                listOf("immersive" to "沉浸式", "manual" to "手工触发", "ask" to "每次询问").forEach { (key, label) ->
                     OutlinedButton(
-                        onClick = { model.setGuidanceMode(key) },
+                        onClick = { model.setConversationPreference(key) },
                         modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (guidanceMode == key) RT.Accent else RT.Hairline),
-                    ) { Text(label, color = if (guidanceMode == key) RT.Accent else RT.TextSecondary) }
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (conversationPref == key) RT.Accent else RT.Hairline),
+                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (conversationPref == key) RT.Accent else RT.TextSecondary) }
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            Text("AI 指导方式", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("realtime" to "实时指导", "final" to "结束后", "ask" to "每次询问").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { model.setGuidancePreference(key) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (guidancePref == key) RT.Accent else RT.Hairline),
+                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (guidancePref == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "对话中不可切换；「每次询问」会在开练前弹出选择。手工触发式：长按说话、向左滑取消、向右滑发送。",
+                fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
+            )
         }
         item {
             Text("字体大小 ${"%.0f".format(fontScale * 100)}%", fontWeight = FontWeight.SemiBold)

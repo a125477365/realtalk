@@ -23,15 +23,21 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -68,6 +74,8 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val isWorking by model.isWorking.collectAsState()
     val showSubtitles by model.showSubtitles.collectAsState()
     val guidanceMode by model.guidanceMode.collectAsState()
+    val conversationMode by model.conversationMode.collectAsState()
+    val partial by model.partialSubtitle.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val level by model.practiceAudioLevel.collectAsState()
     val aiLevel by model.aiAudioLevel.collectAsState()
@@ -130,19 +138,10 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                     ) { Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp) }
                 }
                 Spacer(Modifier.height(10.dp))
+                // 对话中不可切换：只读展示当前方式（在设置里改）
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("realtime" to "实时指导", "final" to "结束后指导").forEach { (key, label) ->
-                        OutlinedButton(
-                            onClick = { model.setGuidanceMode(key) },
-                            modifier = Modifier.weight(1f),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                if (guidanceMode == key) RTImm.Thinking else Color.White.copy(alpha = 0.18f),
-                            ),
-                        ) {
-                            Text(label, color = if (guidanceMode == key) Color.White else Color.White.copy(alpha = 0.62f))
-                        }
-                    }
+                    ModeChip(if (conversationMode == "manual") "手工触发式" else "沉浸式", fontScale)
+                    ModeChip(if (guidanceMode == "final") "结束后指导" else "实时指导", fontScale)
                 }
             }
 
@@ -157,26 +156,32 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                 }
             }
 
-            PromptCircle(
-                promptText = promptText,
-                completed = state?.completed == true,
-                isWorking = isWorking,
-                isSpeaking = isSpeaking,
-                isListening = isListening,
-                isVoiceActive = isVoiceActive,
-                guidanceMode = guidanceMode,
-                level = level,
-                aiLevel = aiLevel,
-                fontScale = fontScale,
-                onClick = {
-                    when {
-                        isSpeaking -> model.interruptAiAndContinue()
-                        state?.completed != true && !isWorking -> model.toggleVoiceConversation()
-                    }
-                },
-                onReplay = { model.replayScenario() },
-                onEvaluate = { model.requestFinalEvaluation() },
-            )
+            val isUserTurnNow = state?.completed == false && !isWorking && !isSpeaking &&
+                state?.nextLine != null && isVoiceActive
+            if (conversationMode == "manual" && isUserTurnNow) {
+                ManualTalkControl(model, promptText, partial, fontScale)
+            } else {
+                PromptCircle(
+                    promptText = promptText,
+                    completed = state?.completed == true,
+                    isWorking = isWorking,
+                    isSpeaking = isSpeaking,
+                    isListening = isListening,
+                    isVoiceActive = isVoiceActive,
+                    guidanceMode = guidanceMode,
+                    level = level,
+                    aiLevel = aiLevel,
+                    fontScale = fontScale,
+                    onClick = {
+                        when {
+                            isSpeaking -> model.interruptAiAndContinue()
+                            state?.completed != true && !isWorking -> model.toggleVoiceConversation()
+                        }
+                    },
+                    onReplay = { model.replayScenario() },
+                    onEvaluate = { model.requestFinalEvaluation() },
+                )
+            }
         }
     }
 }
@@ -306,5 +311,100 @@ private fun PromptCircle(
                 Text("查看评分与建议", color = Color.White.copy(alpha = 0.85f), fontSize = (14f * fontScale).sp)
             }
         }
+    }
+}
+
+@Composable
+private fun ModeChip(text: String, fontScale: Float) {
+    Text(
+        text,
+        color = Color.White.copy(alpha = 0.8f),
+        fontSize = (11f * fontScale).sp,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier
+            .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    )
+}
+
+/** 手工触发式：长按说话；向左滑到取消区松手=取消，否则=发送。 */
+@Composable
+private fun ManualTalkControl(
+    model: AppViewModel,
+    promptText: String?,
+    partial: String,
+    fontScale: Float,
+) {
+    var pressing by remember { mutableStateOf(false) }
+    var dragX by remember { mutableStateOf(0f) }
+    val cancelThreshold = -160f
+    val willCancel = pressing && dragX < cancelThreshold
+
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 28.dp, top = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (!promptText.isNullOrBlank()) {
+            Text(
+                promptText,
+                color = Color.White,
+                fontSize = (17f * fontScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 22.dp),
+            )
+        }
+        if (pressing) {
+            Text(
+                partial.ifBlank { "请说英文…" },
+                color = Color.White.copy(alpha = 0.92f),
+                fontSize = (15f * fontScale).sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+            Row(Modifier.fillMaxWidth().padding(horizontal = 48.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("取消", color = if (willCancel) RTImm.Speak else Color.White.copy(alpha = 0.55f), fontWeight = FontWeight.SemiBold, fontSize = (14f * fontScale).sp)
+                Text("发送", color = if (willCancel) Color.White.copy(alpha = 0.55f) else RTImm.Listen, fontWeight = FontWeight.SemiBold, fontSize = (14f * fontScale).sp)
+            }
+        }
+        Box(
+            Modifier.size(92.dp)
+                .scale(if (pressing) 1.08f else 1f)
+                .background(if (willCancel) RTImm.Speak else if (pressing) RTImm.Listen else RTImm.Thinking, CircleShape)
+                .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        pressing = true
+                        dragX = 0f
+                        model.beginManualUtterance()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            dragX = change.position.x - down.position.x
+                            if (!change.pressed) break
+                        }
+                        val cancel = dragX < cancelThreshold
+                        pressing = false
+                        dragX = 0f
+                        if (cancel) model.cancelManualUtterance() else model.sendManualUtterance()
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                painter = painterResource(if (pressing && willCancel) R.drawable.ic_stop else R.drawable.ic_mic),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(32.dp),
+            )
+        }
+        Text(
+            if (pressing) "松开发送 · 向左滑取消" else "请长按并说话",
+            color = Color.White.copy(alpha = 0.62f),
+            fontSize = (13f * fontScale).sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
