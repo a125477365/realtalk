@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -57,6 +58,33 @@ final class AppModel: ObservableObject {
         let roleId: String
     }
 
+    /// 外观主题：跟随系统 / 浅色 / 深色。
+    enum AppAppearance: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .system: return "跟随系统"
+            case .light: return "浅色"
+            case .dark: return "深色"
+            }
+        }
+        var colorScheme: ColorScheme? {
+            switch self {
+            case .system: return nil
+            case .light: return .light
+            case .dark: return .dark
+            }
+        }
+    }
+
+    /// 自动采集时段（支持多个）。
+    struct CaptureWindow: Identifiable, Codable, Equatable {
+        var id = UUID()
+        var start: Date
+        var end: Date
+    }
+
     let transcripts: TranscriptStore
     let speech: SpeechCaptureManager
     let api: APIClient
@@ -84,6 +112,7 @@ final class AppModel: ObservableObject {
     @Published var billingAccount: BillingAccountResponse?
     @Published var rechargeOrder: RechargeOrderResponse?
     @Published var planCatalog: [PlanItem] = []
+    @Published var myTickets: [SupportTicket] = []
     @Published var audioJobs: [AudioJob] = []
     @Published var isUploadingAudio = false
     @Published var todayScenarios: [ScenarioSummary] = []
@@ -102,8 +131,9 @@ final class AppModel: ObservableObject {
     @Published var voiceLLMPreference = false
     @Published var showVoiceLLM = false                              // 控制实时语音沉浸式界面呈现
     @Published var autoCaptureEnabled = false
-    @Published var autoCaptureStart = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
-    @Published var autoCaptureEnd = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
+    /// 自动采集时段列表（支持多个）。
+    @Published var captureWindows: [CaptureWindow] = []
+    @Published var appearance: AppAppearance = .system
     @Published var fontScale: Double = 1.0
     @Published var lastSpokenAnswer = ""
     @Published var trainingAnswer = ""
@@ -123,6 +153,8 @@ final class AppModel: ObservableObject {
         static let autoCaptureEnabled = "realtalk.autoCaptureEnabled"
         static let autoCaptureStart = "realtalk.autoCaptureStart"
         static let autoCaptureEnd = "realtalk.autoCaptureEnd"
+        static let captureWindows = "realtalk.captureWindows"
+        static let appearance = "realtalk.appearance"
         static let fontScale = "realtalk.fontScale"
         static let guidancePreference = "realtalk.guidancePreference"
         static let conversationPreference = "realtalk.conversationPreference"
@@ -139,8 +171,11 @@ final class AppModel: ObservableObject {
         voice = VoicePromptPlayer()
         realtime = RealtimeVoiceManager()
         autoCaptureEnabled = defaults.bool(forKey: DefaultsKey.autoCaptureEnabled)
-        autoCaptureStart = defaults.object(forKey: DefaultsKey.autoCaptureStart) as? Date ?? autoCaptureStart
-        autoCaptureEnd = defaults.object(forKey: DefaultsKey.autoCaptureEnd) as? Date ?? autoCaptureEnd
+        captureWindows = Self.loadCaptureWindows(defaults)
+        if let raw = defaults.string(forKey: DefaultsKey.appearance),
+           let value = AppAppearance(rawValue: raw) {
+            appearance = value
+        }
         let savedFontScale = defaults.double(forKey: DefaultsKey.fontScale)
         if savedFontScale > 0 {
             fontScale = min(max(savedFontScale, 0.85), 1.35)
@@ -371,9 +406,38 @@ final class AppModel: ObservableObject {
 
     func saveCaptureSchedule() {
         defaults.set(autoCaptureEnabled, forKey: DefaultsKey.autoCaptureEnabled)
-        defaults.set(autoCaptureStart, forKey: DefaultsKey.autoCaptureStart)
-        defaults.set(autoCaptureEnd, forKey: DefaultsKey.autoCaptureEnd)
+        if let data = try? JSONEncoder().encode(captureWindows) {
+            defaults.set(data, forKey: DefaultsKey.captureWindows)
+        }
         Task { await evaluateAutomaticCaptureWindow() }
+    }
+
+    /// 新增一个采集时段（默认 9:00–18:00）。
+    func addCaptureWindow() {
+        let cal = Calendar.current
+        let start = cal.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+        let end = cal.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
+        captureWindows.append(CaptureWindow(start: start, end: end))
+        saveCaptureSchedule()
+    }
+
+    func removeCaptureWindow(_ id: UUID) {
+        captureWindows.removeAll { $0.id == id }
+        saveCaptureSchedule()
+    }
+
+    private static func loadCaptureWindows(_ defaults: UserDefaults) -> [CaptureWindow] {
+        if let data = defaults.data(forKey: DefaultsKey.captureWindows),
+           let windows = try? JSONDecoder().decode([CaptureWindow].self, from: data) {
+            return windows
+        }
+        // 旧版单时段迁移
+        let cal = Calendar.current
+        let start = defaults.object(forKey: DefaultsKey.autoCaptureStart) as? Date
+            ?? cal.date(bySettingHour: 9, minute: 0, second: 0, of: Date()) ?? Date()
+        let end = defaults.object(forKey: DefaultsKey.autoCaptureEnd) as? Date
+            ?? cal.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
+        return [CaptureWindow(start: start, end: end)]
     }
 
     func savePracticePreferences() {
@@ -381,6 +445,7 @@ final class AppModel: ObservableObject {
         defaults.set(guidancePreference.rawValue, forKey: DefaultsKey.guidancePreference)
         defaults.set(conversationPreference.rawValue, forKey: DefaultsKey.conversationPreference)
         defaults.set(voiceLLMPreference, forKey: DefaultsKey.voiceLLMPreference)
+        defaults.set(appearance.rawValue, forKey: DefaultsKey.appearance)
     }
 
     /// 是否高级会员：实时语音大模型对练是高级会员专属能力。
@@ -804,6 +869,36 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 当前用户可选的套餐（按档位）：非会员=全部；基础=延长基础+升级高级；高级=延长高级。
+    var availablePlans: [PlanItem] {
+        switch auth.user?.effectiveTier {
+        case "premium": return planCatalog.filter { $0.tier == "premium" }
+        case "basic": return planCatalog  // 基础可续基础、也可升级高级
+        default: return planCatalog       // 非会员可选全部
+        }
+    }
+
+    func loadMyTickets() async {
+        guard let token = auth.token else { return }
+        do { myTickets = try await api.mySupportTickets(token: token).items }
+        catch { if statusMessage.isEmpty { statusMessage = error.localizedDescription } }
+    }
+
+    /// 提交客服工单（如基础升高级后申请原基础会员退款）。
+    @discardableResult
+    func submitSupportTicket(category: String, subject: String, body: String) async -> Bool {
+        guard let token = auth.token else { statusMessage = "请先登录"; return false }
+        do {
+            _ = try await api.createSupportTicket(category: category, subject: subject, body: body, token: token)
+            await loadMyTickets()
+            statusMessage = "工单已提交，我们会尽快处理"
+            return true
+        } catch {
+            statusMessage = error.localizedDescription
+            return false
+        }
+    }
+
     /// 开通会员：生成套餐支付订单（微信/支付宝），支付成功后激活会员
     func subscribe(planId: String, method: String) async {
         guard let token = auth.token else {
@@ -1169,16 +1264,14 @@ final class AppModel: ObservableObject {
     private func isNowInsideAutomaticCaptureWindow(now: Date = Date()) -> Bool {
         let calendar = Calendar.current
         let current = minutesSinceStartOfDay(now, calendar: calendar)
-        let start = minutesSinceStartOfDay(autoCaptureStart, calendar: calendar)
-        let end = minutesSinceStartOfDay(autoCaptureEnd, calendar: calendar)
-
-        if start == end {
-            return false
+        // 任一时段命中即视为在采集窗口内（支持多个时段）
+        return captureWindows.contains { window in
+            let start = minutesSinceStartOfDay(window.start, calendar: calendar)
+            let end = minutesSinceStartOfDay(window.end, calendar: calendar)
+            if start == end { return false }
+            if start < end { return current >= start && current < end }
+            return current >= start || current < end  // 跨天时段
         }
-        if start < end {
-            return current >= start && current < end
-        }
-        return current >= start || current < end
     }
 
     private func minutesSinceStartOfDay(_ date: Date, calendar: Calendar) -> Int {

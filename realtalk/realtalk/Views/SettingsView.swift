@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var auth: AuthStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -18,19 +17,25 @@ struct SettingsView: View {
                 } header: {
                     Text("对话方式").font(.system(size: 13 * model.fontScale))
                 } footer: {
-                    Text("对话方式与指导方式只能在这里设置、对话中不可切换。选「每次开始对话前询问」会在开练前弹出选择（可勾选以后不再询问）。手工触发式：长按说话、向左滑取消、向右滑发送。")
+                    Text("对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。")
                         .font(.system(size: 12 * model.fontScale))
                 }
 
-                // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话（需求第 4 项）
+                // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话
                 if model.isPremium {
                     Section {
                         Toggle("使用语音大模型进行交流", isOn: $model.voiceLLMPreference)
                     } header: {
                         Text("实时语音大模型（高级会员）").font(.system(size: 13 * model.fontScale))
                     } footer: {
-                        Text("开启后，在「沉浸式对话」中将与实时语音大模型直接语音对话，模型严格按本场景台词练口语、不涉及无关或敏感话题，结束后给出评分与建议。手工触发式不支持；关闭则使用默认的文本式对练。")
+                        Text("开启后在「沉浸式对话」中与语音大模型直接对话，结束给出评分。手工触发式不支持。")
                             .font(.system(size: 12 * model.fontScale))
+                    }
+                }
+
+                Section("外观") {
+                    Picker("外观主题", selection: $model.appearance) {
+                        ForEach(AppModel.AppAppearance.allCases) { Text($0.title).tag($0) }
                     }
                 }
 
@@ -53,33 +58,38 @@ struct SettingsView: View {
                 Section {
                     Toggle("按时间窗自动采集", isOn: $model.autoCaptureEnabled)
                     if model.autoCaptureEnabled {
-                        DatePicker("开始时间", selection: $model.autoCaptureStart, displayedComponents: .hourAndMinute)
-                        DatePicker("结束时间", selection: $model.autoCaptureEnd, displayedComponents: .hourAndMinute)
+                        ForEach($model.captureWindows) { $window in
+                            HStack {
+                                DatePicker("", selection: $window.start, displayedComponents: .hourAndMinute)
+                                    .labelsHidden()
+                                Text("至").foregroundStyle(.secondary)
+                                DatePicker("", selection: $window.end, displayedComponents: .hourAndMinute)
+                                    .labelsHidden()
+                                Spacer()
+                                Button(role: .destructive) {
+                                    model.removeCaptureWindow(window.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                        Button {
+                            model.addCaptureWindow()
+                        } label: {
+                            Label("添加时段", systemImage: "plus.circle.fill")
+                        }
                     }
                 } header: {
                     Text("真实对话采集")
                         .font(.system(size: 13 * model.fontScale))
                 } footer: {
-                    Text("开启后，App 在前台运行时会在设定时间窗内自动采集并转写周围对话，采集期间状态栏会有明显提示。请在征得在场人员同意后使用。")
+                    Text("可添加多个时段，App 前台运行时会在任一时段内自动采集并转写。请在征得在场人员同意后使用。")
                         .font(.system(size: 12 * model.fontScale))
-                }
-
-                Section("账号") {
-                    LabeledContent("登录方式", value: auth.user?.displayName ?? "微信用户")
-                    LabeledContent("用户 ID", value: String((auth.user?.id ?? "—").prefix(8)) + "…")
-                    LabeledContent("套餐", value: auth.user?.tierName ?? "免费用户")
-                    NavigationLink("会员与充值") {
-                        BillingSettingsView()
-                    }
-                    Button("退出登录", role: .destructive) {
-                        auth.logout()
-                        dismiss()
-                    }
                 }
 
                 Section("关于") {
                     LabeledContent("版本", value: appVersion)
-                    LabeledContent("服务地址", value: AppConfig.apiBaseURL.absoluteString)
                 }
             }
             .navigationTitle("设置")
@@ -89,8 +99,8 @@ struct SettingsView: View {
                 }
             }
             .onChange(of: model.autoCaptureEnabled) { _, _ in model.saveCaptureSchedule() }
-            .onChange(of: model.autoCaptureStart) { _, _ in model.saveCaptureSchedule() }
-            .onChange(of: model.autoCaptureEnd) { _, _ in model.saveCaptureSchedule() }
+            .onChange(of: model.captureWindows) { _, _ in model.saveCaptureSchedule() }
+            .onChange(of: model.appearance) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.guidancePreference) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.conversationPreference) { _, _ in model.savePracticePreferences() }
@@ -103,63 +113,4 @@ struct SettingsView: View {
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         return "\(version) (\(build))"
     }
-}
-
-private struct BillingSettingsView: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var method = "wechat"
-
-    var body: some View {
-        Form {
-            Section("套餐") {
-                Picker("支付方式", selection: $method) {
-                    Text("微信支付").tag("wechat")
-                    Text("支付宝").tag("alipay")
-                }
-                .pickerStyle(.segmented)
-
-                ForEach(model.planCatalog) { plan in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(plan.title).font(.system(size: 17 * model.fontScale, weight: .semibold))
-                                Text(plan.months > 1 ? "每月 \(settingsMoney(plan.perMonthCents)) · 共 \(settingsMoney(plan.priceCents))" : "每月 \(settingsMoney(plan.perMonthCents))")
-                                    .font(.system(size: 12 * model.fontScale))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("开通") {
-                                Task { await model.subscribe(planId: plan.id, method: method) }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(plan.tier == "premium" ? .orange : RTTheme.accent)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-
-            if let order = model.rechargeOrder {
-                Section("待支付") {
-                    Text(order.message)
-                    if let account = order.receiverAccount, account.isEmpty == false {
-                        LabeledContent("收款账号", value: account)
-                    }
-                    LabeledContent("订单号", value: order.orderId)
-                    Button("我已完成支付") {
-                        Task { await model.confirmRecharge() }
-                    }
-                }
-            }
-        }
-        .navigationTitle("会员与充值")
-        .task {
-            if model.planCatalog.isEmpty { await model.loadPlanCatalog() }
-            await model.loadBillingAccount()
-        }
-    }
-}
-
-private func settingsMoney(_ cents: Int) -> String {
-    String(format: "¥%.2f", Double(cents) / 100)
 }

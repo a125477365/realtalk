@@ -69,6 +69,13 @@ struct ImmersiveRoleplayView: View {
                 modeChip(model.guidanceMode == .final ? "结束后指导" : "实时指导")
                 Spacer()
             }
+
+            // 字幕显示可在对话界面中切换（与「今天/全部」同款选项栏）
+            BrandSegmentedPicker(
+                selection: $model.showDialogueContent,
+                options: [(true, "双语字幕"), (false, "仅英文")],
+                fontScale: model.fontScale
+            )
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)

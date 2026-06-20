@@ -15,6 +15,7 @@ struct realtalkApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(model.appearance.colorScheme)
                 .environmentObject(model)
                 .environmentObject(model.transcripts)
                 .environmentObject(model.speech)

@@ -39,24 +39,22 @@ struct TokenUsageInfo: Codable, Equatable {
     let remainingTokens: Int
     let overLimit: Bool
     // 月度费用额度（会员月费的 50%）。overLimit 现以「当月费用是否超额」为准。
-    let monthCostCents: Double
-    let monthBudgetCents: Double
-    let monthRemainingCents: Double
     let overBudget: Bool
+    // 客户端只展示百分比（不展示金额，避免「月费一半」的疑惑）；非会员=当日 token，会员=本周期费用
+    let usagePercent: Double
+    let isMember: Bool
 
     enum CodingKeys: String, CodingKey {
         case todayTokens = "today_tokens"
         case dailyLimit = "daily_limit"
         case remainingTokens = "remaining_tokens"
         case overLimit = "over_limit"
-        case monthCostCents = "month_cost_cents"
-        case monthBudgetCents = "month_budget_cents"
-        case monthRemainingCents = "month_remaining_cents"
         case overBudget = "over_budget"
+        case usagePercent = "usage_percent"
+        case isMember = "is_member"
     }
 
-    var monthCostYuan: Double { monthCostCents / 100 }
-    var monthBudgetYuan: Double { monthBudgetCents / 100 }
+    var usagePercentInt: Int { Int(usagePercent.rounded()) }
 }
 
 struct PlanItem: Identifiable, Codable, Equatable {
@@ -488,4 +486,42 @@ struct RechargeConfirmRequest: Codable {
     enum CodingKeys: String, CodingKey {
         case orderId = "order_id"
     }
+}
+
+struct SupportTicketCreateRequest: Codable {
+    let category: String
+    let subject: String
+    let body: String
+}
+
+struct SupportTicket: Identifiable, Codable, Equatable {
+    let id: String
+    let category: String
+    let subject: String
+    let body: String
+    let status: String
+    let adminReply: String?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, category, subject, body, status
+        case adminReply = "admin_reply"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    var statusText: String {
+        switch status {
+        case "open": return "待处理"
+        case "processing": return "处理中"
+        case "resolved": return "已解决"
+        case "closed": return "已关闭"
+        default: return status
+        }
+    }
+}
+
+struct SupportTicketListResponse: Codable, Equatable {
+    let items: [SupportTicket]
 }

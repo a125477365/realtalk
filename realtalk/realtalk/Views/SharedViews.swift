@@ -76,6 +76,35 @@ struct VoicePulseGlyph: View {
     }
 }
 
+/// 品牌渐变底色的分段选择器（替代灰底的原生 segmented control）：
+/// 整条背景为「开始采集」同款渐变，选中项为白色胶囊。
+struct BrandSegmentedPicker<T: Hashable>: View {
+    @Binding var selection: T
+    let options: [(value: T, label: String)]
+    var fontScale: Double = 1.0
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(options.indices, id: \.self) { index in
+                let option = options[index]
+                let isSelected = selection == option.value
+                Text(option.label)
+                    .font(.system(size: 14 * fontScale, weight: .semibold))
+                    .foregroundStyle(isSelected ? RTTheme.accent : .white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(isSelected ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.clear), in: Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.18)) { selection = option.value }
+                    }
+            }
+        }
+        .padding(4)
+        .background(RTTheme.brandGradient, in: Capsule())
+    }
+}
+
 struct TimeFilterPicker: View {
     @EnvironmentObject private var model: AppModel
 

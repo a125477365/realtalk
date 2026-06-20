@@ -1,17 +1,29 @@
 import SwiftUI
+import UIKit
 
-/// Claude 风格的对话主界面：奶白底色、助手消息纯文本、用户消息浅色气泡、
-/// 系统提示居中胶囊；字幕随对话自动向上滚动。
+/// Claude 风格的对话主界面：内容区背景跟随外观主题（浅色/深色/系统），
+/// 助手消息纯文本、用户消息浅色气泡、系统提示居中胶囊；字幕随对话自动向上滚动。
 enum RTTheme {
-    // 统一品牌：「梦幻」渐变（与登录页 DreamyBackdrop 同色系）作为 Hero/强调，内容区保持干净浅色
-    static let background = Color(red: 0.969, green: 0.973, blue: 0.984)   // 冷调浅灰白
-    static let surface = Color.white
-    static let userBubble = Color(red: 0.918, green: 0.953, blue: 0.996)   // 浅天蓝
+    /// 随系统深浅自动切换的动态颜色。
+    static func dynamic(light: Color, dark: Color) -> Color {
+        Color(uiColor: UIColor { trait in
+            trait.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
+        })
+    }
+
+    // 统一品牌：「梦幻」渐变作为 Hero/强调；内容区背景跟随系统深浅
+    static let background = dynamic(light: Color(red: 0.969, green: 0.973, blue: 0.984),
+                                    dark: Color(red: 0.07, green: 0.08, blue: 0.10))
+    static let surface = dynamic(light: .white, dark: Color(red: 0.13, green: 0.14, blue: 0.17))
+    static let userBubble = dynamic(light: Color(red: 0.918, green: 0.953, blue: 0.996),
+                                    dark: Color(red: 0.16, green: 0.22, blue: 0.33))
     static let accent = Color(red: 0.16, green: 0.56, blue: 0.96)          // 天蓝 #2997F5（取自渐变起点）
     static let success = Color(red: 0.086, green: 0.639, blue: 0.290)      // 进步绿 #16A34A
-    static let textPrimary = Color(red: 0.086, green: 0.094, blue: 0.114)  // 近墨 #16181D
-    static let textSecondary = Color(red: 0.357, green: 0.380, blue: 0.431)// #5B616E
-    static let hairline = Color.black.opacity(0.07)
+    static let textPrimary = dynamic(light: Color(red: 0.086, green: 0.094, blue: 0.114),
+                                     dark: Color(red: 0.93, green: 0.94, blue: 0.96))
+    static let textSecondary = dynamic(light: Color(red: 0.357, green: 0.380, blue: 0.431),
+                                       dark: Color(red: 0.62, green: 0.65, blue: 0.71))
+    static let hairline = dynamic(light: Color.black.opacity(0.07), dark: Color.white.opacity(0.12))
 
     // 蓝→青→粉→橙 梦幻渐变
     static let brandColors = [
@@ -147,13 +159,11 @@ struct MainChatView: View {
     }
 
     private var scenarioScopePicker: some View {
-        Picker("场景日期", selection: $scenarioScope) {
-            Text("今天").tag("today")
-                .font(.system(size: 15 * model.fontScale))
-            Text("全部").tag("all")
-                .font(.system(size: 15 * model.fontScale))
-        }
-        .pickerStyle(.segmented)
+        BrandSegmentedPicker(
+            selection: $scenarioScope,
+            options: [("today", "今天"), ("all", "全部")],
+            fontScale: model.fontScale
+        )
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .onChange(of: scenarioScope) { _, scope in
