@@ -59,6 +59,10 @@ struct MainChatView: View {
             .fullScreenCover(isPresented: $showImmersive) {
                 ImmersiveRoleplayView()
             }
+            // 高级会员沉浸式 + 实时语音大模型对练
+            .fullScreenCover(isPresented: $model.showVoiceLLM) {
+                ImmersiveVoiceLLMView()
+            }
             .sheet(isPresented: Binding(
                 get: { model.pendingPractice != nil },
                 set: { if $0 == false { model.cancelPendingPractice() } }

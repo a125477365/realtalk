@@ -121,6 +121,7 @@ fun MainChatScreen(model: AppViewModel) {
     val isWorking by model.isWorking.collectAsState()
     val user by model.user.collectAsState()
     val showImmersive by model.showImmersive.collectAsState()
+    val showVoiceLLM by model.showVoiceLLM.collectAsState()
     val status by model.statusMessage.collectAsState()
     val fontScale by model.fontScale.collectAsState()
 
@@ -315,6 +316,8 @@ fun MainChatScreen(model: AppViewModel) {
 
     // 沉浸式对练字幕：开练后全屏覆盖在主界面之上
     if (showImmersive) ImmersiveRoleplayScreen(model)
+    // 高级会员沉浸式 + 实时语音大模型对练
+    if (showVoiceLLM) ImmersiveVoiceLLMScreen(model)
 }
 
 /** 对话前询问：指导/对话方式设为「每次询问」时，开练前选择本次方式（可勾选以后不再询问）。 */

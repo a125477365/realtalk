@@ -96,6 +96,10 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
             },
         }))
 
+        # 任一端结束（客户端发 realtalk.end、断线、或上游关闭）即停止转发；
+        # 客户端主动结束时不关闭客户端连接，便于随后回传评分。
+        stop = asyncio.Event()
+
         async def client_to_upstream() -> None:
             try:
                 async for message in client_ws.iter_text():
@@ -103,6 +107,9 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
                         data = json.loads(message)
                     except ValueError:
                         continue
+                    # 客户端主动结束：停止本次对练（不转发给上游）
+                    if data.get("type") == "realtalk.end":
+                        break
                     # 禁止客户端覆盖系统指令 / 注入工具，护栏只能由服务端控制
                     if data.get("type") == "session.update":
                         sess = data.get("session") or {}
@@ -112,6 +119,8 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
                     await upstream.send(json.dumps(data))
             except Exception:  # noqa: BLE001 — 任一端断开即结束
                 pass
+            finally:
+                stop.set()
 
         async def upstream_to_client() -> None:
             try:
@@ -131,8 +140,15 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
                     await client_ws.send_text(raw)
             except Exception:  # noqa: BLE001
                 pass
+            finally:
+                stop.set()
 
-        await asyncio.gather(client_to_upstream(), upstream_to_client())
+        tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
+        await stop.wait()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     return transcript
 
 

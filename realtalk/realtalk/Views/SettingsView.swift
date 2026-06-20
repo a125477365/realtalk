@@ -22,6 +22,18 @@ struct SettingsView: View {
                         .font(.system(size: 12 * model.fontScale))
                 }
 
+                // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话（需求第 4 项）
+                if model.isPremium {
+                    Section {
+                        Toggle("使用语音大模型进行交流", isOn: $model.voiceLLMPreference)
+                    } header: {
+                        Text("实时语音大模型（高级会员）").font(.system(size: 13 * model.fontScale))
+                    } footer: {
+                        Text("开启后，在「沉浸式对话」中将与实时语音大模型直接语音对话，模型严格按本场景台词练口语、不涉及无关或敏感话题，结束后给出评分与建议。手工触发式不支持；关闭则使用默认的文本式对练。")
+                            .font(.system(size: 12 * model.fontScale))
+                    }
+                }
+
                 Section("对话与字幕") {
                     Toggle("显示双语字幕", isOn: $model.showDialogueContent)
                     Toggle("自动朗读 AI 台词", isOn: $model.autoSpeakAI)
@@ -82,6 +94,7 @@ struct SettingsView: View {
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.guidancePreference) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.conversationPreference) { _, _ in model.savePracticePreferences() }
+            .onChange(of: model.voiceLLMPreference) { _, _ in model.savePracticePreferences() }
         }
     }
 

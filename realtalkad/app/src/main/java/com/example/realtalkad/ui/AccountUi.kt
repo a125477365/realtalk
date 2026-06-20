@@ -294,6 +294,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val continuousVoice by model.continuousVoice.collectAsState()
     val guidancePref by model.guidancePreference.collectAsState()
     val conversationPref by model.conversationPreference.collectAsState()
+    val voiceLLMPref by model.voiceLLMPreference.collectAsState()
+    val user by model.user.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
     val autoStart by model.autoCaptureStart.collectAsState()
@@ -375,6 +377,21 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                 "对话中不可切换；「每次询问」会在开练前弹出选择。手工触发式：长按说话、向左滑取消、向右滑发送。",
                 fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
             )
+        }
+        // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话（需求第 4 项）
+        if (user?.planTier == "premium") {
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("使用语音大模型进行交流", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "高级会员专属。开启后「沉浸式对话」将与实时语音大模型直接语音对话，按本场景台词练口语、不涉及无关或敏感话题，结束后给出评分与建议。手工触发式不支持。",
+                            fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
+                        )
+                    }
+                    Switch(checked = voiceLLMPref, onCheckedChange = { model.setVoiceLLMPreference(it) })
+                }
+            }
         }
         item {
             Text("字体大小 ${"%.0f".format(fontScale * 100)}%", fontWeight = FontWeight.SemiBold)

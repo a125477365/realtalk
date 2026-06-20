@@ -17,6 +17,7 @@ import com.example.realtalkad.data.ScenarioSummary
 import com.example.realtalkad.data.TranscriptFileStore
 import com.example.realtalkad.data.TranscriptItem
 import com.example.realtalkad.speech.PracticeSpeech
+import com.example.realtalkad.speech.RealtimeVoiceClient
 import com.example.realtalkad.speech.SpeechCapture
 import com.example.realtalkad.speech.VoicePlayer
 import kotlinx.coroutines.Job
@@ -39,6 +40,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val capture = SpeechCapture(application)
     val practice = PracticeSpeech(application)
     val voice = VoicePlayer(application)
+    val realtime = RealtimeVoiceClient(application)
     private val transcriptStore = TranscriptFileStore(application)
 
     val user = MutableStateFlow<AppUser?>(null)
@@ -63,6 +65,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
     val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/immersive/manual
     val pendingPractice = MutableStateFlow<Pair<ScenarioSummary, String>?>(null) // 非空时弹「对话前询问」
+    val voiceLLMPreference = MutableStateFlow(auth.voiceLLMPreference)   // 高级会员：沉浸式用实时语音大模型
+    val showVoiceLLM = MutableStateFlow(false)                          // 控制实时语音沉浸式界面呈现
     val fontScale = MutableStateFlow(auth.fontScale)
     val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
     val continuousVoice = MutableStateFlow(auth.continuousVoice)
@@ -178,6 +182,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.clear()
         isVoiceActive.value = false
         showImmersive.value = false
+        showVoiceLLM.value = false
+        runCatching { realtime.cancel() }
         runCatching { practice.stop() }
         runCatching { voice.stop() }
         if (capture.isRecording) runCatching { capture.stop() }
@@ -315,13 +321,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 scenario = api.scenarioDetail(summary.sceneId, token)
                 selectedRole = roleId
                 appendChat(ChatMessage.Sender.USER, "练习：${summary.title}（扮演${roleName(roleId)}）")
-                val state = api.startRoleplay(summary.sceneId, roleId, token)
-                isVoiceActive.value = true
-                showImmersive.value = true   // 进入对话字幕全屏
-                handleRoleplayState(state)
+                if (shouldUseVoiceLLM()) {
+                    // 高级会员沉浸式 + 实时语音大模型：用 /roleplay/start 建会话拿 session_id，再用 WS 直接语音对话
+                    practice.stop(); voice.stop()
+                    val state = api.startRoleplay(summary.sceneId, roleId, token)
+                    statusMessage.value = "实时语音对练已开始"
+                    showVoiceLLM.value = true
+                    realtime.start(auth.baseUrl, token, state.sessionId, scenario?.title ?: summary.title)
+                } else {
+                    val state = api.startRoleplay(summary.sceneId, roleId, token)
+                    isVoiceActive.value = true
+                    showImmersive.value = true   // 进入对话字幕全屏
+                    handleRoleplayState(state)
+                }
             }.onFailure { statusMessage.value = it.message ?: "开始失败" }
             isWorking.value = false
         }
+    }
+
+    /** 本次是否走实时语音大模型：仅高级会员 + 沉浸式 + 已开启偏好（手工触发式不支持）。 */
+    private fun shouldUseVoiceLLM(): Boolean =
+        user.value?.planTier == "premium" && conversationMode.value == "immersive" && voiceLLMPreference.value
+
+    fun setVoiceLLMPreference(value: Boolean) {
+        voiceLLMPreference.value = value
+        auth.voiceLLMPreference = value
+    }
+
+    /** 结束实时语音对练并请求评分（保留界面展示评分）。 */
+    fun endVoiceLLMPractice() = realtime.end()
+
+    /** 关闭实时语音沉浸式界面（评分已展示或用户放弃）。 */
+    fun dismissVoiceLLM() {
+        realtime.cancel()
+        showVoiceLLM.value = false
     }
 
     fun toggleVoiceConversation() {
