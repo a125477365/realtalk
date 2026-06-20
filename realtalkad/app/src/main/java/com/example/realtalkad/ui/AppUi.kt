@@ -57,19 +57,60 @@ import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.data.ScenarioSummary
 
 /* 统一主题色（与 iOS RTTheme 对应）：「梦幻」渐变作 Hero/强调，内容区干净浅色 */
+/// 外观主题（浅/深）当前是否深色，由 MainActivity 按用户选择提供；内容区颜色据此切换。
+val LocalRtDark = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 object RT {
-    val Background = Color(0xFFF7F8FB)
-    val Surface = Color.White
-    val UserBubble = Color(0xFFEAF4FF)
     val Accent = Color(0xFF2997F5)            // 天蓝（取自渐变起点）
     val Success = Color(0xFF16A34A)
-    val TextPrimary = Color(0xFF16181D)
-    val TextSecondary = Color(0xFF5B616E)
-    val Hairline = Color(0x12000000)
+    // 内容区颜色跟随外观主题（浅色/深色/系统）
+    val Background: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0xFF12131A) else Color(0xFFF7F8FB)
+    val Surface: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0xFF1E2029) else Color.White
+    val UserBubble: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0xFF243247) else Color(0xFFEAF4FF)
+    val TextPrimary: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0xFFEDEEF2) else Color(0xFF16181D)
+    val TextSecondary: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0xFF9AA0AC) else Color(0xFF5B616E)
+    val Hairline: Color @androidx.compose.runtime.Composable get() = if (LocalRtDark.current) Color(0x1FFFFFFF) else Color(0x12000000)
 
     // 蓝→青→粉→橙 梦幻渐变
     val Brand = listOf(Color(0xFF2997F5), Color(0xFF1AC7B3), Color(0xFFF58FB8), Color(0xFFFFC76B))
     val BrandBrush: Brush = Brush.linearGradient(Brand)
+}
+
+/// 品牌渐变底色的分段选择器（替代灰底）：整条为「开始采集」同款渐变，选中项白色胶囊。
+@androidx.compose.runtime.Composable
+fun BrandSegmented(
+    options: List<Pair<String, String>>,
+    selected: String,
+    fontScale: Float = 1f,
+    onSelect: (String) -> Unit,
+) {
+    androidx.compose.foundation.layout.Row(
+        Modifier.fillMaxWidth()
+            .background(RT.BrandBrush, androidx.compose.foundation.shape.RoundedCornerShape(99.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { (key, label) ->
+            val isSel = key == selected
+            Box(
+                Modifier.weight(1f)
+                    .background(
+                        if (isSel) Color.White else Color.Transparent,
+                        androidx.compose.foundation.shape.RoundedCornerShape(99.dp),
+                    )
+                    .clickable { onSelect(key) }
+                    .padding(vertical = 9.dp),
+                contentAlignment = androidx.compose.ui.Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    color = if (isSel) RT.Accent else Color.White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = (14 * fontScale).sp,
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -184,24 +225,14 @@ fun MainChatScreen(model: AppViewModel) {
         }
         Spacer(Modifier.height(12.dp))
 
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf("today" to "今天", "all" to "全部").forEach { (key, label) ->
-                OutlinedButton(
-                    onClick = {
-                        scenarioScope = key
-                        if (key == "today") model.loadTodayScenarios() else model.loadScenarioList()
-                    },
-                    modifier = Modifier.weight(1f),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        if (scenarioScope == key) RT.Accent else RT.Hairline,
-                    ),
-                ) {
-                    Text(label, color = if (scenarioScope == key) RT.Accent else RT.TextSecondary)
-                }
+        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            BrandSegmented(
+                options = listOf("today" to "今天", "all" to "全部"),
+                selected = scenarioScope,
+                fontScale = fontScale,
+            ) { key ->
+                scenarioScope = key
+                if (key == "today") model.loadTodayScenarios() else model.loadScenarioList()
             }
         }
         Spacer(Modifier.height(12.dp))

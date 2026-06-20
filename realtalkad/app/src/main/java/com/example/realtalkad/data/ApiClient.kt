@@ -149,6 +149,12 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     // ---- 账单 / 会员 ----
     suspend fun billingAccount(token: String): BillingAccount = get("/billing/account", token)
     suspend fun planCatalog(): PlanCatalog = get("/billing/plans")
+
+    // ---- 客服工单 ----
+    suspend fun createSupportTicket(category: String, subject: String, body: String, token: String): SupportTicket =
+        post("/support/tickets", SupportTicketCreateRequest(category, subject, body), token)
+
+    suspend fun mySupportTickets(token: String): SupportTicketListResponse = get("/support/tickets", token)
     suspend fun subscribe(planId: String, token: String): BillingAccount =
         post("/billing/subscribe", SubscribeRequest(planId), token)
 

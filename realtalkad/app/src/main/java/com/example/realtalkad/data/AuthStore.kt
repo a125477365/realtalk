@@ -62,6 +62,17 @@ class AuthStore(context: Context) {
         get() = prefs.getString("auto_capture_end", "18:00") ?: "18:00"
         set(value) = prefs.edit().putString("auto_capture_end", value).apply()
 
+    // 多个自动采集时段，存为 "HH:mm-HH:mm;HH:mm-HH:mm"。空则迁移自旧单时段。
+    var captureWindows: String
+        get() = prefs.getString("capture_windows", "$autoCaptureStart-$autoCaptureEnd")
+            ?: "$autoCaptureStart-$autoCaptureEnd"
+        set(value) = prefs.edit().putString("capture_windows", value).apply()
+
+    // 外观主题：system / light / dark
+    var appearance: String
+        get() = prefs.getString("appearance", "system") ?: "system"
+        set(value) = prefs.edit().putString("appearance", value).apply()
+
     /** 开发模式微信登录：同一设备稳定复用一个 code，对应同一个账号 */
     val devWeChatCode: String
         get() {

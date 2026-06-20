@@ -11,6 +11,8 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.Box
 import com.example.realtalkad.ui.RealTalkApp
@@ -33,10 +35,20 @@ class MainActivity : ComponentActivity() {
             ),
         )
         setContent {
-            RealtalkadTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Box(Modifier.padding(innerPadding)) {
-                        RealTalkApp(model)
+            val appearance by model.appearance.collectAsState()
+            val dark = when (appearance) {
+                "light" -> false
+                "dark" -> true
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            androidx.compose.runtime.CompositionLocalProvider(
+                com.example.realtalkad.ui.LocalRtDark provides dark
+            ) {
+                RealtalkadTheme(darkTheme = dark, dynamicColor = false) {
+                    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                        Box(Modifier.padding(innerPadding)) {
+                            RealTalkApp(model)
+                        }
                     }
                 }
             }

@@ -143,6 +143,13 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                     ModeChip(if (conversationMode == "manual") "手工触发式" else "沉浸式", fontScale)
                     ModeChip(if (guidanceMode == "final") "结束后指导" else "实时指导", fontScale)
                 }
+                Spacer(Modifier.height(10.dp))
+                // 字幕显示可在对话界面切换（双语 / 仅英文）
+                BrandSegmented(
+                    options = listOf("bilingual" to "双语字幕", "en" to "仅英文"),
+                    selected = if (showSubtitles) "bilingual" else "en",
+                    fontScale = fontScale,
+                ) { model.setShowSubtitles(it == "bilingual") }
             }
 
             LazyColumn(

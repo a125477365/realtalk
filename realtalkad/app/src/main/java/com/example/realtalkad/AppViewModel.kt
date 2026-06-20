@@ -71,8 +71,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
     val continuousVoice = MutableStateFlow(auth.continuousVoice)
     val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
-    val autoCaptureStart = MutableStateFlow(auth.autoCaptureStart)
-    val autoCaptureEnd = MutableStateFlow(auth.autoCaptureEnd)
+    // 多个自动采集时段（"HH:mm" 起止对）
+    val captureWindows = MutableStateFlow(parseCaptureWindows(auth.captureWindows))
+    val appearance = MutableStateFlow(auth.appearance)   // system/light/dark
+    val myTickets = MutableStateFlow<List<com.example.realtalkad.data.SupportTicket>>(emptyList())
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
 
@@ -468,14 +470,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAutoCaptureStart(value: String) {
-        autoCaptureStart.value = value
-        auth.autoCaptureStart = value
+    private fun persistCaptureWindows() {
+        captureWindows.value = captureWindows.value.toList()  // 触发新列表实例，刷新 UI
+        auth.captureWindows = captureWindows.value.joinToString(";") { it.first + "-" + it.second }
     }
 
-    fun setAutoCaptureEnd(value: String) {
-        autoCaptureEnd.value = value
-        auth.autoCaptureEnd = value
+    fun addCaptureWindow() {
+        captureWindows.value = captureWindows.value + ("09:00" to "18:00")
+        persistCaptureWindows()
+    }
+
+    fun removeCaptureWindow(index: Int) {
+        captureWindows.value = captureWindows.value.filterIndexed { i, _ -> i != index }
+        persistCaptureWindows()
+    }
+
+    fun setCaptureWindow(index: Int, start: String, end: String) {
+        captureWindows.value = captureWindows.value.mapIndexed { i, w -> if (i == index) (start to end) else w }
+        persistCaptureWindows()
+    }
+
+    fun setAppearance(value: String) {
+        val v = if (value in listOf("system", "light", "dark")) value else "system"
+        appearance.value = v
+        auth.appearance = v
     }
 
     private suspend fun submitUtterance(text: String) {
@@ -589,13 +607,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isNowInsideAutomaticCaptureWindow(now: LocalTime = LocalTime.now()): Boolean {
-        val start = parseCaptureTime(autoCaptureStart.value) ?: return false
-        val end = parseCaptureTime(autoCaptureEnd.value) ?: return false
-        if (start == end) return false
-        return if (start.isBefore(end)) {
-            !now.isBefore(start) && now.isBefore(end)
-        } else {
-            !now.isBefore(start) || now.isBefore(end)
+        // 任一时段命中即视为在采集窗口内（支持多个时段）
+        return captureWindows.value.any { (s, e) ->
+            val start = parseCaptureTime(s) ?: return@any false
+            val end = parseCaptureTime(e) ?: return@any false
+            if (start == end) return@any false
+            if (start.isBefore(end)) !now.isBefore(start) && now.isBefore(end)
+            else !now.isBefore(start) || now.isBefore(end)
         }
     }
 
@@ -605,6 +623,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val hour = parts[0].toIntOrNull() ?: return null
         val minute = parts[1].toIntOrNull() ?: return null
         return runCatching { LocalTime.of(hour, minute) }.getOrNull()
+    }
+
+    // ---- 套餐 / 工单 ----
+
+    /** 按档位可选套餐：非会员=全部；基础=续费基础+升级高级；高级=续费高级。 */
+    fun availablePlans(): List<PlanItem> = when (user.value?.planTier) {
+        "premium" -> plans.value.filter { it.tier == "premium" }
+        else -> plans.value
+    }
+
+    fun loadMyTickets() {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.mySupportTickets(token) }.onSuccess { myTickets.value = it.items }
+        }
+    }
+
+    fun submitSupportTicket(category: String, subject: String, body: String) {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.createSupportTicket(category, subject, body, token) }
+                .onSuccess { statusMessage.value = "工单已提交，我们会尽快处理"; loadMyTickets() }
+                .onFailure { statusMessage.value = it.message ?: "提交失败" }
+        }
     }
 
     /** 要求 12：超时未答 → AI 主动给指导再继续 */
@@ -751,4 +793,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (trimmed.isEmpty() || statusMessage.value == trimmed) return
         statusMessage.value = trimmed
     }
+}
+
+/** 解析多时段字符串 "HH:mm-HH:mm;HH:mm-HH:mm"；空则回退单个默认时段。 */
+private fun parseCaptureWindows(raw: String): List<Pair<String, String>> {
+    val list = raw.split(";").mapNotNull { seg ->
+        val p = seg.trim().split("-")
+        if (p.size == 2 && p[0].isNotBlank() && p[1].isNotBlank()) p[0].trim() to p[1].trim() else null
+    }
+    return list.ifEmpty { listOf("09:00" to "18:00") }
 }

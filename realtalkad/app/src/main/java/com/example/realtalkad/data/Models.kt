@@ -223,12 +223,38 @@ data class TokenUsageInfo(
     @SerialName("daily_limit") val dailyLimit: Int,
     @SerialName("remaining_tokens") val remainingTokens: Int,
     @SerialName("over_limit") val overLimit: Boolean,
-    // 月度费用额度（会员月费的 50%）。overLimit 现以「当月费用是否超额」为准。
-    @SerialName("month_cost_cents") val monthCostCents: Double = 0.0,
-    @SerialName("month_budget_cents") val monthBudgetCents: Double = 0.0,
-    @SerialName("month_remaining_cents") val monthRemainingCents: Double = 0.0,
     @SerialName("over_budget") val overBudget: Boolean = false,
+    // 客户端只展示百分比（不暴露金额）；非会员=当日 token，会员=本周期费用
+    @SerialName("usage_percent") val usagePercent: Double = 0.0,
+    @SerialName("is_member") val isMember: Boolean = false,
 )
+
+@Serializable
+data class SupportTicketCreateRequest(val category: String, val subject: String, val body: String)
+
+@Serializable
+data class SupportTicket(
+    val id: String,
+    val category: String,
+    val subject: String,
+    val body: String,
+    val status: String,
+    @SerialName("admin_reply") val adminReply: String? = null,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("updated_at") val updatedAt: String,
+) {
+    val statusText: String
+        get() = when (status) {
+            "open" -> "待处理"
+            "processing" -> "处理中"
+            "resolved" -> "已解决"
+            "closed" -> "已关闭"
+            else -> status
+        }
+}
+
+@Serializable
+data class SupportTicketListResponse(val items: List<SupportTicket> = emptyList())
 
 @Serializable
 data class LedgerItem(

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -24,6 +25,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -46,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.ble.RecorderBleClient
+import com.example.realtalkad.data.PlanItem
 import java.io.File
 
 /* 账户面板：会员卡 / 套餐 / 充值 / 上传录音 / 账单 / 退出 */
@@ -60,6 +63,8 @@ fun AccountSheet(model: AppViewModel) {
     val fontScale by model.fontScale.collectAsState()
     var showUpload by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showMembership by remember { mutableStateOf(false) }
+    var showTickets by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { model.refreshBilling(); model.loadPlans() }
 
@@ -69,6 +74,14 @@ fun AccountSheet(model: AppViewModel) {
     }
     if (showSettings) {
         SettingsSheetContent(model) { showSettings = false }
+        return
+    }
+    if (showMembership) {
+        MembershipSheetContent(model) { showMembership = false }
+        return
+    }
+    if (showTickets) {
+        TicketsSheetContent(model) { showTickets = false }
         return
     }
 
@@ -102,24 +115,19 @@ fun AccountSheet(model: AppViewModel) {
                             Text("有效期至 ${it.take(10)}", fontSize = (11 * fontScale).sp, color = Color.White.copy(alpha = 0.85f))
                         }
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(money(user?.balanceCents ?: 0), fontWeight = FontWeight.Bold, fontSize = (19 * fontScale).sp, color = Color.White)
-                        Text("余额", fontSize = (10 * fontScale).sp, color = Color.White.copy(alpha = 0.85f))
-                    }
                 }
+                // 账户不显示余额；用量以百分比展示（不暴露金额，避免「月费一半」的疑惑）
                 billing?.usage?.let { usage ->
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "本月 AI 费用额度 ¥%.2f / ¥%.2f".format(usage.monthCostCents / 100, usage.monthBudgetCents / 100) +
-                            if (usage.overBudget) "（已用完，下月恢复）" else "",
+                        (if (usage.isMember) "本月额度用量 " else "今日免费用量 ") + "${usage.usagePercent.toInt()}%" +
+                            if (usage.overBudget) (if (usage.isMember) "（已用完，下月恢复）" else "（已用完，升级解锁更多）") else "",
                         fontSize = (11 * fontScale).sp,
                         color = Color.White.copy(alpha = if (usage.overBudget) 1f else 0.85f),
                     )
                     Spacer(Modifier.height(5.dp))
                     LinearProgressIndicator(
-                        progress = {
-                            (usage.monthCostCents.toFloat() / maxOf(1.0, usage.monthBudgetCents).toFloat()).coerceAtMost(1f)
-                        },
+                        progress = { (usage.usagePercent.toFloat() / 100f).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth(),
                         color = Color.White,
                         trackColor = Color.White.copy(alpha = 0.3f),
@@ -128,13 +136,36 @@ fun AccountSheet(model: AppViewModel) {
             }
         }
 
+        // 升级 / 续费会员入口
+        item {
+            SettingsEntry(
+                title = when (user?.planTier) {
+                    "premium" -> "续费高级会员"
+                    "basic" -> "续费 / 升级会员"
+                    else -> "升级会员"
+                },
+                subtitle = if (user?.planTier == "premium") "延长高级会员有效期" else "解锁更多每日用量与高级功能",
+                modifier = Modifier.fillMaxWidth(),
+                fontScale = fontScale,
+            ) { showMembership = true }
+        }
+
         item {
             SettingsEntry(
                 title = "设置",
-                subtitle = "字体、字幕、自动录音、会员与充值",
+                subtitle = "外观、字体、字幕、自动采集时段",
                 modifier = Modifier.fillMaxWidth(),
                 fontScale = fontScale,
             ) { showSettings = true }
+        }
+
+        item {
+            SettingsEntry(
+                title = "客服工单",
+                subtitle = "反馈问题、申请退款等",
+                modifier = Modifier.fillMaxWidth(),
+                fontScale = fontScale,
+            ) { showTickets = true }
         }
 
         // 上传录音入口
@@ -197,17 +228,23 @@ private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = 
     }
 }
 
+/** 会员：先选套餐，再弹出微信/支付宝付款方式确认。按档位展示可选套餐。 */
 @Composable
-private fun BillingSheetContent(
-    model: AppViewModel,
-    method: String,
-    onMethodChange: (String) -> Unit,
-    onBack: () -> Unit,
-) {
-    val plans by model.plans.collectAsState()
+private fun MembershipSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val order by model.rechargeOrder.collectAsState()
     val status by model.statusMessage.collectAsState()
     val fontScale by model.fontScale.collectAsState()
+    val user by model.user.collectAsState()
+    var selectedPlan by remember { mutableStateOf<PlanItem?>(null) }
+
+    fun actionLabel(plan: PlanItem): String {
+        val tier = user?.planTier ?: "free"
+        return when {
+            plan.tier == tier -> "续费"
+            plan.tier == "premium" && tier == "basic" -> "升级"
+            else -> "开通"
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -217,23 +254,10 @@ private fun BillingSheetContent(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onBack) { Text("‹ 返回") }
-                Text("会员与充值", fontWeight = FontWeight.SemiBold)
+                Text("会员", fontWeight = FontWeight.SemiBold)
             }
         }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("wechat" to "微信支付", "alipay" to "支付宝").forEach { (key, label) ->
-                    OutlinedButton(
-                        onClick = { onMethodChange(key) },
-                        modifier = Modifier.weight(1f),
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp, if (method == key) RT.Accent else RT.Hairline,
-                        ),
-                    ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
-                }
-            }
-        }
-        items(plans, key = { it.id }) { plan ->
+        items(model.availablePlans(), key = { it.id }) { plan ->
             Row(
                 Modifier.fillMaxWidth()
                     .background(RT.Surface, RoundedCornerShape(14.dp))
@@ -242,21 +266,30 @@ private fun BillingSheetContent(
                         if (plan.tier == "premium") Color(0xFFF59E0B).copy(alpha = 0.5f) else RT.Hairline,
                         RoundedCornerShape(14.dp),
                     )
+                    .clickable { selectedPlan = plan }
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(plan.title, fontWeight = FontWeight.SemiBold, color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(plan.title, fontWeight = FontWeight.SemiBold, color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent)
+                        Text(
+                            actionLabel(plan),
+                            fontSize = (10 * fontScale).sp, fontWeight = FontWeight.Bold,
+                            color = if (plan.tier == "premium") Color(0xFFB45309) else RT.Accent,
+                            modifier = Modifier.background(
+                                (if (plan.tier == "premium") Color(0xFFF59E0B) else RT.Accent).copy(alpha = 0.15f),
+                                RoundedCornerShape(99.dp),
+                            ).padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
                     Text(
-                        if (plan.months > 1) "每月 ${money(plan.perMonthCents)} · 共 ${money(plan.priceCents)}" else "每月 ${money(plan.perMonthCents)}",
-                        fontSize = (11 * fontScale).sp,
-                        color = RT.TextSecondary,
+                        if (plan.months > 1) "每月 ${money(plan.perMonthCents)}" else "按月",
+                        fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
                     )
                 }
-                Button(
-                    onClick = { model.subscribe(plan.id, method) },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (plan.tier == "premium") Color(0xFFF59E0B) else RT.Accent),
-                ) { Text("开通") }
+                Text(money(plan.priceCents), fontWeight = FontWeight.SemiBold)
+                Text(" ›", color = RT.TextSecondary)
             }
         }
         order?.let { o ->
@@ -285,6 +318,99 @@ private fun BillingSheetContent(
             if (status.isNotBlank()) Text(status, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
         }
     }
+
+    // 选中套餐后弹出付款方式
+    selectedPlan?.let { plan ->
+        var method by remember(plan.id) { mutableStateOf("wechat") }
+        AlertDialog(
+            onDismissRequest = { selectedPlan = null },
+            title = { Text(plan.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(money(plan.priceCents), fontWeight = FontWeight.Bold, fontSize = (18 * fontScale).sp)
+                    Text("选择付款方式", fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("wechat" to "微信支付", "alipay" to "支付宝").forEach { (key, label) ->
+                            OutlinedButton(
+                                onClick = { method = key },
+                                modifier = Modifier.weight(1f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, if (method == key) RT.Accent else RT.Hairline),
+                            ) { Text(label, color = if (method == key) RT.Accent else RT.TextSecondary) }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { model.subscribe(plan.id, method); selectedPlan = null }) { Text("确认开通") }
+            },
+            dismissButton = { TextButton(onClick = { selectedPlan = null }) { Text("取消") } },
+        )
+    }
+}
+
+/** 客服工单：提交 + 查看我的工单与客服回复。 */
+@Composable
+private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
+    val tickets by model.myTickets.collectAsState()
+    val fontScale by model.fontScale.collectAsState()
+    var category by remember { mutableStateOf("feedback") }
+    var subject by remember { mutableStateOf("") }
+    var body by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) { model.loadMyTickets() }
+
+    LazyColumn(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("‹ 返回") }
+                Text("客服工单", fontWeight = FontWeight.SemiBold)
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("feedback" to "反馈", "refund" to "退款", "bug" to "问题", "other" to "其他").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { category = key },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (category == key) RT.Accent else RT.Hairline),
+                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (category == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+        }
+        item { OutlinedTextField(value = subject, onValueChange = { subject = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("详细描述") }, modifier = Modifier.fillMaxWidth().height(110.dp)) }
+        item {
+            Button(
+                onClick = { model.submitSupportTicket(category, subject.trim(), body.trim()); subject = ""; body = "" },
+                enabled = subject.isNotBlank() && body.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
+            ) { Text("提交工单") }
+        }
+        if (tickets.isNotEmpty()) {
+            item { Text("我的工单", fontWeight = FontWeight.SemiBold) }
+            items(tickets, key = { it.id }) { t ->
+                Column(
+                    Modifier.fillMaxWidth().background(RT.Surface, RoundedCornerShape(12.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp)).padding(12.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(t.subject, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Text(t.statusText, fontSize = (11 * fontScale).sp, color = if (t.status == "resolved") Color(0xFF16A34A) else Color(0xFFD97706))
+                    }
+                    Text(t.body, fontSize = (13 * fontScale).sp, color = RT.TextSecondary)
+                    if (!t.adminReply.isNullOrBlank()) {
+                        Text("客服回复：${t.adminReply}", fontSize = (13 * fontScale).sp, color = RT.Accent)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -298,15 +424,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val user by model.user.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
-    val autoStart by model.autoCaptureStart.collectAsState()
-    val autoEnd by model.autoCaptureEnd.collectAsState()
-
-    var method by remember { mutableStateOf("wechat") }
-    var showBilling by remember { mutableStateOf(false) }
-    if (showBilling) {
-        BillingSheetContent(model, method, { method = it }) { showBilling = false }
-        return
-    }
+    val windows by model.captureWindows.collectAsState()
+    val appearance by model.appearance.collectAsState()
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -374,9 +493,23 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "对话中不可切换；「每次询问」会在开练前弹出选择。手工触发式：长按说话、向左滑取消、向右滑发送。",
+                "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。",
                 fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
             )
+        }
+        item {
+            Text("外观主题", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key, label) ->
+                    OutlinedButton(
+                        onClick = { model.setAppearance(key) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (appearance == key) RT.Accent else RT.Hairline),
+                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (appearance == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
         }
         // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话（需求第 4 项）
         if (user?.planTier == "premium") {
@@ -407,20 +540,20 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
         }
         if (autoEnabled) {
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TimeField("开始", autoStart, Modifier.weight(1f), fontScale = fontScale) { model.setAutoCaptureStart(it) }
-                    TimeField("结束", autoEnd, Modifier.weight(1f), fontScale = fontScale) { model.setAutoCaptureEnd(it) }
+            itemsIndexed(windows) { index, window ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TimeField("开始", window.first, Modifier.weight(1f), fontScale = fontScale) {
+                        model.setCaptureWindow(index, it, window.second)
+                    }
+                    TimeField("结束", window.second, Modifier.weight(1f), fontScale = fontScale) {
+                        model.setCaptureWindow(index, window.first, it)
+                    }
+                    TextButton(onClick = { model.removeCaptureWindow(index) }) { Text("删除", color = Color.Red) }
                 }
             }
-        }
-        item {
-            SettingsEntry(
-                title = "会员与充值",
-                subtitle = "套餐、支付订单",
-                modifier = Modifier.fillMaxWidth(),
-                fontScale = fontScale,
-            ) { showBilling = true }
+            item {
+                TextButton(onClick = { model.addCaptureWindow() }) { Text("+ 添加时段") }
+            }
         }
     }
 }
