@@ -308,11 +308,15 @@ class TokenUsageInfo(BaseModel):
     daily_limit: int
     remaining_tokens: int
     over_limit: bool
-    # 月度费用额度（会员月费的 50%）。over_limit 现以「当月费用是否超额」为准。
+    over_budget: bool = False
+    # 客户端展示用「已用百分比」（会员=本周期费用/额度；非会员=当日 token/每日上限）。
+    # 金额额度属内部口径，客户端只展示百分比，不展示具体金额（避免「月费一半」的疑惑）。
+    usage_percent: float = 0.0
+    is_member: bool = False
+    # 兼容已发布旧客户端（保留字段，新客户端改用 usage_percent；金额不再在 UI 展示）
     month_cost_cents: float = 0.0
     month_budget_cents: float = 0.0
     month_remaining_cents: float = 0.0
-    over_budget: bool = False
 
 
 class BillingAccountResponse(BaseModel):
@@ -361,6 +365,10 @@ class QuotaSettingsRequest(BaseModel):
     daily_token_limit_premium: int | None = Field(default=None, ge=0, le=100000000)
     # 月度 token 费用额度 = 购买会员时档位标准月费 × 该比例（0~1，默认 0.5）
     budget_ratio: float | None = Field(default=None, ge=0, le=1)
+    # 非会员（免费）每日限额
+    nonmember_daily_chat_tokens: int | None = Field(default=None, ge=0, le=100000000)
+    nonmember_daily_capture_tokens: int | None = Field(default=None, ge=0, le=100000000)
+    nonmember_daily_capture_seconds: int | None = Field(default=None, ge=0, le=86400)
 
 
 class AsrSettingsRequest(BaseModel):

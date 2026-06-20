@@ -100,6 +100,7 @@ users = Table(
     Column("active_device_id", Text),  # 当前唯一允许登录的设备编号（单设备登录）
     Column("token_version", Integer, nullable=False, default=1),  # 递增即吊销该用户全部令牌
     Column("plan_monthly_price_cents", Integer),  # 购买会员时锁定的档位标准月费（分），用于月度额度计算
+    Column("plan_purchased_at", Text),  # 当前连续会员期的起始购买日，作为每月额度重置的锚点
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -379,6 +380,7 @@ class Database:
             self._ensure_column(conn, "users", "active_device_id", "TEXT")
             self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
+            self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
@@ -410,7 +412,6 @@ class Database:
     def create_user(self, login_identifier: str, salt: str, password_hash: str) -> UserOut:
         user_id = str(uuid.uuid4())
         created_at = _now()
-        trial_expires = created_at + timedelta(days=settings.trial_days)
         with self.engine.begin() as conn:
             conn.execute(
                 insert(users).values(
@@ -418,26 +419,26 @@ class Database:
                     login_identifier=login_identifier,
                     password_salt=salt,
                     password_hash=password_hash,
-                    plan="basic",
-                    plan_expires_at=_iso(trial_expires),
-                    plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, "basic"),
+                    plan="free",
+                    plan_expires_at=None,
+                    plan_monthly_price_cents=None,
                     balance_cents=0,
                     created_at=_iso(created_at),
                 )
             )
-            self._insert_trial_ledger(conn, user_id, created_at)
+            self._insert_welcome_ledger(conn, user_id, created_at)
         user = self.get_user(user_id)
         if user is None:
             raise ValueError("user not found")
         return user
 
-    def _insert_trial_ledger(self, conn, user_id: str, now: datetime) -> None:
+    def _insert_welcome_ledger(self, conn, user_id: str, now: datetime) -> None:
         conn.execute(
             insert(billing_ledger).values(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
-                type="trial",
-                title=f"新用户首月免费试用（基础会员 {settings.trial_days} 天）",
+                type="welcome",
+                title="注册成功（非会员，可升级会员解锁更多用量）",
                 amount_cents=0,
                 balance_after_cents=0,
                 created_at=_iso(now),
@@ -480,7 +481,6 @@ class Database:
 
         user_id = str(uuid.uuid4())
         identity = f"wechat:{openid}"
-        trial_expires = now + timedelta(days=settings.trial_days)
         with self.engine.begin() as conn:
             conn.execute(
                 insert(users).values(
@@ -488,9 +488,9 @@ class Database:
                     login_identifier=identity,
                     password_salt=salt,
                     password_hash=password_hash,
-                    plan="basic",
-                    plan_expires_at=_iso(trial_expires),
-                    plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, "basic"),
+                    plan="free",
+                    plan_expires_at=None,
+                    plan_monthly_price_cents=None,
                     balance_cents=0,
                     wechat_openid=openid,
                     display_name=display_name,
@@ -498,7 +498,7 @@ class Database:
                     created_at=_iso(now),
                 )
             )
-            self._insert_trial_ledger(conn, user_id, now)
+            self._insert_welcome_ledger(conn, user_id, now)
         user = self.get_user(user_id)
         if user is None:
             raise ValueError("user not found")
@@ -623,6 +623,8 @@ class Database:
             base = current_expiry if same_tier_active else now
             new_expiry = base + timedelta(days=30 * months)
             new_balance = balance - price
+            # 续费（同档有效期内）保留原购买日锚点；升级/降级/重新购买则以本次为新锚点
+            purchased_at = row.get("plan_purchased_at") if same_tier_active and row.get("plan_purchased_at") else _iso(now)
 
             conn.execute(
                 update(users)
@@ -632,6 +634,7 @@ class Database:
                     plan_expires_at=_iso(new_expiry),
                     balance_cents=new_balance,
                     plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, tier),
+                    plan_purchased_at=purchased_at,
                 )
             )
             conn.execute(
@@ -666,22 +669,62 @@ class Database:
             value = conn.execute(
                 select(func.coalesce(func.sum(ai_usage.c.total_tokens), 0)).where(
                     ai_usage.c.user_id == user_id,
+                    ai_usage.c.kind != "capture_input",  # 采集记账行不算模型用量
                     ai_usage.c.created_at >= today_start,
                 )
             ).scalar_one()
         return int(value or 0)
 
-    def cost_used_this_month(self, user_id: str) -> float:
-        """当月（自然月）已用的大模型费用（分），文字 + 语音合计。"""
-        month_start = _iso(_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+    def cost_used_this_cycle(self, user_id: str) -> float:
+        """本计费周期已用的大模型费用（分），文字 + 语音合计。
+
+        会员按「购买日」为每月锚点（如 6 号购买则每月 6 号重置）；无锚点（历史/非会员）回退自然月。
+        """
         with self.engine.connect() as conn:
+            anchor = conn.execute(
+                select(users.c.plan_purchased_at).where(users.c.id == user_id)
+            ).scalar_one_or_none()
+            cycle_start = _cycle_start(_parse_dt(anchor) if anchor else None)
             value = conn.execute(
                 select(func.coalesce(func.sum(ai_usage.c.cost_cents), 0.0)).where(
                     ai_usage.c.user_id == user_id,
-                    ai_usage.c.created_at >= month_start,
+                    ai_usage.c.created_at >= _iso(cycle_start),
                 )
             ).scalar_one()
         return float(value or 0.0)
+
+    # ---- 非会员（免费）每日限额 ----
+
+    def get_nonmember_daily_chat_tokens(self) -> int:
+        return self.get_app_setting_int("nonmember_daily_chat_tokens", settings.nonmember_daily_chat_tokens)
+
+    def get_nonmember_daily_capture_tokens(self) -> int:
+        return self.get_app_setting_int("nonmember_daily_capture_tokens", settings.nonmember_daily_capture_tokens)
+
+    def capture_tokens_used_today(self, user_id: str) -> int:
+        """非会员当日已采集的文字输入量（token≈字符），用于每日采集限额。"""
+        today_start = _iso(_now().replace(hour=0, minute=0, second=0, microsecond=0))
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(func.coalesce(func.sum(ai_usage.c.total_tokens), 0)).where(
+                    ai_usage.c.user_id == user_id,
+                    ai_usage.c.kind == "capture_input",
+                    ai_usage.c.created_at >= today_start,
+                )
+            ).scalar_one()
+        return int(value or 0)
+
+    def record_capture_input(self, user_id: str, tokens: int) -> None:
+        """记录采集文字输入量（计入每日采集限额，不计费）。"""
+        self.record_ai_usage(
+            user_id=user_id,
+            kind="capture_input",
+            model="capture",
+            prompt_tokens=int(tokens),
+            completion_tokens=0,
+            cost_cents=0.0,
+            latency_ms=0,
+        )
 
     def get_tier_monthly_price_cents(self, tier: str) -> int:
         """会员档位的「标准月价」（分）：取该档位月付套餐价。免费档为 0。"""
@@ -1093,12 +1136,15 @@ class Database:
         same_tier_active = row and row["plan"] == tier and current_expiry is not None and current_expiry > now
         base = current_expiry if same_tier_active else now
         new_expiry = base + timedelta(days=30 * months)
+        existing_anchor = row.get("plan_purchased_at") if row else None
+        purchased_at = existing_anchor if same_tier_active and existing_anchor else _iso(now)
         conn.execute(
             update(users).where(users.c.id == user_id)
             .values(
                 plan=tier,
                 plan_expires_at=_iso(new_expiry),
                 plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, tier),
+                plan_purchased_at=purchased_at,
             )
         )
         balance_after = int(conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one() or 0)
@@ -2539,6 +2585,20 @@ def _iso(value: datetime) -> str:
 
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value).astimezone(timezone.utc)
+
+
+def _cycle_start(anchor: datetime | None, now: datetime | None = None) -> datetime:
+    """计费周期起点：按锚点日（购买日）取最近一次「不晚于现在」的当月锚点；无锚点回退自然月 1 号。"""
+    now = now or _now()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if anchor is None:
+        return midnight.replace(day=1)
+    day = min(_utc(anchor).day, 28)  # 取 ≤28 避免月末缺日
+    candidate = midnight.replace(day=day)
+    if candidate > now:
+        prev_month_last = midnight.replace(day=1) - timedelta(days=1)
+        candidate = prev_month_last.replace(day=day, hour=0, minute=0, second=0, microsecond=0)
+    return candidate
 
 
 db = Database()

@@ -609,6 +609,11 @@ def admin_get_quota(admin: dict = Depends(current_admin)) -> dict:
         "daily_token_limit_basic": db.get_daily_token_limit("basic"),
         "daily_token_limit_premium": db.get_daily_token_limit("premium"),
         "budget_ratio": db.get_budget_ratio(),
+        "nonmember_daily_chat_tokens": db.get_nonmember_daily_chat_tokens(),
+        "nonmember_daily_capture_tokens": db.get_nonmember_daily_capture_tokens(),
+        "nonmember_daily_capture_seconds": db.get_app_setting_int(
+            "nonmember_daily_capture_seconds", settings.nonmember_daily_capture_seconds
+        ),
     }
 
 
@@ -625,6 +630,14 @@ def admin_set_quota(
             db.set_app_setting(key, str(value))
     if request.budget_ratio is not None:
         db.set_app_setting("budget_ratio", str(request.budget_ratio))
+    for key in (
+        "nonmember_daily_chat_tokens",
+        "nonmember_daily_capture_tokens",
+        "nonmember_daily_capture_seconds",
+    ):
+        value = getattr(request, key)
+        if value is not None:
+            db.set_app_setting(key, str(value))
     return admin_get_quota(admin)
 
 
@@ -1475,6 +1488,7 @@ async def capture_upload_complete(
     if not items:
         await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="本次采集没有可生成场景的对话")
+    enforce_capture_quota(user, items)  # 非会员每日采集上限
     scenarios = await _generate_and_save_capture_scenarios(user.id, items)
     await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
     return CaptureUploadCompleteResponse(
@@ -2082,12 +2096,17 @@ def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> No
     免费档（试用结束）→ 提示订阅；额度用尽→ 基础提示升级高级、高级暂时禁止（充值功能后续上线）。
     """
     if user.plan_tier == "free":
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="试用期已结束，请订阅基础或高级会员后继续使用 AI 功能",
-        )
+        # 非会员：每日固定 token 的文字模型用量（管理台可配置），用尽提示升级
+        limit = db.get_nonmember_daily_chat_tokens()
+        used_tokens = db.tokens_used_today(user.id)
+        if limit > 0 and used_tokens >= limit:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"非会员每日 AI 用量已用完（每天 {limit} tokens），升级会员可解锁更多用量，或明天再来。",
+            )
+        return
     budget = monthly_budget_cents(user)
-    used = db.cost_used_this_month(user.id)
+    used = db.cost_used_this_cycle(user.id)
     estimate = estimate_text_cost_cents() if estimated_cents is None else max(0.0, estimated_cents)
     if budget > 0 and used + estimate > budget:
         budget_yuan = budget / 100
@@ -2113,22 +2132,55 @@ def require_premium(user: UserOut) -> None:
         )
 
 
+def enforce_capture_quota(user: UserOut, items: list[TranscriptItem]) -> None:
+    """非会员每日采集文字输入上限（token≈字符，管理台可配置）；会员不限。通过则记账。"""
+    if user.plan_tier != "free":
+        return
+    char_count = sum(len((item.text or "").strip()) for item in items)
+    if char_count <= 0:
+        return
+    limit = db.get_nonmember_daily_capture_tokens()
+    used = db.capture_tokens_used_today(user.id)
+    if limit > 0 and used + char_count > limit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"非会员每日可采集的对话有限（每天约 {limit} 字），升级会员可解锁更多，或明天再来。",
+        )
+    db.record_capture_input(user.id, char_count)
+
+
 def token_usage_info(user: UserOut) -> TokenUsageInfo:
     used_tokens = db.tokens_used_today(user.id)
-    limit = db.get_daily_token_limit(user.plan_tier)
-    # 门禁已改为「当月费用额度」：over_limit 以是否超出月度费用额度为准
+    # 客户端只展示「已用百分比」，不暴露具体金额（避免用户对「月费一半」的疑惑，金额属内部口径）
+    if user.plan_tier == "free":
+        # 非会员：每日 token 用量百分比
+        limit = db.get_nonmember_daily_chat_tokens()
+        pct = round(used_tokens / limit * 100, 1) if limit > 0 else 0.0
+        over = limit > 0 and used_tokens >= limit
+        return TokenUsageInfo(
+            today_tokens=used_tokens,
+            daily_limit=limit,
+            remaining_tokens=max(0, limit - used_tokens),
+            over_limit=over,
+            over_budget=over,
+            usage_percent=min(100.0, pct),
+            is_member=False,
+        )
     budget = monthly_budget_cents(user)
-    month_cost = db.cost_used_this_month(user.id)
-    over_budget = budget > 0 and month_cost >= budget
+    cycle_cost = db.cost_used_this_cycle(user.id)
+    over_budget = budget > 0 and cycle_cost >= budget
+    pct = round(cycle_cost / budget * 100, 1) if budget > 0 else 0.0
     return TokenUsageInfo(
         today_tokens=used_tokens,
-        daily_limit=limit,
-        remaining_tokens=max(0, limit - used_tokens),
+        daily_limit=0,
+        remaining_tokens=0,
         over_limit=over_budget,
-        month_cost_cents=round(month_cost, 2),
-        month_budget_cents=round(budget, 2),
-        month_remaining_cents=round(max(0.0, budget - month_cost), 2),
         over_budget=over_budget,
+        usage_percent=min(100.0, pct),
+        is_member=True,
+        month_cost_cents=round(cycle_cost, 2),
+        month_budget_cents=round(budget, 2),
+        month_remaining_cents=round(max(0.0, budget - cycle_cost), 2),
     )
 
 

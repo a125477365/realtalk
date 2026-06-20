@@ -872,6 +872,15 @@ function renderPlanQuotaCards() {
     '  <button class="btn btn-primary" onclick="saveQuota()">保存额度比例</button>',
     "</div>",
     '<div class="card">',
+    "  <h2>非会员（免费）每日限额 <span class=\"subtitle\">新用户默认非会员，无月度额度；按每日 token 限制；0 表示不限制；实时生效</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>每日文字模型对话（token）</label><input type="number" id="q-nm-chat" min="0" /></div>',
+    '    <div class="form-group"><label>每日采集文字输入（token≈字）</label><input type="number" id="q-nm-cap-tok" min="0" /></div>',
+    '    <div class="form-group"><label>每日采集时长（秒）</label><input type="number" id="q-nm-cap-sec" min="0" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" onclick="saveQuota()">保存非会员限额</button>',
+    "</div>",
+    '<div class="card">',
     "  <h2>每日 Token 限额（旧·参考） <span class=\"subtitle\">已改为按月度费用额度门禁，此处仅作展示与兼容；0 表示不限制</span></h2>",
     '  <div class="form-grid">',
     '    <div class="form-group"><label>免费用户</label><input type="number" id="q-free" min="0" /></div>',
@@ -927,6 +936,9 @@ function loadPlanQuotaAsr() {
       if (getEl("q-basic")) getEl("q-basic").value = d.daily_token_limit_basic;
       if (getEl("q-premium")) getEl("q-premium").value = d.daily_token_limit_premium;
       if (getEl("q-budget-ratio")) getEl("q-budget-ratio").value = Math.round((d.budget_ratio != null ? d.budget_ratio : 0.5) * 100);
+      if (getEl("q-nm-chat")) getEl("q-nm-chat").value = d.nonmember_daily_chat_tokens;
+      if (getEl("q-nm-cap-tok")) getEl("q-nm-cap-tok").value = d.nonmember_daily_capture_tokens;
+      if (getEl("q-nm-cap-sec")) getEl("q-nm-cap-sec").value = d.nonmember_daily_capture_seconds;
     });
   });
   apiGet("/admin/api/settings/asr").then(function(r) {
@@ -982,6 +994,12 @@ function saveQuota() {
   };
   var pct = parseFloat((getEl("q-budget-ratio") || {}).value);
   if (!isNaN(pct)) body.budget_ratio = Math.max(0, Math.min(1, pct / 100));
+  var nmChat = parseInt((getEl("q-nm-chat") || {}).value);
+  if (!isNaN(nmChat)) body.nonmember_daily_chat_tokens = nmChat;
+  var nmCapTok = parseInt((getEl("q-nm-cap-tok") || {}).value);
+  if (!isNaN(nmCapTok)) body.nonmember_daily_capture_tokens = nmCapTok;
+  var nmCapSec = parseInt((getEl("q-nm-cap-sec") || {}).value);
+  if (!isNaN(nmCapSec)) body.nonmember_daily_capture_seconds = nmCapSec;
   apiPost("/admin/api/settings/quota", body).then(function(r) {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
