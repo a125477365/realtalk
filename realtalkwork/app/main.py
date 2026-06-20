@@ -608,6 +608,7 @@ def admin_get_quota(admin: dict = Depends(current_admin)) -> dict:
         "daily_token_limit_free": db.get_daily_token_limit("free"),
         "daily_token_limit_basic": db.get_daily_token_limit("basic"),
         "daily_token_limit_premium": db.get_daily_token_limit("premium"),
+        "budget_ratio": db.get_budget_ratio(),
     }
 
 
@@ -622,6 +623,8 @@ def admin_set_quota(
         value = getattr(request, key)
         if value is not None:
             db.set_app_setting(key, str(value))
+    if request.budget_ratio is not None:
+        db.set_app_setting("budget_ratio", str(request.budget_ratio))
     return admin_get_quota(admin)
 
 
@@ -2045,18 +2048,25 @@ async def training_answer(
 
 
 def monthly_budget_cents(user: UserOut) -> float:
-    """该用户当月可用的大模型费用额度（分）= 会员档位标准月费 × 50%（另 50% 为项目利润）。"""
-    return db.get_tier_monthly_price_cents(user.plan_tier) * 0.5
+    """该用户当月可用的大模型费用额度（分）= 购买会员时锁定的档位标准月费 × 可配置比例（默认 50%）。
+
+    旧用户即使后台调价，仍按其购买会员时的月费计算额度；会员到期后重新购买才用新价。
+    """
+    return db.user_monthly_budget_cents(user.id, user.plan_tier)
 
 
 def estimate_text_cost_cents(input_chars: int = 0) -> float:
-    """文本模型「调用前」费用预估（分）：按输入字符估 prompt + 该输出上限估 completion。"""
+    """文本模型「调用前」费用预估（分）：按输入字符估 prompt + 该输出上限估 completion。
+
+    预估参数实时读取 app_settings（管理台改后即时生效），缺失回退 env 默认。
+    """
     from .ark_client import resolve_ai_config
 
     cfg = resolve_ai_config()
+    min_input = db.get_app_setting_int("ai_estimate_min_input_tokens", settings.ai_estimate_min_input_tokens)
+    output_tokens = db.get_app_setting_int("ai_estimate_output_tokens", settings.ai_estimate_output_tokens)
     # 中文约 1 token/字符，英文更少；取较保守的 max(下限, 字符数) 作为输入 token 估计
-    input_tokens = max(settings.ai_estimate_min_input_tokens, int(input_chars))
-    output_tokens = settings.ai_estimate_output_tokens
+    input_tokens = max(min_input, int(input_chars))
     return round(
         input_tokens / 1_000_000 * cfg.input_price_per_1m_cents
         + output_tokens / 1_000_000 * cfg.output_price_per_1m_cents,

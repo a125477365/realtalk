@@ -864,7 +864,15 @@ function renderPlanQuotaCards() {
     '  <div id="plan-editor">' + loadingHTML() + "</div>",
     "</div>",
     '<div class="card">',
-    "  <h2>每日 Token 限额 <span class=\"subtitle\">按生效套餐限制每位用户每天的模型用量；0 表示不限制</span></h2>",
+    "  <h2>月度 Token 费用额度 <span class=\"subtitle\">现以「当月模型费用」为准：额度 = 购买会员时档位标准月费 × 下方比例；旧用户按购买时月费算，改价不影响</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>额度比例（% of 会员月费）</label><input type="number" id="q-budget-ratio" min="0" max="100" step="1" /></div>',
+    "  </div>",
+    '  <div class="hint" style="margin:6px 0 10px">例：基础月费 ¥30、比例 50% → 该用户每月可用 ¥15 的文字+语音模型额度（另 ¥15 为利润）。实时生效。</div>',
+    '  <button class="btn btn-primary" onclick="saveQuota()">保存额度比例</button>',
+    "</div>",
+    '<div class="card">',
+    "  <h2>每日 Token 限额（旧·参考） <span class=\"subtitle\">已改为按月度费用额度门禁，此处仅作展示与兼容；0 表示不限制</span></h2>",
     '  <div class="form-grid">',
     '    <div class="form-group"><label>免费用户</label><input type="number" id="q-free" min="0" /></div>',
     '    <div class="form-group"><label>基础会员</label><input type="number" id="q-basic" min="0" /></div>',
@@ -918,6 +926,7 @@ function loadPlanQuotaAsr() {
       if (getEl("q-free")) getEl("q-free").value = d.daily_token_limit_free;
       if (getEl("q-basic")) getEl("q-basic").value = d.daily_token_limit_basic;
       if (getEl("q-premium")) getEl("q-premium").value = d.daily_token_limit_premium;
+      if (getEl("q-budget-ratio")) getEl("q-budget-ratio").value = Math.round((d.budget_ratio != null ? d.budget_ratio : 0.5) * 100);
     });
   });
   apiGet("/admin/api/settings/asr").then(function(r) {
@@ -966,11 +975,14 @@ function savePlans() {
 }
 
 function saveQuota() {
-  apiPost("/admin/api/settings/quota", {
+  var body = {
     daily_token_limit_free: parseInt((getEl("q-free") || {}).value) || 0,
     daily_token_limit_basic: parseInt((getEl("q-basic") || {}).value) || 0,
     daily_token_limit_premium: parseInt((getEl("q-premium") || {}).value) || 0,
-  }).then(function(r) {
+  };
+  var pct = parseFloat((getEl("q-budget-ratio") || {}).value);
+  if (!isNaN(pct)) body.budget_ratio = Math.max(0, Math.min(1, pct / 100));
+  apiPost("/admin/api/settings/quota", body).then(function(r) {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
     toast("限额已保存", "success");

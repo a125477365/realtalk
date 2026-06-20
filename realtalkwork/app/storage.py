@@ -99,6 +99,7 @@ users = Table(
     Column("plan_expires_at", Text),
     Column("active_device_id", Text),  # 当前唯一允许登录的设备编号（单设备登录）
     Column("token_version", Integer, nullable=False, default=1),  # 递增即吊销该用户全部令牌
+    Column("plan_monthly_price_cents", Integer),  # 购买会员时锁定的档位标准月费（分），用于月度额度计算
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -377,6 +378,7 @@ class Database:
             self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
             self._ensure_column(conn, "users", "active_device_id", "TEXT")
             self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
@@ -418,6 +420,7 @@ class Database:
                     password_hash=password_hash,
                     plan="basic",
                     plan_expires_at=_iso(trial_expires),
+                    plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, "basic"),
                     balance_cents=0,
                     created_at=_iso(created_at),
                 )
@@ -487,6 +490,7 @@ class Database:
                     password_hash=password_hash,
                     plan="basic",
                     plan_expires_at=_iso(trial_expires),
+                    plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, "basic"),
                     balance_cents=0,
                     wechat_openid=openid,
                     display_name=display_name,
@@ -623,7 +627,12 @@ class Database:
             conn.execute(
                 update(users)
                 .where(users.c.id == user_id)
-                .values(plan=tier, plan_expires_at=_iso(new_expiry), balance_cents=new_balance)
+                .values(
+                    plan=tier,
+                    plan_expires_at=_iso(new_expiry),
+                    balance_cents=new_balance,
+                    plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, tier),
+                )
             )
             conn.execute(
                 insert(billing_ledger).values(
@@ -682,6 +691,51 @@ class Database:
             if str(plan.get("tier")) == tier and int(plan.get("months", 0)) == 1:
                 return int(plan.get("price_cents", 0))
         return 0
+
+    def _tier_monthly_price_in_conn(self, conn, tier: str) -> int:
+        """在已有连接内读取档位标准月价（用于下单/续费事务里锁定购买时的月费）。"""
+        if tier not in ("basic", "premium"):
+            return 0
+        raw = conn.execute(
+            select(app_settings.c.value_text).where(app_settings.c.key == "plan_catalog")
+        ).scalar_one_or_none()
+        catalog = self.DEFAULT_PLAN_CATALOG
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and parsed:
+                    catalog = parsed
+            except json.JSONDecodeError:
+                pass
+        for plan in catalog:
+            if str(plan.get("tier")) == tier and int(plan.get("months", 0)) == 1:
+                return int(plan.get("price_cents", 0))
+        return 0
+
+    def get_budget_ratio(self) -> float:
+        """月度 token 费用额度占会员月费的比例（默认 0.5）。管理台可在线配置、实时生效。"""
+        raw = self.get_app_setting_str("budget_ratio")
+        if raw:
+            try:
+                return max(0.0, min(1.0, float(raw)))
+            except ValueError:
+                pass
+        return settings.budget_ratio
+
+    def user_monthly_budget_cents(self, user_id: str, tier: str) -> float:
+        """用户当月可用费用额度（分）= 购买会员时锁定的档位标准月费 × 比例。
+
+        旧用户即使后台改了会员价，仍按其购买时的月费算；会员到期重新购买后才用新价。
+        未锁定（历史用户）时回退当前档位标准月价。免费档为 0。
+        """
+        if tier not in ("basic", "premium"):
+            return 0.0
+        with self.engine.connect() as conn:
+            locked = conn.execute(
+                select(users.c.plan_monthly_price_cents).where(users.c.id == user_id)
+            ).scalar_one_or_none()
+        monthly = int(locked) if locked else self.get_tier_monthly_price_cents(tier)
+        return monthly * self.get_budget_ratio()
 
     def admin_usage_users(self, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
         """按今日 token 用量倒序的用户列表，标记接近/超过限额的用户。"""
@@ -1041,7 +1095,11 @@ class Database:
         new_expiry = base + timedelta(days=30 * months)
         conn.execute(
             update(users).where(users.c.id == user_id)
-            .values(plan=tier, plan_expires_at=_iso(new_expiry))
+            .values(
+                plan=tier,
+                plan_expires_at=_iso(new_expiry),
+                plan_monthly_price_cents=self._tier_monthly_price_in_conn(conn, tier),
+            )
         )
         balance_after = int(conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one() or 0)
         conn.execute(

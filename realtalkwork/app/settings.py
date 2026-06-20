@@ -163,6 +163,8 @@ class Settings:
     # 调用前费用预估：文本调用按输入字符估 prompt + 该输出上限估 completion
     ai_estimate_output_tokens: int = int(os.getenv("AI_ESTIMATE_OUTPUT_TOKENS", "800"))
     ai_estimate_min_input_tokens: int = int(os.getenv("AI_ESTIMATE_MIN_INPUT_TOKENS", "400"))
+    # 月度 token 费用额度 = 购买会员时档位标准月费 × 该比例（剩余为项目利润）。管理台可在线配置。
+    budget_ratio: float = float(os.getenv("BUDGET_RATIO", "0.5"))
 
     ark_api_key: str | None = os.getenv("ARK_API_KEY")
     ark_base_url: str = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
