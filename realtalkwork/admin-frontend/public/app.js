@@ -1109,7 +1109,11 @@ function renderSettingsPage() {
     '      <input type="password" id="rt-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
     "  </div>",
     '  <div class="hint" style="margin:6px 0 12px">仅高级会员、且选择「沉浸式 + 语音大模型」时使用；未配置时该功能不可用。</div>',
-    '  <button class="btn btn-primary" onclick="saveRealtimeSettings()">保存语音模型配置</button>',
+    '  <div class="btn-row" style="justify-content:flex-start">',
+    '    <button class="btn btn-primary" onclick="saveRealtimeSettings()">保存语音模型配置</button>',
+    '    <button class="btn btn-secondary" onclick="testRealtimeSettings()">测试连接</button>',
+    '    <span id="rt-test-result" class="hint"></span>',
+    "  </div>",
     "</div>",
 
     renderPlanQuotaCards(),
@@ -1143,6 +1147,24 @@ function saveRealtimeSettings() {
     getEl("rt-api-key").value = "";
     toast("语音模型配置已保存", "success");
     loadRealtimeSettings();
+  });
+}
+
+function testRealtimeSettings() {
+  var resultEl = getEl("rt-test-result");
+  if (resultEl) { resultEl.textContent = "握手测试中…"; resultEl.style.color = ""; }
+  // 测试的是已保存的配置；如刚改过请先点「保存语音模型配置」
+  apiPost("/admin/api/settings/realtime/test").then(function(r) {
+    if (!r) return;
+    r.json().then(function(d) {
+      if (resultEl) {
+        resultEl.textContent = d.message || (d.ok ? "连接成功" : "连接失败");
+        resultEl.style.color = d.ok ? "var(--success, #16a34a)" : "var(--danger, #dc2626)";
+      }
+      toast(d.message || "测试完成", d.ok ? "success" : "error");
+    });
+  }).catch(function() {
+    if (resultEl) resultEl.textContent = "网络错误";
   });
 }
 

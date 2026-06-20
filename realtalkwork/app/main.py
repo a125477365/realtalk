@@ -121,6 +121,7 @@ from .realtime_voice import (
     proxy_session,
     resolve_realtime_config,
     score_voice_session,
+    test_realtime_connection,
 )
 from .schemas import RealtimeSettingsRequest
 from .settings import settings
@@ -554,6 +555,11 @@ async def admin_set_realtime_settings(
     if request.voice is not None:
         db.set_app_setting("realtime_voice", request.voice.strip())
     return await admin_get_realtime_settings(admin)
+
+
+@app.post("/admin/api/settings/realtime/test")
+async def admin_test_realtime_settings(admin: dict = Depends(current_admin)) -> dict:
+    return await test_realtime_connection()
 
 
 @app.get("/admin/api/settings/plans", response_model=PlanCatalogResponse)

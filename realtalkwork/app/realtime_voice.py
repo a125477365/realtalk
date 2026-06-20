@@ -152,6 +152,58 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
     return transcript
 
 
+async def test_realtime_connection() -> dict:
+    """管理台「测试连接」：实际向实时语音 API 发起一次 WebSocket 握手并收一帧事件，
+    验证 Base URL / API Key / 模型可用（握手即校验鉴权与模型，收到 session.created 表示通道可用）。"""
+    import time
+
+    config = resolve_realtime_config()
+    if not config.enabled:
+        return {"ok": False, "message": "未配置 API Key 或 Base URL"}
+    try:
+        import websockets
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "message": "服务器未安装 websockets 依赖"}
+
+    url = config.base_url
+    if "model=" not in url:
+        url = f"{url}{'&' if '?' in url else '?'}model={config.model}"
+    headers = [("Authorization", f"Bearer {config.api_key}"), ("OpenAI-Beta", "realtime=v1")]
+
+    started = time.monotonic()
+    try:
+        async with websockets.connect(
+            url, additional_headers=headers, max_size=None, open_timeout=10
+        ) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=10)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        event = ""
+        try:
+            event = str((json.loads(raw) or {}).get("type", ""))
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "ok": True,
+            "message": f"连接成功（{latency_ms}ms）",
+            "model": config.model,
+            "latency_ms": latency_ms,
+            "event": event,
+        }
+    except asyncio.TimeoutError:
+        return {"ok": False, "message": "连接超时（10s）：请检查 Base URL 与网络"}
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(getattr(exc, "response", None), "status_code", None) or getattr(exc, "status_code", None)
+        if code:
+            hint = {
+                401: "鉴权失败，请检查 API Key",
+                403: "无权限或区域不可用",
+                404: "模型或路径不存在，请检查 Base URL 与模型",
+                429: "请求过于频繁/额度受限",
+            }.get(int(code), "")
+            return {"ok": False, "message": f"握手失败 HTTP {code}" + (f"：{hint}" if hint else "")}
+        return {"ok": False, "message": f"连接失败：{str(exc)[:160]}"}
+
+
 async def score_voice_session(transcript: list[dict], scenario, user_id: str | None) -> dict:
     """结束后让文本模型给出评分(0-100)与中文分析。模型不可用时回退一个简单结果。"""
     if not transcript:
