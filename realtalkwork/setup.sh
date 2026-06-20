@@ -93,7 +93,24 @@ if $DEPLOY_BACKEND; then
       if [ "$REPLY_VALUE" = "reset" ]; then
         ask "确认清空 $PG_DATA_DIR 中的全部数据库数据？此操作不可恢复 (yes/no)" "no"
         if [ "$REPLY_VALUE" = "yes" ]; then
-          rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null || true
+          # 先停容器，否则 PostgreSQL 锁文件导致删不掉
+          if docker compose ps --format '{{.Name}}' 2>/dev/null | grep -q postgres; then
+            note "正在停止 PostgreSQL 容器…"
+            docker compose stop postgres 2>/dev/null || true
+            sleep 2
+          fi
+          rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null
+          # 验证是否真正清空
+          if [ -f "$PG_DATA_DIR/PG_VERSION" ]; then
+            echo
+            say "⚠️  清空失败！数据目录可能被占用或权限不足。"
+            note "请手动执行以下命令后重新运行本脚本："
+            echo "    docker compose down"
+            echo "    rm -rf ${PG_DATA_DIR}/*"
+            echo "    rm -rf ${PG_DATA_DIR}/.*  2>/dev/null"
+            echo "    bash setup.sh"
+            exit 1
+          fi
           PG_INITED=false
           note "已清空，将重新初始化。"
         else
