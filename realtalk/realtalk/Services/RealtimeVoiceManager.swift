@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Combine
 import Foundation
 
@@ -227,25 +227,30 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     }
 
     private func receiveNext() {
-        wsTask?.receive { [weak self] result in
-            Task { @MainActor in self?.onReceive(result) }
-        }
-    }
-
-    private func onReceive(_ result: Result<URLSessionWebSocketTask.Message, Error>) {
-        switch result {
-        case .failure:
-            handleSocketClosed(reason: nil)
-        case .success(let message):
-            switch message {
-            case .string(let text):
-                handleEvent(text)
-            case .data(let data):
-                if let text = String(data: data, encoding: .utf8) { handleEvent(text) }
-            @unknown default:
-                break
+        // 在 @Sendable 完成闭包里只取出 Sendable 的纯文本，再用 Task 自带的 [weak self]
+        // 跳回主线程，避免在并发闭包中捕获 self / 非 Sendable 的 Result。
+        wsTask?.receive { result in
+            let text: String?
+            switch result {
+            case .failure:
+                text = nil
+            case .success(let message):
+                switch message {
+                case .string(let value): text = value
+                case .data(let data): text = String(data: data, encoding: .utf8)
+                @unknown default: text = nil
+                }
             }
-            receiveNext()
+            let closed = (try? result.get()) == nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if closed {
+                    self.handleSocketClosed(reason: nil)
+                    return
+                }
+                if let text { self.handleEvent(text) }
+                self.receiveNext()
+            }
         }
     }
 
