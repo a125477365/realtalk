@@ -305,6 +305,22 @@ admin_sessions = Table(
 Index("idx_admin_sessions_admin", admin_sessions.c.admin_id)
 Index("idx_admin_sessions_expires", admin_sessions.c.expires_at)
 
+support_tickets = Table(
+    "support_tickets",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("user_id", Text, nullable=False),
+    Column("category", Text, nullable=False, default="other"),  # refund/feedback/bug/other
+    Column("subject", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("status", Text, nullable=False, default="open"),  # open/processing/resolved/closed
+    Column("admin_reply", Text),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+Index("idx_support_tickets_user", support_tickets.c.user_id)
+Index("idx_support_tickets_status", support_tickets.c.status)
+
 audio_jobs = Table(
     "audio_jobs",
     metadata,
@@ -725,6 +741,81 @@ class Database:
             cost_cents=0.0,
             latency_ms=0,
         )
+
+    # ---- 客服工单 ----
+
+    def create_support_ticket(self, user_id: str, category: str, subject: str, body: str) -> dict[str, Any]:
+        now = _now()
+        ticket_id = str(uuid.uuid4())
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(support_tickets).values(
+                    id=ticket_id,
+                    user_id=user_id,
+                    category=category,
+                    subject=subject,
+                    body=body,
+                    status="open",
+                    admin_reply=None,
+                    created_at=_iso(now),
+                    updated_at=_iso(now),
+                )
+            )
+        return self.get_support_ticket(ticket_id)  # type: ignore[return-value]
+
+    def get_support_ticket(self, ticket_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(support_tickets).where(support_tickets.c.id == ticket_id)
+            ).mappings().fetchone()
+        return dict(row) if row else None
+
+    def list_user_tickets(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(support_tickets)
+                .where(support_tickets.c.user_id == user_id)
+                .order_by(support_tickets.c.created_at.desc())
+                .limit(limit)
+            ).mappings().fetchall()
+        return [dict(r) for r in rows]
+
+    def list_support_tickets(self, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        """管理台：列出工单并附用户展示信息。"""
+        with self.engine.connect() as conn:
+            stmt = select(support_tickets).order_by(support_tickets.c.created_at.desc()).limit(limit)
+            if status:
+                stmt = stmt.where(support_tickets.c.status == status)
+            rows = conn.execute(stmt).mappings().fetchall()
+            user_ids = list({r["user_id"] for r in rows})
+            user_map: dict[str, Any] = {}
+            if user_ids:
+                user_rows = conn.execute(select(users).where(users.c.id.in_(user_ids))).mappings().fetchall()
+                user_map = {ur["id"]: ur for ur in user_rows}
+        items = []
+        for r in rows:
+            ur = user_map.get(r["user_id"])
+            item = dict(r)
+            item["user_display_name"] = (ur["display_name"] if ur else None) or (ur["login_identifier"] if ur else r["user_id"][:8])
+            item["user_login_identifier"] = ur["login_identifier"] if ur else None
+            items.append(item)
+        return items
+
+    def update_support_ticket(
+        self, ticket_id: str, status: str | None = None, admin_reply: str | None = None
+    ) -> dict[str, Any] | None:
+        updates: dict[str, Any] = {"updated_at": _iso(_now())}
+        if status is not None:
+            updates["status"] = status
+        if admin_reply is not None:
+            updates["admin_reply"] = admin_reply
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(support_tickets).where(support_tickets.c.id == ticket_id).values(**updates)
+            )
+            if result.rowcount == 0:
+                return None
+        return self.get_support_ticket(ticket_id)
 
     def get_tier_monthly_price_cents(self, tier: str) -> int:
         """会员档位的「标准月价」（分）：取该档位月付套餐价。免费档为 0。"""

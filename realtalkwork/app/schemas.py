@@ -609,3 +609,30 @@ class PaymentWebhookResponse(BaseModel):
 
 class RechargeQueryRequest(BaseModel):
     order_id: str
+
+
+# ==================== 客服工单 ====================
+class SupportTicketCreate(BaseModel):
+    category: Literal["refund", "feedback", "bug", "other"] = "other"
+    subject: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class SupportTicketOut(BaseModel):
+    id: str
+    category: str
+    subject: str
+    body: str
+    status: str
+    admin_reply: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportTicketListResponse(BaseModel):
+    items: list[SupportTicketOut]
+
+
+class SupportTicketUpdateRequest(BaseModel):
+    status: Literal["open", "processing", "resolved", "closed"] | None = None
+    admin_reply: str | None = Field(default=None, max_length=4000)

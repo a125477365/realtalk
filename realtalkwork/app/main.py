@@ -113,6 +113,10 @@ from .schemas import (
     PlanItem,
     QuotaSettingsRequest,
     SubscribeRequest,
+    SupportTicketCreate,
+    SupportTicketListResponse,
+    SupportTicketOut,
+    SupportTicketUpdateRequest,
     TokenUsageInfo,
 )
 from .capture_store import capture_store
@@ -639,6 +643,54 @@ def admin_set_quota(
         if value is not None:
             db.set_app_setting(key, str(value))
     return admin_get_quota(admin)
+
+
+# ==================== 客服工单 ====================
+
+@app.post("/support/tickets", response_model=SupportTicketOut)
+def create_support_ticket(
+    request: SupportTicketCreate,
+    user: UserOut = Depends(current_user),
+) -> SupportTicketOut:
+    ticket = db.create_support_ticket(
+        user_id=user.id,
+        category=request.category,
+        subject=request.subject.strip(),
+        body=request.body.strip(),
+    )
+    return SupportTicketOut(**ticket)
+
+
+@app.get("/support/tickets", response_model=SupportTicketListResponse)
+def list_my_support_tickets(user: UserOut = Depends(current_user)) -> SupportTicketListResponse:
+    items = db.list_user_tickets(user.id)
+    return SupportTicketListResponse(items=[SupportTicketOut(**t) for t in items])
+
+
+@app.get("/admin/api/support/tickets")
+def admin_list_support_tickets(
+    status_filter: str | None = Query(default=None, alias="status"),
+    admin: dict = Depends(current_admin),
+) -> dict:
+    return {"items": db.list_support_tickets(status=status_filter)}
+
+
+@app.post("/admin/api/support/tickets/{ticket_id}", response_model=SupportTicketOut)
+def admin_update_support_ticket(
+    ticket_id: str,
+    request: SupportTicketUpdateRequest,
+    admin: dict = Depends(current_admin),
+) -> SupportTicketOut:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    ticket = db.update_support_ticket(
+        ticket_id,
+        status=request.status,
+        admin_reply=request.admin_reply.strip() if request.admin_reply is not None else None,
+    )
+    if ticket is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="工单不存在")
+    return SupportTicketOut(**ticket)
 
 
 @app.get("/admin/api/settings/asr")

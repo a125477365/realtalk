@@ -298,6 +298,7 @@ function renderSidebar() {
     nav("overview", "\u6570\u636e\u6982\u89c8", "\ud83d\udcca"),
     nav("users", "\u7528\u6237\u7ba1\u7406", "\ud83d\udc65"),
     nav("orders", "\u5145\u503c\u8ba2\u5355", "\ud83d\udcb3"),
+    nav("tickets", "\u5ba2\u670d\u5de5\u5355", "\ud83c\udfab"),
     nav("admins", "\u7ba1\u7406\u5458\u7ba1\u7406", "\ud83d\udc64"),
     nav("settings", "\u7cfb\u7edf\u8bbe\u7f6e", "\u2699\ufe0f"),
   "  </nav>",
@@ -799,6 +800,71 @@ function markOrderPaid(orderId) {
 // ============================================================
 // Token Usage Page
 // ============================================================
+function ticketCatLabel(c) { return { refund: "退款", feedback: "反馈", bug: "问题", other: "其他" }[c] || c; }
+function ticketStatusLabel(s) { return { open: "待处理", processing: "处理中", resolved: "已解决", closed: "已关闭" }[s] || s; }
+
+function renderTicketsPage() {
+  return [
+    '<div class="page-header"><h1>客服工单</h1><div class="actions">',
+    '  <select id="ticket-status-filter" onchange="loadTickets()">',
+    '    <option value="">全部状态</option>',
+    '    <option value="open">待处理</option>',
+    '    <option value="processing">处理中</option>',
+    '    <option value="resolved">已解决</option>',
+    '    <option value="closed">已关闭</option>',
+    "  </select>",
+    '  <button class="btn btn-secondary" onclick="loadTickets()">刷新</button>',
+    "</div></div>",
+    '<div id="ticket-list-container">' + loadingHTML() + "</div>",
+  ].join("");
+}
+
+function loadTickets() {
+  var container = getEl("ticket-list-container");
+  if (!container) return;
+  container.innerHTML = loadingHTML();
+  var st = (getEl("ticket-status-filter") || {}).value || "";
+  apiGet("/admin/api/support/tickets" + (st ? "?status=" + encodeURIComponent(st) : "")).then(function(r) {
+    if (!r || !r.ok) { container.innerHTML = '<div class="hint">加载失败</div>'; return; }
+    r.json().then(function(d) {
+      var items = d.items || [];
+      if (!items.length) { container.innerHTML = '<div class="hint" style="padding:16px">暂无工单</div>'; return; }
+      container.innerHTML = items.map(function(t) {
+        var statusOpts = ["open", "processing", "resolved", "closed"].map(function(s) {
+          return '<option value="' + s + '"' + (t.status === s ? " selected" : "") + ">" + ticketStatusLabel(s) + "</option>";
+        }).join("");
+        return [
+          '<div class="card" style="margin-bottom:12px">',
+          '  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">',
+          "    <div><b>" + esc(t.subject) + '</b> <span class="hint">[' + ticketCatLabel(t.category) + "]</span></div>",
+          '    <div class="hint">' + esc(t.user_display_name || "") + " · " + fmtDT(t.created_at) + "</div>",
+          "  </div>",
+          '  <div style="margin:8px 0;white-space:pre-wrap">' + esc(t.body) + "</div>",
+          '  <div class="form-grid">',
+          '    <div class="form-group"><label>状态</label><select id="tk-st-' + t.id + '">' + statusOpts + "</select></div>",
+          '    <div class="form-group" style="grid-column:1/-1"><label>回复用户（退款等处理结果）</label><textarea id="tk-rp-' + t.id + '" rows="2">' + esc(t.admin_reply || "") + "</textarea></div>",
+          "  </div>",
+          '  <button class="btn btn-primary" onclick="saveTicket(\'' + t.id + "')\">保存处理</button>",
+          "</div>",
+        ].join("");
+      }).join("");
+    });
+  });
+}
+
+function saveTicket(id) {
+  var body = {
+    status: (getEl("tk-st-" + id) || {}).value,
+    admin_reply: (getEl("tk-rp-" + id) || {}).value,
+  };
+  apiPost("/admin/api/support/tickets/" + id, body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("工单已更新", "success");
+    loadTickets();
+  });
+}
+
 function renderUsagePage() {
   return [
     '<div class="page-header"><h1>Token 用量</h1><div class="actions">',
@@ -1564,6 +1630,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "users") pageContent = renderUsersPage();
   else if (state.currentTab === "user_detail") pageContent = renderUserDetailPage();
   else if (state.currentTab === "orders") pageContent = renderOrdersPage();
+  else if (state.currentTab === "tickets") pageContent = renderTicketsPage();
   else if (state.currentTab === "usage") pageContent = renderUsagePage();
   else if (state.currentTab === "admins") pageContent = renderAdminMgmtPage();
   else if (state.currentTab === "settings") pageContent = renderSettingsPage();
@@ -1666,6 +1733,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "users") loadUsers();
   else if (state.currentTab === "user_detail") loadUserDetail();
   else if (state.currentTab === "orders") loadOrders();
+  else if (state.currentTab === "tickets") loadTickets();
   else if (state.currentTab === "usage") loadUsage();
   else if (state.currentTab === "admins") loadAdminList();
   else if (state.currentTab === "settings") loadSettings();
