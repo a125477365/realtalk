@@ -285,8 +285,8 @@ struct MainChatView: View {
         if practiceSpeech.isListening { return "正在听你说英语…" }
         if speech.isRecording { return "正在采集真实对话…" }
         if model.isWorking { return "正在处理，请稍等" }
-        if let usage = model.billingAccount?.usage, usage.overLimit {
-            return "今日 AI 用量已达上限"
+        if let usage = model.billingAccount?.usage, usage.overBudget {
+            return "本月 AI 额度已用完"
         }
         return auth.user?.tierName ?? "用真实生活练英语"
     }

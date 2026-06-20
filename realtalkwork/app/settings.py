@@ -155,6 +155,14 @@ class Settings:
     realtime_api_key: str | None = os.getenv("REALTIME_API_KEY")
     realtime_model: str = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
     realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
+    # 实时语音计费：文本/音频分开两组单价（分/百万 token）。音频 token 远贵于文本。
+    realtime_input_text_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS", "400"))
+    realtime_input_audio_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS", "2800"))
+    realtime_output_text_price_per_1m_cents: float = float(os.getenv("REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS", "1600"))
+    realtime_output_audio_price_per_1m_cents: float = float(os.getenv("REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS", "5600"))
+    # 调用前费用预估：文本调用按输入字符估 prompt + 该输出上限估 completion
+    ai_estimate_output_tokens: int = int(os.getenv("AI_ESTIMATE_OUTPUT_TOKENS", "800"))
+    ai_estimate_min_input_tokens: int = int(os.getenv("AI_ESTIMATE_MIN_INPUT_TOKENS", "400"))
 
     ark_api_key: str | None = os.getenv("ARK_API_KEY")
     ark_base_url: str = os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")

@@ -110,15 +110,15 @@ fun AccountSheet(model: AppViewModel) {
                 billing?.usage?.let { usage ->
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "今日 AI 用量 ${usage.todayTokens} / ${usage.dailyLimit} tokens" +
-                            if (usage.overLimit) "（已达上限，明天恢复）" else "",
+                        "本月 AI 费用额度 ¥%.2f / ¥%.2f".format(usage.monthCostCents / 100, usage.monthBudgetCents / 100) +
+                            if (usage.overBudget) "（已用完，下月恢复）" else "",
                         fontSize = (11 * fontScale).sp,
-                        color = Color.White.copy(alpha = if (usage.overLimit) 1f else 0.85f),
+                        color = Color.White.copy(alpha = if (usage.overBudget) 1f else 0.85f),
                     )
                     Spacer(Modifier.height(5.dp))
                     LinearProgressIndicator(
                         progress = {
-                            (usage.todayTokens.toFloat() / maxOf(1, usage.dailyLimit)).coerceAtMost(1f)
+                            (usage.monthCostCents.toFloat() / maxOf(1.0, usage.monthBudgetCents).toFloat()).coerceAtMost(1f)
                         },
                         modifier = Modifier.fillMaxWidth(),
                         color = Color.White,

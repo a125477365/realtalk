@@ -177,7 +177,13 @@ if $DEPLOY_BACKEND; then
     ask_secret "实时语音 API Key"; RT_KEY="$REPLY_VALUE"
     ask "实时语音模型" "gpt-4o-realtime-preview"; RT_MODEL="$REPLY_VALUE"
     ask "语音音色" "alloy"; RT_VOICE="$REPLY_VALUE"
+    note "实时语音计费单价（分/百万 token），文本/音频分开；用量计入用户当月费用额度（会员月费50%）。"
+    ask "  输入·文本 单价" "400"; RT_P_IT="$REPLY_VALUE"
+    ask "  输入·音频 单价" "2800"; RT_P_IA="$REPLY_VALUE"
+    ask "  输出·文本 单价" "1600"; RT_P_OT="$REPLY_VALUE"
+    ask "  输出·音频 单价" "5600"; RT_P_OA="$REPLY_VALUE"
     ENV_LINES+=("REALTIME_BASE_URL=$RT_BASE" "REALTIME_API_KEY=$RT_KEY" "REALTIME_MODEL=$RT_MODEL" "REALTIME_VOICE=$RT_VOICE")
+    ENV_LINES+=("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_IT" "REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_IA" "REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_OT" "REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_OA")
   else
     ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
   fi

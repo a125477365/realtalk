@@ -92,21 +92,21 @@ struct AccountPanelView: View {
             if let usage = model.billingAccount?.usage {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("今日 AI 用量")
+                        Text("本月 AI 费用额度")
                             .font(.system(size: 12 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.85))
                         Spacer()
-                        Text("\(usage.todayTokens) / \(usage.dailyLimit) tokens")
+                        Text(String(format: "¥%.2f / ¥%.2f", usage.monthCostYuan, usage.monthBudgetYuan))
                             .font(.system(size: 12 * model.fontScale).monospacedDigit())
-                            .foregroundStyle(.white.opacity(usage.overLimit ? 1 : 0.85))
+                            .foregroundStyle(.white.opacity(usage.overBudget ? 1 : 0.85))
                     }
-                    ProgressView(value: Double(usage.todayTokens), total: Double(max(1, usage.dailyLimit)))
+                    ProgressView(value: usage.monthCostCents, total: max(1, usage.monthBudgetCents))
                         .tint(.white)
-                    if usage.overLimit {
-                        Text("已达今日上限，明天自动恢复；不使用 AI 的功能不受影响")
-                            .font(.system(size: 11 * model.fontScale))
-                            .foregroundStyle(.white)
-                    }
+                    Text(usage.overBudget
+                         ? "本月额度已用完，下月自动恢复；不使用 AI 的功能不受影响"
+                         : "额度为会员月费的 50%（文字 + 语音大模型合计），下月初重置")
+                        .font(.system(size: 11 * model.fontScale))
+                        .foregroundStyle(.white.opacity(usage.overBudget ? 1 : 0.7))
                 }
             }
         }

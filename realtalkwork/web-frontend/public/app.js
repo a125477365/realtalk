@@ -237,7 +237,7 @@ function tierName(t) { return t === "premium" ? "高级会员" : t === "basic" ?
 
 function renderOverview() {
   var u = state.user, usage = state.usage || {};
-  var ratio = usage.daily_limit ? Math.min(100, Math.round(usage.today_tokens / usage.daily_limit * 100)) : 0;
+  var ratio = usage.month_budget_cents ? Math.min(100, Math.round((usage.month_cost_cents || 0) / usage.month_budget_cents * 100)) : 0;
   var rows = (state.ledger || []).slice(0, 8).map(function (l) {
     return "<tr><td>" + fmtDT(l.created_at) + "</td><td>" + esc(l.title) + '</td><td style="font-weight:600;color:' +
       (l.amount_cents >= 0 ? "var(--good)" : "var(--bad)") + '">' + (l.amount_cents >= 0 ? "+" : "") + yuan(l.amount_cents) + "</td></tr>";
@@ -248,8 +248,8 @@ function renderOverview() {
     '    <div class="name">' + esc(u.display_name || u.login_identifier) +
     '      <span class="tier-badge ' + (u.plan_tier === "premium" ? "tier-premium" : "") + '">' + tierName(u.plan_tier) + "</span></div>",
     '    <div class="meta">' + (u.plan_expires_at ? "会员有效期至 " + String(u.plan_expires_at).slice(0, 10) : "试用已结束，订阅后继续使用 AI 功能") + "</div>",
-    '    <div class="meta">今日 AI 用量 ' + fmtTokens(usage.today_tokens) + " / " + fmtTokens(usage.daily_limit) + " tokens" +
-    (usage.over_limit ? "（已达上限，明天恢复）" : "") + "</div>",
+    '    <div class="meta">本月 AI 费用额度 ' + yuan(usage.month_cost_cents || 0) + " / " + yuan(usage.month_budget_cents || 0) +
+    (usage.over_budget ? "（已用完，下月恢复）" : "（含文字+语音，会员月费50%）") + "</div>",
     '    <div class="progress ' + (ratio >= 80 ? "warn" : "") + '" style="max-width:340px"><i style="width:' + ratio + '%"></i></div>',
     "  </div>",
     '  <div class="balance"><div class="num">' + yuan(u.balance_cents) + '</div><div class="lbl">账户余额</div>',

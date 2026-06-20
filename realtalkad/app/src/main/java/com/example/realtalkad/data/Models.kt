@@ -223,6 +223,11 @@ data class TokenUsageInfo(
     @SerialName("daily_limit") val dailyLimit: Int,
     @SerialName("remaining_tokens") val remainingTokens: Int,
     @SerialName("over_limit") val overLimit: Boolean,
+    // 月度费用额度（会员月费的 50%）。overLimit 现以「当月费用是否超额」为准。
+    @SerialName("month_cost_cents") val monthCostCents: Double = 0.0,
+    @SerialName("month_budget_cents") val monthBudgetCents: Double = 0.0,
+    @SerialName("month_remaining_cents") val monthRemainingCents: Double = 0.0,
+    @SerialName("over_budget") val overBudget: Boolean = false,
 )
 
 @Serializable

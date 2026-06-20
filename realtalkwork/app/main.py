@@ -119,7 +119,9 @@ from .capture_store import capture_store
 from .realtime_voice import (
     build_session_instructions,
     proxy_session,
+    realtime_usage_cost_cents,
     resolve_realtime_config,
+    resolve_realtime_pricing,
     score_voice_session,
     test_realtime_connection,
 )
@@ -530,12 +532,17 @@ async def admin_test_model_settings(admin: dict = Depends(current_admin)) -> dic
 @app.get("/admin/api/settings/realtime")
 async def admin_get_realtime_settings(admin: dict = Depends(current_admin)) -> dict:
     config = resolve_realtime_config()
+    pricing = resolve_realtime_pricing()
     return {
         "base_url": config.base_url,
         "model": config.model,
         "voice": config.voice,
         "api_key_masked": _masked_key(config.api_key),
         "api_key_configured": config.enabled,
+        "input_text_price_per_1m_cents": pricing.input_text,
+        "input_audio_price_per_1m_cents": pricing.input_audio,
+        "output_text_price_per_1m_cents": pricing.output_text,
+        "output_audio_price_per_1m_cents": pricing.output_audio,
     }
 
 
@@ -554,6 +561,15 @@ async def admin_set_realtime_settings(
         db.set_app_setting("realtime_model", request.model.strip())
     if request.voice is not None:
         db.set_app_setting("realtime_voice", request.voice.strip())
+    for field, key in (
+        ("input_text_price_per_1m_cents", "realtime_input_text_price_per_1m_cents"),
+        ("input_audio_price_per_1m_cents", "realtime_input_audio_price_per_1m_cents"),
+        ("output_text_price_per_1m_cents", "realtime_output_text_price_per_1m_cents"),
+        ("output_audio_price_per_1m_cents", "realtime_output_audio_price_per_1m_cents"),
+    ):
+        value = getattr(request, field)
+        if value is not None:
+            db.set_app_setting(key, str(value))
     return await admin_get_realtime_settings(admin)
 
 
@@ -1031,7 +1047,7 @@ def me(user: UserOut = Depends(current_user)) -> UserOut:
 
 @app.post("/ai/chat", response_model=AIChatResponse)
 async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user)) -> AIChatResponse:
-    require_ai_access(user)
+    require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.message or "")))
     if is_political_sensitive(request.message):
         # 涉政话题不进入模型，直接引导回口语练习
         return AIChatResponse(reply="这个话题我们就不展开了。我们继续练英语吧，你想还原哪段真实对话？")
@@ -1791,7 +1807,7 @@ async def roleplay_message(
     request: RoleplayMessageRequest,
     user: UserOut = Depends(current_user),
 ) -> RoleplayStateResponse:
-    require_ai_access(user)
+    require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.message or "")))
     session = db.get_roleplay_session(user.id, request.session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景练习不存在")
@@ -1895,6 +1911,12 @@ async def roleplay_evaluate(
     return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
 
 
+def _ws_reason(text: object, max_bytes: int = 120) -> str:
+    """WebSocket close reason 上限约 123 字节；按字节安全截断（避免中文超限报错）。"""
+    raw = str(text).encode("utf-8")[:max_bytes]
+    return raw.decode("utf-8", "ignore")
+
+
 @app.websocket("/roleplay/voice")
 async def roleplay_voice(
     websocket: WebSocket,
@@ -1905,12 +1927,15 @@ async def roleplay_voice(
 
     鉴权走 query 里的 access token（WebSocket 不便带 Authorization 头）。
     """
+    # 先 accept 再校验：握手后用 close(code, reason) 才能把原因（如超额需升级）干净地回传给客户端
+    await websocket.accept()
     try:
         user = _authenticate_token(token)
         require_premium(user)
-        require_ai_access(user)
+        # 语音对练开始时只校验「当月已用是否已超额」（流式无法预知本次时长，按用户选择不预扣）
+        require_ai_access(user, estimated_cents=0.0)
     except HTTPException as exc:
-        await websocket.close(code=4401, reason=str(exc.detail)[:120])
+        await websocket.close(code=4401, reason=_ws_reason(exc.detail))
         return
     session = db.get_roleplay_session(user.id, session_id)
     scenario = db.get_scenario(user.id, session.scene_id) if session else None
@@ -1922,12 +1947,30 @@ async def roleplay_voice(
         await websocket.close(code=4503, reason="语音大模型未配置，请联系管理员")
         return
 
-    await websocket.accept()
     instructions = build_session_instructions(scenario, session.selected_role)
+    usage: dict = {}
     try:
-        transcript = await proxy_session(websocket, instructions, config)
+        transcript, usage = await proxy_session(websocket, instructions, config)
     except Exception:  # noqa: BLE001 — 转发期间任一端异常即结束并评分
         transcript = []
+    # 实时语音用量计费：按文本/音频分开的单价折算费用并入账（与文字模型同一张 ai_usage 表）
+    if usage and any(usage.values()):
+        pricing = resolve_realtime_pricing()
+        cost = realtime_usage_cost_cents(usage, pricing)
+        input_tokens = int(usage.get("input_text", 0)) + int(usage.get("input_audio", 0))
+        output_tokens = int(usage.get("output_text", 0)) + int(usage.get("output_audio", 0))
+        try:
+            db.record_ai_usage(
+                user_id=user.id,
+                kind="voice_realtime",
+                model=config.model,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                cost_cents=cost,
+                latency_ms=0,
+            )
+        except Exception:  # noqa: BLE001 — 计费失败不影响主流程
+            pass
     review = await score_voice_session(transcript, scenario, user.id)
     try:
         await websocket.send_text(_json.dumps({"type": "realtalk.review", **review}, ensure_ascii=False))
@@ -2001,24 +2044,55 @@ async def training_answer(
     return state_response(session, feedback=feedback, correction=correction)
 
 
-def require_ai_access(user: UserOut) -> None:
-    """模型功能门禁：会员（或试用期）+ 每日 token 限额。
+def monthly_budget_cents(user: UserOut) -> float:
+    """该用户当月可用的大模型费用额度（分）= 会员档位标准月费 × 50%（另 50% 为项目利润）。"""
+    return db.get_tier_monthly_price_cents(user.plan_tier) * 0.5
 
-    超限只拦截需要后端大模型的功能（对话、场景生成、评测）；
-    采集、回看历史等不调用模型的功能不受影响。
+
+def estimate_text_cost_cents(input_chars: int = 0) -> float:
+    """文本模型「调用前」费用预估（分）：按输入字符估 prompt + 该输出上限估 completion。"""
+    from .ark_client import resolve_ai_config
+
+    cfg = resolve_ai_config()
+    # 中文约 1 token/字符，英文更少；取较保守的 max(下限, 字符数) 作为输入 token 估计
+    input_tokens = max(settings.ai_estimate_min_input_tokens, int(input_chars))
+    output_tokens = settings.ai_estimate_output_tokens
+    return round(
+        input_tokens / 1_000_000 * cfg.input_price_per_1m_cents
+        + output_tokens / 1_000_000 * cfg.output_price_per_1m_cents,
+        4,
+    )
+
+
+def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> None:
+    """模型功能门禁：会员（或试用期）+ 当月费用额度（会员月费的 50%）。
+
+    每次调模型前：检查「当月已用(文字+语音)费用 + 本次预估费用 > 额度」则拦截，
+    并停止生成场景/对话；只拦截需要大模型的功能，采集/回看历史等不受影响。
+    免费档（试用结束）→ 提示订阅；额度用尽→ 基础提示升级高级、高级暂时禁止（充值功能后续上线）。
     """
     if user.plan_tier == "free":
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="试用期已结束，请订阅基础或高级会员后继续使用 AI 功能",
         )
-    used = db.tokens_used_today(user.id)
-    limit = db.get_daily_token_limit(user.plan_tier)
-    if limit > 0 and used >= limit:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"今日 AI 用量已达上限（{limit} tokens），明天自动恢复；其他不使用模型的功能不受影响",
-        )
+    budget = monthly_budget_cents(user)
+    used = db.cost_used_this_month(user.id)
+    estimate = estimate_text_cost_cents() if estimated_cents is None else max(0.0, estimated_cents)
+    if budget > 0 and used + estimate > budget:
+        budget_yuan = budget / 100
+        used_yuan = used / 100
+        if user.plan_tier == "premium":
+            detail = (
+                f"本月语音/文字大模型用量已达额度上限（约 ¥{used_yuan:.2f} / ¥{budget_yuan:.2f}），"
+                "高级会员额度充值功能即将上线，本月暂无法继续调用模型，下月自动恢复。"
+            )
+        else:
+            detail = (
+                f"本月 AI 用量已达额度上限（约 ¥{used_yuan:.2f} / ¥{budget_yuan:.2f}），"
+                "升级高级会员可获得更高额度；本月额度下月自动恢复。"
+            )
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=detail)
 
 
 def require_premium(user: UserOut) -> None:
@@ -2030,13 +2104,21 @@ def require_premium(user: UserOut) -> None:
 
 
 def token_usage_info(user: UserOut) -> TokenUsageInfo:
-    used = db.tokens_used_today(user.id)
+    used_tokens = db.tokens_used_today(user.id)
     limit = db.get_daily_token_limit(user.plan_tier)
+    # 门禁已改为「当月费用额度」：over_limit 以是否超出月度费用额度为准
+    budget = monthly_budget_cents(user)
+    month_cost = db.cost_used_this_month(user.id)
+    over_budget = budget > 0 and month_cost >= budget
     return TokenUsageInfo(
-        today_tokens=used,
+        today_tokens=used_tokens,
         daily_limit=limit,
-        remaining_tokens=max(0, limit - used),
-        over_limit=limit > 0 and used >= limit,
+        remaining_tokens=max(0, limit - used_tokens),
+        over_limit=over_budget,
+        month_cost_cents=round(month_cost, 2),
+        month_budget_cents=round(budget, 2),
+        month_remaining_cents=round(max(0.0, budget - month_cost), 2),
+        over_budget=over_budget,
     )
 
 

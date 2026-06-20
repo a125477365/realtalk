@@ -38,13 +38,25 @@ struct TokenUsageInfo: Codable, Equatable {
     let dailyLimit: Int
     let remainingTokens: Int
     let overLimit: Bool
+    // 月度费用额度（会员月费的 50%）。overLimit 现以「当月费用是否超额」为准。
+    let monthCostCents: Double
+    let monthBudgetCents: Double
+    let monthRemainingCents: Double
+    let overBudget: Bool
 
     enum CodingKeys: String, CodingKey {
         case todayTokens = "today_tokens"
         case dailyLimit = "daily_limit"
         case remainingTokens = "remaining_tokens"
         case overLimit = "over_limit"
+        case monthCostCents = "month_cost_cents"
+        case monthBudgetCents = "month_budget_cents"
+        case monthRemainingCents = "month_remaining_cents"
+        case overBudget = "over_budget"
     }
+
+    var monthCostYuan: Double { monthCostCents / 100 }
+    var monthBudgetYuan: Double { monthBudgetCents / 100 }
 }
 
 struct PlanItem: Identifiable, Codable, Equatable {

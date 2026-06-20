@@ -662,6 +662,27 @@ class Database:
             ).scalar_one()
         return int(value or 0)
 
+    def cost_used_this_month(self, user_id: str) -> float:
+        """当月（自然月）已用的大模型费用（分），文字 + 语音合计。"""
+        month_start = _iso(_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(func.coalesce(func.sum(ai_usage.c.cost_cents), 0.0)).where(
+                    ai_usage.c.user_id == user_id,
+                    ai_usage.c.created_at >= month_start,
+                )
+            ).scalar_one()
+        return float(value or 0.0)
+
+    def get_tier_monthly_price_cents(self, tier: str) -> int:
+        """会员档位的「标准月价」（分）：取该档位月付套餐价。免费档为 0。"""
+        if tier not in ("basic", "premium"):
+            return 0
+        for plan in self.get_plan_catalog():
+            if str(plan.get("tier")) == tier and int(plan.get("months", 0)) == 1:
+                return int(plan.get("price_cents", 0))
+        return 0
+
     def admin_usage_users(self, days: int = 30, limit: int = 100) -> list[dict[str, Any]]:
         """按今日 token 用量倒序的用户列表，标记接近/超过限额的用户。"""
         now = _now()

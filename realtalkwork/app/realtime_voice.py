@@ -30,6 +30,14 @@ _GUARDRAILS = (
 )
 
 
+_PRICE_KEYS = [
+    "realtime_input_text_price_per_1m_cents",
+    "realtime_input_audio_price_per_1m_cents",
+    "realtime_output_text_price_per_1m_cents",
+    "realtime_output_audio_price_per_1m_cents",
+]
+
+
 @dataclass(frozen=True)
 class RealtimeConfig:
     base_url: str
@@ -40,6 +48,16 @@ class RealtimeConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.api_key and self.base_url)
+
+
+@dataclass(frozen=True)
+class RealtimePricing:
+    """实时语音计费单价（分/百万 token），文本/音频分开。"""
+
+    input_text: float
+    input_audio: float
+    output_text: float
+    output_audio: float
 
 
 def resolve_realtime_config() -> RealtimeConfig:
@@ -57,6 +75,42 @@ def resolve_realtime_config() -> RealtimeConfig:
     )
 
 
+def _price(ov: dict, key: str, fallback: float) -> float:
+    raw = ov.get(key)
+    if raw in (None, ""):
+        return fallback
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def resolve_realtime_pricing() -> RealtimePricing:
+    from .storage import db
+
+    try:
+        ov = db.get_app_settings_map(_PRICE_KEYS)
+    except Exception:  # noqa: BLE001
+        ov = {}
+    return RealtimePricing(
+        input_text=_price(ov, _PRICE_KEYS[0], settings.realtime_input_text_price_per_1m_cents),
+        input_audio=_price(ov, _PRICE_KEYS[1], settings.realtime_input_audio_price_per_1m_cents),
+        output_text=_price(ov, _PRICE_KEYS[2], settings.realtime_output_text_price_per_1m_cents),
+        output_audio=_price(ov, _PRICE_KEYS[3], settings.realtime_output_audio_price_per_1m_cents),
+    )
+
+
+def realtime_usage_cost_cents(usage: dict, pricing: RealtimePricing) -> float:
+    """按文本/音频分开的单价，将 Realtime usage 折算为费用（分）。"""
+    return round(
+        usage.get("input_text", 0) / 1_000_000 * pricing.input_text
+        + usage.get("input_audio", 0) / 1_000_000 * pricing.input_audio
+        + usage.get("output_text", 0) / 1_000_000 * pricing.output_text
+        + usage.get("output_audio", 0) / 1_000_000 * pricing.output_audio,
+        4,
+    )
+
+
 def build_session_instructions(scenario, selected_role: str) -> str:
     lines: list[str] = []
     for line in scenario.lines[:60]:
@@ -71,11 +125,13 @@ def build_session_instructions(scenario, selected_role: str) -> str:
     )
 
 
-async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) -> list[dict]:
-    """在客户端与上游 Realtime API 之间转发；返回累积的转写用于评分。"""
+async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) -> tuple[list[dict], dict]:
+    """在客户端与上游 Realtime API 之间转发；返回 (转写, token 用量) 用于评分与计费。"""
     import websockets
 
     transcript: list[dict] = []
+    # 累积 token 用量（来自上游 response.done 事件的 usage，文本/音频分开）
+    usage = {"input_text": 0, "input_audio": 0, "output_text": 0, "output_audio": 0}
     url = config.base_url
     if "model=" not in url:
         url = f"{url}{'&' if '?' in url else '?'}model={config.model}"
@@ -137,6 +193,8 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
                         transcript.append({"role": "user", "text": ev.get("transcript", "")})
                     elif kind == "response.audio_transcript.done":
                         transcript.append({"role": "ai", "text": ev.get("transcript", "")})
+                    elif kind == "response.done":
+                        _accumulate_usage(usage, ev)
                     await client_ws.send_text(raw)
             except Exception:  # noqa: BLE001
                 pass
@@ -149,7 +207,27 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-    return transcript
+    return transcript, usage
+
+
+def _accumulate_usage(usage: dict, event: dict) -> None:
+    """从 Realtime API 的 response.done 事件累积 token 用量（文本/音频分开）。"""
+    data = (event.get("response") or {}).get("usage") or {}
+    in_details = data.get("input_token_details") or {}
+    out_details = data.get("output_token_details") or {}
+    # 优先用细分；缺失时回退到总输入/输出（全部当文本，至少不丢账）
+    in_text = in_details.get("text_tokens")
+    in_audio = in_details.get("audio_tokens")
+    out_text = out_details.get("text_tokens")
+    out_audio = out_details.get("audio_tokens")
+    if in_text is None and in_audio is None:
+        in_text, in_audio = data.get("input_tokens", 0), 0
+    if out_text is None and out_audio is None:
+        out_text, out_audio = data.get("output_tokens", 0), 0
+    usage["input_text"] += int(in_text or 0)
+    usage["input_audio"] += int(in_audio or 0)
+    usage["output_text"] += int(out_text or 0)
+    usage["output_audio"] += int(out_audio or 0)
 
 
 async def test_realtime_connection() -> dict:
