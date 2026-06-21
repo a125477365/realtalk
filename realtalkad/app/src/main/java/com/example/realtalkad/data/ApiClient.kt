@@ -132,6 +132,13 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)
     suspend fun scenarioDetail(sceneId: String, token: String): Scenario = get("/scenario/$sceneId", token)
 
+    // ---- 通用场景（无录音时直接选场景练口语）----
+    suspend fun presetCatalog(token: String): PresetScenarioCatalog = get("/scenario/presets/catalog", token)
+
+    /** 选中子场景后让后端调用 AI 即时生成约 40 句中英对话并落库，返回可直接对练的场景。 */
+    suspend fun generatePresetScenario(groupId: String, subId: String, token: String): Scenario =
+        post("/scenario/presets/generate", PresetScenarioGenerateRequest(groupId, subId), token)
+
     // ---- 口语对练 ----
     suspend fun startRoleplay(sceneId: String, selectedRole: String, token: String): RoleplayState {
         val now = Instant.now().toString()

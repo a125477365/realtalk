@@ -78,6 +78,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val myTickets = MutableStateFlow<List<com.example.realtalkad.data.SupportTicket>>(emptyList())
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
+    val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetScenarioGroup>>(emptyList()) // 通用场景目录
+    val isGeneratingPreset = MutableStateFlow(false)
+    val generatingSubId = MutableStateFlow<String?>(null)
 
     private var scenario: Scenario? = null
     private var roleplay: RoleplayState? = null
@@ -385,6 +388,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { api.scenarioList(token) }
                 .onSuccess { todayScenarios.value = it.items }
                 .onFailure { statusMessage.value = it.message ?: "" }
+        }
+    }
+
+    /** 加载通用场景目录（主场景 → 子场景标题），供没有录音时直接选场景练口语。 */
+    fun loadPresetCatalog() {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.presetCatalog(token) }
+                .onSuccess { presetCatalog.value = it.items }
+                .onFailure { statusMessage.value = it.message ?: "" }
+        }
+    }
+
+    /** 选中某个通用子场景：让后端调用 AI 即时生成约 40 句中英对话并落库，成功后回调可对练的场景摘要。 */
+    fun generatePresetScenario(groupId: String, subId: String, onReady: (ScenarioSummary) -> Unit) {
+        if (auth.token == null) { statusMessage.value = "请先登录"; return }
+        if (isGeneratingPreset.value) return
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            isGeneratingPreset.value = true
+            generatingSubId.value = subId
+            statusMessage.value = "正在生成场景对话…"
+            runCatching { api.generatePresetScenario(groupId, subId, token) }
+                .onSuccess { scene ->
+                    statusMessage.value = ""
+                    val now = java.time.Instant.now().toString()
+                    onReady(
+                        ScenarioSummary(
+                            sceneId = scene.sceneId,
+                            title = scene.title,
+                            summary = scene.summary,
+                            roles = scene.roles,
+                            lineCount = scene.lines.size,
+                            sourceStart = now,
+                            sourceEnd = now,
+                            createdAt = now,
+                        )
+                    )
+                }
+                .onFailure { statusMessage.value = it.message ?: "生成失败" }
+            generatingSubId.value = null
+            isGeneratingPreset.value = false
         }
     }
 

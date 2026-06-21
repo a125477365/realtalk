@@ -148,6 +148,86 @@ private fun ScenarioCard(
     }
 }
 
+/// 通用场景列表：主场景可展开/收起，点子场景让 AI 即时生成中英对话再进对练（主→子两级选择）。
+@Composable
+private fun PresetCatalogList(
+    groups: List<com.example.realtalkad.data.PresetScenarioGroup>,
+    fontScale: Float,
+    expandedGroup: String?,
+    generatingSubId: String?,
+    onToggleGroup: (String) -> Unit,
+    onPickSub: (String, String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (groups.isEmpty()) {
+        Column(
+            modifier.padding(24.dp, 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text("暂无通用场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "没有录音也能练：选一个场景，AI 会即时生成中英文对话",
+                fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
+            )
+        }
+        return
+    }
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item(key = "preset-tip") {
+            Text(
+                "没有录音也能练：选一个场景，AI 即时生成约 40 句中英文对话再进入对练。",
+                fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
+                modifier = Modifier.padding(bottom = 2.dp),
+            )
+        }
+        items(groups, key = { it.id }) { group ->
+            val expanded = expandedGroup == group.id
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(14.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp)),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { onToggleGroup(group.id) }.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(group.title, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp,
+                        color = RT.TextPrimary, modifier = Modifier.weight(1f))
+                    Text("${group.subs.size} 个", fontSize = (11 * fontScale).sp,
+                        color = RT.TextSecondary.copy(alpha = 0.8f))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (expanded) "⌄" else "›", color = RT.TextSecondary.copy(alpha = 0.6f),
+                        fontSize = (18 * fontScale).sp)
+                }
+                if (expanded) {
+                    group.subs.forEach { sub ->
+                        Box(Modifier.fillMaxWidth().height(1.dp).padding(start = 14.dp).background(RT.Hairline))
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable(enabled = generatingSubId == null) { onPickSub(group.id, sub.id) }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(sub.title, fontSize = (14 * fontScale).sp, color = RT.TextPrimary,
+                                modifier = Modifier.weight(1f))
+                            if (generatingSubId == sub.id) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (16 * fontScale).sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
@@ -201,9 +281,14 @@ fun MainChatScreen(model: AppViewModel) {
     val status by model.statusMessage.collectAsState()
     val fontScale by model.fontScale.collectAsState()
 
+    val presetCatalog by model.presetCatalog.collectAsState()
+    val isGeneratingPreset by model.isGeneratingPreset.collectAsState()
+    val generatingSubId by model.generatingSubId.collectAsState()
+
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
     var scenarioScope by remember { mutableStateOf("today") }
+    var expandedPresetGroup by remember { mutableStateOf<String?>(null) }
 
     val statusText = when {
         status.isNotEmpty() -> status
@@ -262,23 +347,39 @@ fun MainChatScreen(model: AppViewModel) {
 
         Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             BrandSegmented(
-                options = listOf("today" to "今天", "all" to "全部"),
+                options = listOf("today" to "今天", "all" to "全部", "preset" to "通用场景"),
                 selected = scenarioScope,
                 fontScale = fontScale,
             ) { key ->
                 scenarioScope = key
-                if (key == "today") model.loadTodayScenarios() else model.loadScenarioList()
+                when (key) {
+                    "today" -> model.loadTodayScenarios()
+                    "all" -> model.loadScenarioList()
+                    "preset" -> model.loadPresetCatalog()
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
 
         // 场景列表
         Text(
-            if (scenarioScope == "today") "今日场景" else "全部场景",
+            when (scenarioScope) { "today" -> "今日场景"; "preset" -> "通用场景"; else -> "全部场景" },
             fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold, color = RT.TextSecondary,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
-        if (scenarios.isEmpty()) {
+        if (scenarioScope == "preset") {
+            PresetCatalogList(
+                groups = presetCatalog,
+                fontScale = fontScale,
+                expandedGroup = expandedPresetGroup,
+                generatingSubId = if (isGeneratingPreset) generatingSubId else null,
+                onToggleGroup = { gid -> expandedPresetGroup = if (expandedPresetGroup == gid) null else gid },
+                onPickSub = { gid, sid ->
+                    model.generatePresetScenario(gid, sid) { summary -> roleDialogFor = summary }
+                },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+        } else if (scenarios.isEmpty()) {
             // 空态：引导先采集真实对话生成场景
             Column(
                 Modifier.fillMaxWidth().padding(16.dp, 8.dp)

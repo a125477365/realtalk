@@ -306,6 +306,22 @@ data class PlanCatalog(val items: List<PlanItem>, @SerialName("trial_days") val 
 @Serializable
 data class SubscribeRequest(@SerialName("plan_id") val planId: String)
 
+// 通用场景（无录音时直接选场景与 AI 练口语）
+@Serializable
+data class PresetSubScenario(val id: String, val title: String)
+
+@Serializable
+data class PresetScenarioGroup(val id: String, val title: String, val subs: List<PresetSubScenario> = emptyList())
+
+@Serializable
+data class PresetScenarioCatalog(val items: List<PresetScenarioGroup> = emptyList())
+
+@Serializable
+data class PresetScenarioGenerateRequest(
+    @SerialName("group_id") val groupId: String,
+    @SerialName("sub_id") val subId: String,
+)
+
 @Serializable
 data class RechargeCreateRequest(@SerialName("amount_cents") val amountCents: Int, val method: String, @SerialName("plan_id") val planId: String? = null)
 
