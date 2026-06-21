@@ -283,6 +283,7 @@ async def _generate_with_ark(
     system_prompt = (
         "你是 RealTalk 的英语训练生成器。你只能输出 JSON，不要输出 Markdown。"
         "根据真实中文对话生成英语学习材料，保留业务语境，避免编造隐私。"
+        + _SENSITIVE_CONTENT_POLICY
         + _UNTRUSTED_DATA_POLICY
     )
     user_prompt = f"""
@@ -385,7 +386,32 @@ JSON schema:
         config=config,
     )
     scenario = ScenarioResponse.model_validate(_extract_json(content))
-    return _repair_scenario(scenario, atomic_lines)
+    # 输出端兜底：即使模型无视提示词，也再过滤一遍政治/敏感内容（与通用场景同款）
+    return _scrub_sensitive_scenario(_repair_scenario(scenario, atomic_lines))
+
+
+def _scrub_sensitive_scenario(scenario: ScenarioResponse) -> ScenarioResponse:
+    """对已生成的场景做输出端兜底过滤：剔除任何政治/敏感的台词与表达卡，并重新连续编号。
+
+    输入早已清洗、提示词也含安全约束，这里是第二道防线，防止模型无视提示词输出敏感内容。
+    """
+    clean_lines: list[SceneLine] = []
+    for line in scenario.lines:
+        if is_political_sensitive(line.source_text) or is_political_sensitive(line.english):
+            continue
+        clean_lines.append(line.model_copy(update={"index": len(clean_lines)}))
+    # 全部命中（极端情况）时保留原样，避免把场景清空导致无法对练（输入已先行清洗，正常不会发生）
+    if not clean_lines:
+        return scenario
+    clean_expressions = [
+        card for card in scenario.expressions
+        if not (
+            is_political_sensitive(card.phrase)
+            or is_political_sensitive(card.meaning)
+            or is_political_sensitive(card.example)
+        )
+    ]
+    return scenario.model_copy(update={"lines": clean_lines, "expressions": clean_expressions})
 
 
 async def _generate_ai_chat_with_model(

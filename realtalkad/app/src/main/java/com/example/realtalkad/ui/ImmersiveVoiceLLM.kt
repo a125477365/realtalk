@@ -1,5 +1,11 @@
 package com.example.realtalkad.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -122,8 +128,16 @@ private fun VoiceControls(
         inputLevel > 0.04f -> RTVoice.User
         else -> Color.White.copy(alpha = 0.18f)
     }
+    // AI 说话时圆圈连续脉冲（对齐 iOS 的正弦律动）；用户说话时随输入电平放大
+    val infinite = rememberInfiniteTransition(label = "orb")
+    val pulse by infinite.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(tween(600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "pulse",
+    )
     val scale = when {
-        aiSpeaking -> 1.1f
+        aiSpeaking -> pulse
         else -> 1f + inputLevel.coerceIn(0f, 1f) * 0.3f
     }
 
