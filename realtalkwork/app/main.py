@@ -1923,7 +1923,12 @@ async def scenario_presets_generate(
     request: PresetScenarioGenerateRequest,
     user: UserOut = Depends(current_user),
 ) -> ScenarioResponse:
-    """用户选中某个通用子场景后，让 AI 即时生成约 40 句中英双语对话并落库，随后即可进入对练。"""
+    """用户选中某个通用子场景后，让 AI 即时模拟生成约 40 句中英双语对话供试练。
+
+    通用场景属于「即时模拟」：只作为本次对练的临时场景（ephemeral），
+    不会进入用户「今天/历史」真实场景列表（那里只放用户录音采集到的真实对话）。
+    生成前先清掉该用户上一次留下的临时场景，确保不累积。
+    """
     require_ai_access(user)
     catalog = db.get_preset_scenarios()
     group = next((g for g in catalog if g.get("id") == request.group_id), None)
@@ -1937,8 +1942,9 @@ async def scenario_presets_generate(
         str(sub.get("title", "")),
         user_id=user.id,
     )
+    db.purge_ephemeral_scenarios(user.id)
     now = datetime.now(timezone.utc)
-    return db.create_scenario(user.id, now, now, scenario)
+    return db.create_scenario(user.id, now, now, scenario, ephemeral=True)
 
 
 @app.get("/scenario/{scene_id}", response_model=ScenarioResponse)

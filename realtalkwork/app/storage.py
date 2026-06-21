@@ -146,6 +146,8 @@ scenarios = Table(
     Column("created_at", Text, nullable=False),
     Column("expires_at", Text, nullable=False),
     Column("source_hash", Text),  # 采集内容哈希，用于幂等去重，避免重复上传生成重复场景
+    # 通用场景（AI 即时模拟）为临时场景：不计入用户「今天/历史」真实场景列表，仅供本次试练
+    Column("ephemeral", Integer, nullable=False, server_default="0"),
 )
 Index("idx_scenarios_user_created", scenarios.c.user_id, scenarios.c.created_at)
 Index("idx_scenarios_user_hash", scenarios.c.user_id, scenarios.c.source_hash)
@@ -402,6 +404,7 @@ class Database:
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
             self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
+            self._ensure_column(conn, "scenarios", "ephemeral", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "audio_jobs", "file_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
@@ -1662,6 +1665,7 @@ class Database:
         end: datetime,
         scenario: ScenarioResponse,
         source_hash: str | None = None,
+        ephemeral: bool = False,
     ) -> ScenarioResponse:
         scene_id = str(uuid.uuid4())
         now = _now()
@@ -1685,9 +1689,24 @@ class Database:
                     created_at=_iso(now),
                     expires_at=_iso(expires_at),
                     source_hash=source_hash,
+                    ephemeral=1 if ephemeral else 0,
                 )
             )
         return saved
+
+    def purge_ephemeral_scenarios(self, user_id: str) -> int:
+        """清理该用户的临时（通用场景）记录：连带级联删除其对练会话/消息。
+
+        通用场景只供试练、不入「今天/历史」列表；生成新的之前先清掉旧的，避免任何累积。
+        """
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(scenarios).where(
+                    scenarios.c.user_id == user_id,
+                    scenarios.c.ephemeral == 1,
+                )
+            )
+        return result.rowcount or 0
 
     def find_scenario_by_source_hash(self, user_id: str, source_hash: str) -> ScenarioResponse | None:
         """按采集内容哈希查已生成的未过期场景，用于幂等去重（重复上传不再重复生成）。"""
@@ -1724,7 +1743,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         stmt = (
             select(scenarios)
-            .where(scenarios.c.user_id == user_id)
+            .where(scenarios.c.user_id == user_id, scenarios.c.ephemeral == 0)
             .order_by(scenarios.c.created_at.desc())
             .limit(limit)
         )
@@ -1972,7 +1991,7 @@ class Database:
                         scenarios.c.lines_json,
                     )
                     .join(scenarios, scenarios.c.scene_id == roleplay_sessions.c.scene_id)
-                    .where(roleplay_sessions.c.user_id == user_id)
+                    .where(roleplay_sessions.c.user_id == user_id, scenarios.c.ephemeral == 0)
                     .order_by(roleplay_sessions.c.updated_at.desc())
                     .limit(limit)
                 )
