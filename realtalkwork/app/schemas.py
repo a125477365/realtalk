@@ -319,10 +319,18 @@ class TokenUsageInfo(BaseModel):
     month_remaining_cents: float = 0.0
 
 
+class NonmemberLimits(BaseModel):
+    """非会员每日限额，登录后同步给客户端用于本地控制采集/时长。"""
+    daily_chat_tokens: int
+    daily_capture_tokens: int
+    daily_capture_seconds: int
+
+
 class BillingAccountResponse(BaseModel):
     user: UserOut
     ledger: list[BillingLedgerItem]
     usage: TokenUsageInfo | None = None
+    nonmember_limits: NonmemberLimits | None = None
 
 
 class PlanItem(BaseModel):

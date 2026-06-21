@@ -27,12 +27,6 @@ function esc(s) {
 }
 function yuan(c) { return "¥" + ((c || 0) / 100).toFixed(2); }
 function fmtDT(v) { return v ? String(v).slice(0, 16).replace("T", " ") : "—"; }
-function fmtTokens(n) {
-  n = n || 0;
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
-  return String(n);
-}
 function toast(msg, type) {
   var el = $("toast");
   el.textContent = msg;
@@ -124,7 +118,7 @@ function loginWithWeChat() {
         var seed = localStorage.getItem("rt_dev_wechat") || ("web-dev-" + Math.random().toString(36).slice(2) + Date.now());
         localStorage.setItem("rt_dev_wechat", seed);
         return api("/auth/wechat/login", { method: "POST", body: { code: seed, nickname: "微信用户", client: "web" } })
-          .then(function (d) { onAuthed(d.token, d.refresh_token); toast("登录成功，新用户自动获得首月基础会员试用 🎉", "success"); });
+          .then(function (d) { onAuthed(d.token, d.refresh_token); toast("登录成功 🎉", "success"); });
       }
       // 生产：跳转微信开放平台扫码授权，回调携带 ?code=
       location.href = cfg.auth_url;
@@ -187,14 +181,14 @@ function renderAuth() {
     "      <li>自动把真实生活对话还原成英语练习场景</li>",
     "      <li>AI 逐句陪练：纠错、提示、双语字幕</li>",
     "      <li>高级会员支持上传录音文件（最长 6 小时）生成场景</li>",
-    "      <li>新用户注册即送 1 个月基础会员免费试用</li>",
+    "      <li>非会员每天可免费体验，升级会员解锁更多用量与高级功能</li>",
     "    </ul>",
     "  </div>",
     '  <div class="auth-panel"><div class="auth-card">',
     "    <h2>欢迎使用 RealTalk</h2>",
     '    <p class="sub">与 App 同一账号体系，微信扫码即可登录</p>',
     '    <button class="btn btn-primary btn-block" style="background:#0DAE4D;box-shadow:0 4px 14px rgba(13,174,77,.35)" onclick="loginWithWeChat()">💬 微信登录</button>',
-    '    <p class="hint">新用户首次登录自动注册，并获得 1 个月基础会员免费试用。</p>',
+    '    <p class="hint">新用户首次登录自动注册为非会员，可每天免费体验，随时升级会员。</p>',
     "  </div></div>",
     "</div>",
   ].join("");

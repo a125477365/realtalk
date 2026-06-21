@@ -111,6 +111,7 @@ from .schemas import (
     AudioUploadStatusResponse,
     PlanCatalogResponse,
     PlanItem,
+    NonmemberLimits,
     QuotaSettingsRequest,
     SubscribeRequest,
     SupportTicketCreate,
@@ -586,7 +587,7 @@ async def admin_test_realtime_settings(admin: dict = Depends(current_admin)) -> 
 def admin_get_plans(admin: dict = Depends(current_admin)) -> PlanCatalogResponse:
     return PlanCatalogResponse(
         items=[PlanItem(**item) for item in db.get_plan_catalog()],
-        trial_days=settings.trial_days,
+        trial_days=0,  # 已取消试用，保留字段兼容旧客户端
     )
 
 
@@ -1131,6 +1132,7 @@ def billing_account(user: UserOut = Depends(current_user)) -> BillingAccountResp
         user=updated,
         ledger=db.list_billing_ledger(user.id),
         usage=token_usage_info(updated),
+        nonmember_limits=nonmember_limits_info(),
     )
 
 
@@ -1138,7 +1140,7 @@ def billing_account(user: UserOut = Depends(current_user)) -> BillingAccountResp
 def billing_plans() -> PlanCatalogResponse:
     return PlanCatalogResponse(
         items=[PlanItem(**item) for item in db.get_plan_catalog()],
-        trial_days=settings.trial_days,
+        trial_days=0,  # 已取消试用，保留字段兼容旧客户端
     )
 
 
@@ -2199,6 +2201,17 @@ def enforce_capture_quota(user: UserOut, items: list[TranscriptItem]) -> None:
             detail=f"非会员每日可采集的对话有限（每天约 {limit} 字），升级会员可解锁更多，或明天再来。",
         )
     db.record_capture_input(user.id, char_count)
+
+
+def nonmember_limits_info() -> NonmemberLimits:
+    """非会员每日限额（供客户端登录后本地控制采集 token / 录音时长）。"""
+    return NonmemberLimits(
+        daily_chat_tokens=db.get_nonmember_daily_chat_tokens(),
+        daily_capture_tokens=db.get_nonmember_daily_capture_tokens(),
+        daily_capture_seconds=db.get_app_setting_int(
+            "nonmember_daily_capture_seconds", settings.nonmember_daily_capture_seconds
+        ),
+    )
 
 
 def token_usage_info(user: UserOut) -> TokenUsageInfo:

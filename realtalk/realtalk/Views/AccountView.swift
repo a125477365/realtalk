@@ -201,8 +201,6 @@ struct AccountPanelView: View {
         VStack(alignment: .leading, spacing: 12) {
             infoRow("登录方式", auth.user?.displayName ?? "微信用户")
             Divider()
-            infoRow("用户 ID", String((auth.user?.id ?? "—").prefix(8)) + "…")
-            Divider()
             Button(role: .destructive) {
                 auth.logout()
                 dismiss()
