@@ -584,7 +584,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setConversationPreference(value: String) {
-        val v = if (value in listOf("immersive", "manual", "ask")) value else "ask"
+        val v = if (value in listOf("immersive", "manual", "ask", "voice")) value else "ask"
         conversationPreference.value = v
         auth.conversationPreference = v
     }
