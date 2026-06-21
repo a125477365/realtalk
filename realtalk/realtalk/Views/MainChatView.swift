@@ -50,6 +50,8 @@ struct MainChatView: View {
     @State private var roleDialogScenario: ScenarioSummary?
     @State private var showImmersive = false
     @State private var scenarioScope = "today"
+    @State private var expandedPresetGroupID: String?
+    @State private var generatingSubID: String?
 
     var body: some View {
         NavigationStack {
@@ -161,14 +163,16 @@ struct MainChatView: View {
     private var scenarioScopePicker: some View {
         BrandSegmentedPicker(
             selection: $scenarioScope,
-            options: [("today", "今天"), ("all", "全部")],
+            options: [("today", "今天"), ("all", "全部"), ("preset", "通用场景")],
             fontScale: model.fontScale
         )
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .onChange(of: scenarioScope) { _, scope in
             Task {
-                if scope == "all" {
+                if scope == "preset" {
+                    await model.loadPresetCatalog()
+                } else if scope == "all" {
                     await model.loadScenarioList()
                 } else {
                     await model.loadTodayScenarios()
@@ -182,23 +186,29 @@ struct MainChatView: View {
     private var scenarioStrip: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(scenarioScope == "today" ? "今日场景" : "全部场景")
+                Text(scopeHeaderTitle)
                     .font(.system(size: 12 * model.fontScale, weight: .semibold))
                     .foregroundStyle(RTTheme.textSecondary)
                 Spacer()
                 Button {
-                    Task { await model.loadTodayScenarios() }
+                    Task {
+                        if scenarioScope == "preset" { await model.loadPresetCatalog() }
+                        else if scenarioScope == "all" { await model.loadScenarioList() }
+                        else { await model.loadTodayScenarios() }
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .font(.caption)
                         .foregroundStyle(RTTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isLoadingScenarios)
+                .disabled(model.isLoadingScenarios || model.isGeneratingPreset)
             }
             .padding(.horizontal, 16)
 
-            if model.todayScenarios.isEmpty {
+            if scenarioScope == "preset" {
+                presetCatalogView
+            } else if model.todayScenarios.isEmpty {
                 // 空态：引导用户先采集真实对话或上传录音（场景只能来自真实对话）
                 Button {
                     Task { await model.toggleRecording() }
@@ -281,6 +291,127 @@ struct MainChatView: View {
             .foregroundStyle(RTTheme.textPrimary)
             .padding(.horizontal, 16)
             .padding(.top, 8)
+    }
+
+    private var scopeHeaderTitle: String {
+        switch scenarioScope {
+        case "preset": return "通用场景"
+        case "all": return "全部场景"
+        default: return "今日场景"
+        }
+    }
+
+    // MARK: 通用场景（无录音时直接选场景练口语；主场景 → 子场景两级选择）
+
+    @ViewBuilder
+    private var presetCatalogView: some View {
+        if model.presetCatalog.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "rectangle.stack.badge.person.crop")
+                    .font(.title2)
+                    .foregroundStyle(RTTheme.textSecondary)
+                Text(model.isGeneratingPreset ? "正在生成场景对话…" : "暂无通用场景")
+                    .font(.system(size: 14 * model.fontScale, weight: .medium))
+                    .foregroundStyle(RTTheme.textPrimary)
+                Text("没有录音也能练：选一个场景，AI 会即时生成中英文对话")
+                    .font(.system(size: 12 * model.fontScale))
+                    .foregroundStyle(RTTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 28)
+            .padding(.horizontal, 24)
+        } else {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    Text("没有录音也能练：选一个场景，AI 即时生成约 40 句中英文对话再进入对练。")
+                        .font(.system(size: 12 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 2)
+                    ForEach(model.presetCatalog) { group in
+                        presetGroupCard(group)
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func presetGroupCard(_ group: PresetScenarioGroup) -> some View {
+        let isExpanded = expandedPresetGroupID == group.id
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedPresetGroupID = isExpanded ? nil : group.id
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "square.grid.2x2")
+                        .foregroundStyle(RTTheme.accent)
+                    Text(group.title)
+                        .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                    Spacer()
+                    Text("\(group.subs.count) 个")
+                        .font(.system(size: 11 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.footnote)
+                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(spacing: 0) {
+                    ForEach(group.subs) { sub in
+                        Divider().background(RTTheme.hairline).padding(.leading, 14)
+                        Button {
+                            Task { await selectPresetSub(group: group, sub: sub) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "play.circle")
+                                    .foregroundStyle(RTTheme.textSecondary)
+                                Text(sub.title)
+                                    .font(.system(size: 14 * model.fontScale))
+                                    .foregroundStyle(RTTheme.textPrimary)
+                                Spacer()
+                                if model.isGeneratingPreset, generatingSubID == sub.id {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
+                                }
+                            }
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isGeneratingPreset)
+                    }
+                }
+            }
+        }
+        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+        .padding(.horizontal, 16)
+    }
+
+    /// 选中子场景：生成对话 → 成功后弹出选角色对话框，复用今日场景的对练入口。
+    private func selectPresetSub(group: PresetScenarioGroup, sub: PresetSubScenario) async {
+        guard model.isGeneratingPreset == false else { return }
+        generatingSubID = sub.id
+        defer { generatingSubID = nil }
+        if let summary = await model.generatePresetScenario(groupId: group.id, subId: sub.id) {
+            roleDialogScenario = summary
+        }
     }
 
     @ViewBuilder

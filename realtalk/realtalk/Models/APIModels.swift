@@ -93,6 +93,33 @@ struct SubscribeRequest: Codable {
     }
 }
 
+// MARK: - 通用场景（无录音时直接选场景与 AI 练口语）
+
+struct PresetSubScenario: Identifiable, Codable, Equatable {
+    let id: String
+    let title: String
+}
+
+struct PresetScenarioGroup: Identifiable, Codable, Equatable {
+    let id: String
+    let title: String
+    let subs: [PresetSubScenario]
+}
+
+struct PresetScenarioCatalogResponse: Codable, Equatable {
+    let items: [PresetScenarioGroup]
+}
+
+struct PresetScenarioGenerateRequest: Codable {
+    let groupId: String
+    let subId: String
+
+    enum CodingKeys: String, CodingKey {
+        case groupId = "group_id"
+        case subId = "sub_id"
+    }
+}
+
 struct AudioJob: Identifiable, Codable, Equatable {
     let id: String
     let filename: String

@@ -196,6 +196,19 @@ final class APIClient {
         try await get("/scenario/\(sceneId)", token: token, queryItems: [])
     }
 
+    func presetScenarioCatalog(token: String) async throws -> PresetScenarioCatalogResponse {
+        try await get("/scenario/presets/catalog", token: token, queryItems: [])
+    }
+
+    /// 通用场景：用户选中子场景后，让后端调用 AI 即时生成约 40 句中英对话并落库，返回可直接对练的场景。
+    func generatePresetScenario(groupId: String, subId: String, token: String) async throws -> ScenarioResponse {
+        try await post(
+            "/scenario/presets/generate",
+            body: PresetScenarioGenerateRequest(groupId: groupId, subId: subId),
+            token: token
+        )
+    }
+
     func startRoleplay(
         start: Date,
         end: Date,

@@ -119,6 +119,8 @@ final class AppModel: ObservableObject {
     @Published var isUploadingAudio = false
     @Published var todayScenarios: [ScenarioSummary] = []
     @Published var isLoadingScenarios = false
+    @Published var presetCatalog: [PresetScenarioGroup] = []     // 通用场景目录（管理台可配置）
+    @Published var isGeneratingPreset = false
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
     @Published var autoSpeakAI = true
@@ -299,6 +301,48 @@ final class AppModel: ObservableObject {
             if statusMessage.isEmpty {
                 statusMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// 加载通用场景目录（主场景 → 子场景标题），供没有录音时直接选场景练口语。
+    func loadPresetCatalog() async {
+        guard let token = auth.token else { return }
+        do {
+            presetCatalog = try await api.presetScenarioCatalog(token: token).items
+        } catch {
+            if statusMessage.isEmpty {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// 选中某个通用子场景：让后端调用 AI 即时生成约 40 句中英对话并落库，成功后返回可对练的场景摘要。
+    /// 返回 nil 表示失败（已写入 statusMessage）；成功后由界面弹出选角色对话框进入对练。
+    func generatePresetScenario(groupId: String, subId: String) async -> ScenarioSummary? {
+        guard let token = auth.token else {
+            statusMessage = "请先登录"
+            return nil
+        }
+        isGeneratingPreset = true
+        statusMessage = "正在生成场景对话…"
+        defer { isGeneratingPreset = false }
+        do {
+            let scenario = try await api.generatePresetScenario(groupId: groupId, subId: subId, token: token)
+            let now = Date()
+            statusMessage = ""
+            return ScenarioSummary(
+                sceneId: scenario.sceneId,
+                title: scenario.title,
+                summary: scenario.summary,
+                roles: scenario.roles,
+                lineCount: scenario.lines.count,
+                sourceStart: now,
+                sourceEnd: now,
+                createdAt: now
+            )
+        } catch {
+            statusMessage = error.localizedDescription
+            return nil
         }
     }
 
