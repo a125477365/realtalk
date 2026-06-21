@@ -356,6 +356,32 @@ class PlanCatalogResponse(BaseModel):
     trial_days: int
 
 
+class PresetSubScenario(BaseModel):
+    """通用场景里的子场景（只存标题，不存对话内容）。"""
+
+    id: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=60)
+
+
+class PresetScenarioGroup(BaseModel):
+    """通用场景的主场景（含若干子场景标题）。"""
+
+    id: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=60)
+    subs: list[PresetSubScenario] = Field(default_factory=list)
+
+
+class PresetScenarioCatalogResponse(BaseModel):
+    items: list[PresetScenarioGroup] = Field(default_factory=list)
+
+
+class PresetScenarioGenerateRequest(BaseModel):
+    """用户选中某个子场景后，让 AI 即时生成约 40 句对话。"""
+
+    group_id: str = Field(min_length=1, max_length=40)
+    sub_id: str = Field(min_length=1, max_length=40)
+
+
 class SubscribeRequest(BaseModel):
     plan_id: str = Field(min_length=1, max_length=40)
 

@@ -27,6 +27,7 @@ from .ark_client import (
     evaluate_roleplay_turn,
     generate_ai_chat_reply,
     generate_learning,
+    generate_preset_scenario,
     generate_scenario,
     resolve_ai_config,
     test_ai_connection,
@@ -112,6 +113,9 @@ from .schemas import (
     AudioUploadStatusResponse,
     PlanCatalogResponse,
     PlanItem,
+    PresetScenarioCatalogResponse,
+    PresetScenarioGenerateRequest,
+    PresetScenarioGroup,
     NonmemberLimits,
     QuotaSettingsRequest,
     SubscribeRequest,
@@ -608,6 +612,34 @@ def admin_set_plans(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="套餐 ID 重复")
     db.set_plan_catalog([item.model_dump() for item in items])
     return admin_get_plans(admin)
+
+
+@app.get("/admin/api/settings/presets", response_model=PresetScenarioCatalogResponse)
+def admin_get_presets(admin: dict = Depends(current_admin)) -> PresetScenarioCatalogResponse:
+    return PresetScenarioCatalogResponse(
+        items=[PresetScenarioGroup(**item) for item in db.get_preset_scenarios()]
+    )
+
+
+@app.post("/admin/api/settings/presets", response_model=PresetScenarioCatalogResponse)
+def admin_set_presets(
+    items: list[PresetScenarioGroup],
+    admin: dict = Depends(current_admin),
+) -> PresetScenarioCatalogResponse:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    group_ids = [group.id for group in items]
+    if len(group_ids) != len(set(group_ids)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="主场景 ID 重复")
+    for group in items:
+        sub_ids = [sub.id for sub in group.subs]
+        if len(sub_ids) != len(set(sub_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"「{group.title}」下子场景 ID 重复",
+            )
+    db.set_preset_scenarios([group.model_dump() for group in items])
+    return admin_get_presets(admin)
 
 
 @app.get("/admin/api/settings/quota")
@@ -1874,6 +1906,39 @@ def scenario_today(
         items=[ScenarioSummary(**item) for item in existing],
         generated=False,
     )
+
+
+@app.get("/scenario/presets/catalog", response_model=PresetScenarioCatalogResponse)
+def scenario_presets_catalog(
+    user: UserOut = Depends(current_user),
+) -> PresetScenarioCatalogResponse:
+    """通用场景目录（主场景 + 子场景标题），供没有录音时直接选场景练口语。"""
+    return PresetScenarioCatalogResponse(
+        items=[PresetScenarioGroup(**item) for item in db.get_preset_scenarios()]
+    )
+
+
+@app.post("/scenario/presets/generate", response_model=ScenarioResponse)
+async def scenario_presets_generate(
+    request: PresetScenarioGenerateRequest,
+    user: UserOut = Depends(current_user),
+) -> ScenarioResponse:
+    """用户选中某个通用子场景后，让 AI 即时生成约 40 句中英双语对话并落库，随后即可进入对练。"""
+    require_ai_access(user)
+    catalog = db.get_preset_scenarios()
+    group = next((g for g in catalog if g.get("id") == request.group_id), None)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="主场景不存在")
+    sub = next((s for s in group.get("subs", []) if s.get("id") == request.sub_id), None)
+    if sub is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="子场景不存在")
+    scenario = await generate_preset_scenario(
+        str(group.get("title", "")),
+        str(sub.get("title", "")),
+        user_id=user.id,
+    )
+    now = datetime.now(timezone.utc)
+    return db.create_scenario(user.id, now, now, scenario)
 
 
 @app.get("/scenario/{scene_id}", response_model=ScenarioResponse)

@@ -624,6 +624,56 @@ class Database:
     def set_plan_catalog(self, catalog: list[dict[str, Any]]) -> None:
         self.set_app_setting("plan_catalog", json.dumps(catalog, ensure_ascii=False))
 
+    # ---- 通用场景目录（管理台可随时增删主/子场景，只存标题，不存对话内容） ----
+
+    DEFAULT_PRESET_SCENARIOS = [
+        {
+            "id": "daily",
+            "title": "日常生活场景",
+            "subs": [
+                {"id": "greeting", "title": "与朋友打招呼"},
+                {"id": "transit", "title": "交通出行"},
+                {"id": "shopping", "title": "购物消费"},
+                {"id": "dining", "title": "外出就餐"},
+                {"id": "medical", "title": "生病就医"},
+            ],
+        },
+        {
+            "id": "travel",
+            "title": "出国旅游场景",
+            "subs": [
+                {"id": "airport", "title": "机场出发"},
+                {"id": "hotel", "title": "入住酒店"},
+                {"id": "sightseeing", "title": "景点参观"},
+                {"id": "return", "title": "返程回国"},
+            ],
+        },
+        {
+            "id": "workplace",
+            "title": "职场入门场景",
+            "subs": [
+                {"id": "interview", "title": "面试招聘"},
+                {"id": "onboarding", "title": "新人入职"},
+                {"id": "communication", "title": "上下级沟通"},
+            ],
+        },
+    ]
+
+    def get_preset_scenarios(self) -> list[dict[str, Any]]:
+        """通用场景目录。从未配置过时回退到内置预留示例；管理台保存后以 DB 为准（含清空）。"""
+        raw = self.get_app_setting_str("preset_scenarios")
+        if raw is not None:
+            try:
+                catalog = json.loads(raw)
+                if isinstance(catalog, list):
+                    return catalog
+            except json.JSONDecodeError:
+                pass
+        return [dict(item) for item in self.DEFAULT_PRESET_SCENARIOS]
+
+    def set_preset_scenarios(self, catalog: list[dict[str, Any]]) -> None:
+        self.set_app_setting("preset_scenarios", json.dumps(catalog, ensure_ascii=False))
+
     def subscribe_plan(self, user_id: str, plan: dict[str, Any]) -> UserOut:
         """余额购买/续费套餐。同档续费从到期日顺延；升级/降级从当前时间重新计算。"""
         price = int(plan["price_cents"])

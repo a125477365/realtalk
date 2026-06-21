@@ -22,6 +22,7 @@ from .schemas import (
     SceneLine,
     TranscriptItem,
 )
+from .content_policy import is_political_sensitive
 from .settings import settings
 
 
@@ -187,6 +188,21 @@ async def generate_scenario(items: list[TranscriptItem], user_id: str | None = N
         except Exception:
             return _fallback_scenario(items)
     return _fallback_scenario(items)
+
+
+async def generate_preset_scenario(
+    group_title: str,
+    sub_title: str,
+    user_id: str | None = None,
+) -> ScenarioResponse:
+    """通用场景：用户没有录音时，直接按主题让 AI 即时虚构约 40 句中英双语对话。"""
+    config = resolve_ai_config()
+    if config.enabled:
+        try:
+            return await _generate_preset_scenario_with_model(group_title, sub_title, user_id, config)
+        except Exception:
+            return _fallback_preset_scenario(group_title, sub_title)
+    return _fallback_preset_scenario(group_title, sub_title)
 
 
 async def generate_ai_chat_reply(
@@ -703,6 +719,170 @@ def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, An
         roles=roles,
         lines=repaired_lines,
         expressions=scenario.expressions or fallback.expressions,
+    )
+
+
+_PRESET_SAFETY = (
+    "内容安全：场景必须是健康、日常、非敏感的生活/旅游/职场口语，"
+    "绝不涉及政治、政党、选举、国家领导人、政府机构、国家政策制度、宗教、种族、地域歧视、"
+    "色情、暴力、违法犯罪或任何敏感数据；如主题有歧义，按最安全、最普通的日常生活理解来生成。"
+)
+
+
+async def _generate_preset_scenario_with_model(
+    group_title: str,
+    sub_title: str,
+    user_id: str | None = None,
+    config: AIRuntimeConfig | None = None,
+) -> ScenarioResponse:
+    topic = f"{group_title} · {sub_title}".strip(" ·")
+    system_prompt = (
+        "你是 RealTalk 的英语口语场景生成器。你只能输出 JSON，不要输出 Markdown。"
+        "任务：根据给定主题，虚构一段发生在国外真实英语环境中的自然口语对话，用于英语口语练习。"
+        "要求口语化、地道、贴近真实生活，有合理的来回互动，不要书面腔、不要中式直译。"
+        "每一句都必须同时给中文(source_text)和对应的自然英文(english)，两者意思一致，供字幕显示。"
+        + _PRESET_SAFETY
+        + _UNTRUSTED_DATA_POLICY
+    )
+    user_prompt = f"""
+主题：{topic}
+请围绕该主题虚构大约 40 句（38-44 句之间）的自然口语对话，输出严格 JSON。
+index 从 0 起连续编号；roles 至少 2 个，且每句的 target_role 都必须是 roles 中存在的 id；
+roles 中至少要有 2 个 is_user_candidate=true 的角色，供用户自由选择扮演。
+source_text 为口语化中文，english 为对应的地道英文。
+
+JSON schema:
+{{
+  "scene_id": "",
+  "title": "场景标题（中文，简洁）",
+  "summary": "中文总结：这个场景发生在哪里、用户能练到什么",
+  "roles": [
+    {{"id": "self", "name": "我", "description": "用户可扮演的角色", "is_user_candidate": true}},
+    {{"id": "counterpart", "name": "对方", "description": "另一位对话角色", "is_user_candidate": true}}
+  ],
+  "lines": [
+    {{
+      "index": 0,
+      "speaker": "我/对方/店员/同事 等",
+      "target_role": "self/counterpart/...（必须是 roles 中的 id）",
+      "source_text": "口语化中文",
+      "english": "自然、地道、适合国外真实口语环境的英文",
+      "intent": "这句话的沟通目的"
+    }}
+  ],
+  "expressions": [
+    {{"phrase": "英文表达", "meaning": "中文含义", "example": "英文例句"}}
+  ]
+}}
+要求：english 像英语母语国家真实口语；expressions 提取 4-8 个高频可迁移表达。
+"""
+    content = await _chat_completion(
+        [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.6,
+        kind="preset_scenario",
+        user_id=user_id,
+        config=config,
+    )
+    scenario = ScenarioResponse.model_validate(_extract_json(content))
+    return _sanitize_preset_scenario(scenario, group_title, sub_title)
+
+
+def _sanitize_preset_scenario(
+    scenario: ScenarioResponse,
+    group_title: str,
+    sub_title: str,
+) -> ScenarioResponse:
+    """清洗 AI 生成的通用场景：剔除任何疑似政治/敏感句、修复角色与编号；过短则回退。"""
+    roles = list(scenario.roles or [])
+    if not any(role.id == "self" for role in roles):
+        roles.insert(0, ScenarioRole(id="self", name="我", description="用户可扮演的角色", is_user_candidate=True))
+    if len([role for role in roles if role.is_user_candidate]) < 2:
+        if not any(role.id == "counterpart" for role in roles):
+            roles.append(ScenarioRole(id="counterpart", name="对方", description="另一位对话角色", is_user_candidate=True))
+        for role in roles:
+            role.is_user_candidate = True
+    role_ids = {role.id for role in roles}
+
+    clean_lines: list[SceneLine] = []
+    for line in scenario.lines:
+        if is_political_sensitive(line.source_text) or is_political_sensitive(line.english):
+            continue
+        if not (line.source_text.strip() and line.english.strip()):
+            continue
+        target_role = line.target_role if line.target_role in role_ids else "self"
+        clean_lines.append(
+            SceneLine(
+                index=len(clean_lines),
+                speaker=line.speaker or ("我" if target_role == "self" else "对方"),
+                target_role=target_role,
+                source_text=line.source_text.strip(),
+                english=line.english.strip(),
+                intent=line.intent,
+            )
+        )
+
+    if len(clean_lines) < 6:
+        return _fallback_preset_scenario(group_title, sub_title)
+
+    title = scenario.title.strip() or f"{group_title} · {sub_title}".strip(" ·")
+    summary = scenario.summary.strip() or f"围绕「{sub_title}」的英语口语练习场景。"
+    expressions = [
+        card for card in scenario.expressions
+        if not (is_political_sensitive(card.phrase) or is_political_sensitive(card.meaning) or is_political_sensitive(card.example))
+    ]
+    return ScenarioResponse(
+        scene_id="",
+        title=title,
+        summary=summary,
+        roles=roles,
+        lines=clean_lines,
+        expressions=expressions,
+    )
+
+
+def _fallback_preset_scenario(group_title: str, sub_title: str) -> ScenarioResponse:
+    """AI 不可用/失败时的离线占位场景：保证用户仍能进入对话练习。"""
+    topic = f"{group_title} · {sub_title}".strip(" ·")
+    roles = [
+        ScenarioRole(id="self", name="我", description="练习口语的你", is_user_candidate=True),
+        ScenarioRole(id="counterpart", name="对方", description="场景里的另一位对话者", is_user_candidate=True),
+    ]
+    pairs = [
+        ("你好，请问可以帮我一下吗？", "Hi, could you help me with something?"),
+        ("当然可以，您需要什么？", "Of course, what do you need?"),
+        ("我对这里还不太熟悉。", "I'm not very familiar with this place yet."),
+        ("没关系，我来给您介绍一下。", "No worries, let me walk you through it."),
+        ("太感谢了，这帮了我大忙。", "Thank you so much, that really helps."),
+        ("不客气，有问题随时找我。", "You're welcome, just let me know if you have questions."),
+        ("那我们现在可以开始了吗？", "So can we get started now?"),
+        ("可以，我们这就开始吧。", "Sure, let's get started."),
+    ]
+    lines = [
+        SceneLine(
+            index=i,
+            speaker="我" if i % 2 == 0 else "对方",
+            target_role="self" if i % 2 == 0 else "counterpart",
+            source_text=zh,
+            english=en,
+            intent="日常口语互动",
+        )
+        for i, (zh, en) in enumerate(pairs)
+    ]
+    return ScenarioResponse(
+        scene_id="",
+        title=topic or "通用口语练习",
+        summary=f"围绕「{sub_title}」的英语口语练习场景（离线占位，稍后可重试生成更丰富内容）。",
+        roles=roles,
+        lines=lines,
+        expressions=[
+            ExpressionCard(phrase="Could you help me with something?", meaning="你能帮我一下吗？", example="Excuse me, could you help me with something?"),
+            ExpressionCard(phrase="Let me walk you through it.", meaning="我来带你过一遍。", example="Let me walk you through it step by step."),
+            ExpressionCard(phrase="That really helps.", meaning="这真的帮了大忙。", example="Thanks, that really helps."),
+            ExpressionCard(phrase="Let's get started.", meaning="我们开始吧。", example="Everyone's here, so let's get started."),
+        ],
     )
 
 
