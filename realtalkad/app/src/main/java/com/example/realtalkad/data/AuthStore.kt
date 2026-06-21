@@ -98,8 +98,8 @@ class AuthStore(context: Context) {
     }
 
     companion object {
-        // 调试版默认指向本机后端便于开发；正式版用生产域名占位，避免把内网 IP 打进发布包
-        val DEFAULT_BASE_URL: String
-            get() = if (com.example.realtalkad.BuildConfig.DEBUG) "http://192.168.6.3:8000" else "https://api.realtalk.app"
+        // 后端默认地址（App 必须内置一个可连地址；用户在「设置」里看不到此地址，仅代码/部署时配置）。
+        // 部署到正式环境时把这里改成你的后端域名即可。
+        const val DEFAULT_BASE_URL = "http://192.168.6.3:8000"
     }
 }

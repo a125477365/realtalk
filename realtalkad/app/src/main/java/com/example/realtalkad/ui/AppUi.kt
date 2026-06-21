@@ -113,6 +113,17 @@ fun BrandSegmented(
     }
 }
 
+/// 场景日期友好标签：今天 / 昨天 / 原日期（dateStr 形如 2026-06-20）。
+private fun friendlyDay(dateStr: String): String {
+    val today = java.time.LocalDate.now().toString()
+    val yesterday = java.time.LocalDate.now().minusDays(1).toString()
+    return when (dateStr) {
+        today -> "今天"
+        yesterday -> "昨天"
+        else -> dateStr
+    }
+}
+
 /// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。
 @androidx.compose.runtime.Composable
 private fun ScenarioCard(
@@ -307,7 +318,7 @@ fun MainChatScreen(model: AppViewModel) {
                     // 「全部」按日期分组（日期降序）
                     scenarios.groupBy { it.createdAt.take(10) }.entries.sortedByDescending { it.key }.forEach { (day, group) ->
                         item(key = "h-$day") {
-                            Text(day, fontWeight = FontWeight.SemiBold, fontSize = (12 * fontScale).sp,
+                            Text(friendlyDay(day), fontWeight = FontWeight.SemiBold, fontSize = (12 * fontScale).sp,
                                 color = RT.TextSecondary, modifier = Modifier.padding(top = 4.dp))
                         }
                         items(group, key = { it.sceneId }) { summary ->
