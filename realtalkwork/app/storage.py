@@ -145,8 +145,10 @@ scenarios = Table(
     Column("source_end", Text, nullable=False),
     Column("created_at", Text, nullable=False),
     Column("expires_at", Text, nullable=False),
+    Column("source_hash", Text),  # 采集内容哈希，用于幂等去重，避免重复上传生成重复场景
 )
 Index("idx_scenarios_user_created", scenarios.c.user_id, scenarios.c.created_at)
+Index("idx_scenarios_user_hash", scenarios.c.user_id, scenarios.c.source_hash)
 Index("idx_scenarios_expires", scenarios.c.expires_at)
 
 roleplay_sessions = Table(
@@ -397,6 +399,7 @@ class Database:
             self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
+            self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
@@ -1584,6 +1587,7 @@ class Database:
         start: datetime,
         end: datetime,
         scenario: ScenarioResponse,
+        source_hash: str | None = None,
     ) -> ScenarioResponse:
         scene_id = str(uuid.uuid4())
         now = _now()
@@ -1606,9 +1610,25 @@ class Database:
                     source_end=_iso(end),
                     created_at=_iso(now),
                     expires_at=_iso(expires_at),
+                    source_hash=source_hash,
                 )
             )
         return saved
+
+    def find_scenario_by_source_hash(self, user_id: str, source_hash: str) -> ScenarioResponse | None:
+        """按采集内容哈希查已生成的未过期场景，用于幂等去重（重复上传不再重复生成）。"""
+        if not source_hash:
+            return None
+        now_iso = _iso(_now())
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(scenarios).where(
+                    scenarios.c.user_id == user_id,
+                    scenarios.c.source_hash == source_hash,
+                    scenarios.c.expires_at > now_iso,
+                ).order_by(scenarios.c.created_at.desc())
+            ).mappings().fetchone()
+        return _scenario_from_row(row) if row else None
 
     def get_scenario(self, user_id: str, scene_id: str) -> ScenarioResponse | None:
         with self.engine.connect() as conn:

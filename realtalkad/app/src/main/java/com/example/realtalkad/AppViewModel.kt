@@ -90,6 +90,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // 本次采集开始时的剩余额度(token)与起始字符数，用于采集中定时预估、超额自动停止
     private var captureRemainingTokens: Int? = null
     private var captureBaselineChars = 0
+    // 上次重试上传待同步内容的时间（每小时重试一次直到成功；后端按内容哈希幂等去重）
+    private var lastUploadRetryAt = 0L
     private val refreshMutex = Mutex()
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
@@ -229,6 +231,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             capture.start()
             statusMessage.value = okMessage
         }
+    }
+
+    /** 每小时重试一次未成功上传的待同步内容，直到成功（后端按内容哈希幂等，不生成重复场景）。 */
+    private fun retryPendingUploadsIfNeeded() {
+        if (capture.isRecording || auth.token == null) return
+        if (transcriptStore.pending().isEmpty()) return
+        val now = System.currentTimeMillis()
+        if (lastUploadRetryAt != 0L && now - lastUploadRetryAt < 3_600_000L) return
+        lastUploadRetryAt = now
+        uploadPendingAndRefresh()
     }
 
     /** 采集中定时预估：已采集字符数超过开始时的剩余额度则自动停止并提交。 */
@@ -627,6 +639,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             while (true) {
                 evaluateAutomaticCaptureWindow()
                 enforceCaptureQuotaDuringRecording()
+                retryPendingUploadsIfNeeded()
                 delay(30_000)
             }
         }

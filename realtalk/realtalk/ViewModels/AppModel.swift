@@ -146,6 +146,8 @@ final class AppModel: ObservableObject {
     /// 本次采集开始时拿到的剩余额度（token）与起始已采集字符数，用于采集中定时预估、超额自动停止。
     private var captureRemainingTokens: Int?
     private var captureBaselineChars: Int = 0
+    /// 上次重试上传待同步内容的时间（每小时重试一次，直到成功；后端按内容哈希幂等去重）。
+    private var lastUploadRetryAt: Date?
     private var answerTimeoutTask: Task<Void, Never>?
     private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
@@ -434,6 +436,17 @@ final class AppModel: ObservableObject {
             await speech.start()
             statusMessage = "正在采集真实对话"
         }
+    }
+
+    /// 每小时重试一次未成功上传的待同步内容，直到成功（后端按内容哈希幂等，不会生成重复场景）。
+    private func retryPendingUploadsIfNeeded() async {
+        guard speech.isRecording == false, auth.token != nil else { return }
+        guard transcripts.pendingUpload.isEmpty == false else { return }
+        let now = Date()
+        if let last = lastUploadRetryAt, now.timeIntervalSince(last) < 3600 { return }
+        lastUploadRetryAt = now
+        let uploaded = await uploadPending()
+        if uploaded > 0 { await loadTodayScenarios() }
     }
 
     /// 采集中定时预估：已采集字符数超过开始时的剩余额度则自动停止并提交生成场景。
@@ -1282,6 +1295,7 @@ final class AppModel: ObservableObject {
             while Task.isCancelled == false {
                 await self?.evaluateAutomaticCaptureWindow()
                 await self?.enforceCaptureQuotaDuringRecording()
+                await self?.retryPendingUploadsIfNeeded()
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
             }
         }

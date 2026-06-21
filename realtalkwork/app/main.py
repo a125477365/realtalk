@@ -1481,8 +1481,18 @@ def _scenario_batches(items: list[TranscriptItem]) -> list[list[TranscriptItem]]
 async def _generate_and_save_capture_scenarios(user_id: str, items: list[TranscriptItem]) -> list[ScenarioResponse]:
     saved: list[ScenarioResponse] = []
     for batch in _scenario_batches(items):
+        # 内容哈希幂等：相同采集内容若已生成过未过期的场景，直接复用，避免重复上传产生重复场景
+        digest = hashlib.sha256(
+            "\n".join((item.text or "").strip() for item in batch).encode("utf-8")
+        ).hexdigest()
+        existing = db.find_scenario_by_source_hash(user_id, digest)
+        if existing is not None:
+            saved.append(existing)
+            continue
         scenario = await generate_scenario(batch, user_id=user_id)
-        saved.append(db.create_scenario(user_id, batch[0].timestamp, batch[-1].timestamp, scenario))
+        saved.append(
+            db.create_scenario(user_id, batch[0].timestamp, batch[-1].timestamp, scenario, source_hash=digest)
+        )
     return saved
 
 
