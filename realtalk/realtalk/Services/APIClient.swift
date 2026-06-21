@@ -295,6 +295,11 @@ final class APIClient {
         try await get("/audio/jobs", token: token, queryItems: [])
     }
 
+    /// 上传前去重预检：传文件哈希，命中则后端返回已有任务（客户端可跳过整段上传）。
+    func audioPrecheck(fileHash: String, token: String) async throws -> AudioPrecheckResponse {
+        try await get("/audio/precheck", token: token, queryItems: [URLQueryItem(name: "file_hash", value: fileHash)])
+    }
+
     /// 大音频文件上传：multipart 先拼到临时文件再流式上传，避免 300MB 进内存
     func uploadAudio(fileURL: URL, token: String) async throws -> AudioJob {
         let boundary = "rt-\(UUID().uuidString)"

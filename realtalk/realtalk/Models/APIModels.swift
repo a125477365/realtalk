@@ -132,6 +132,11 @@ struct AudioJobListResponse: Codable, Equatable {
     let items: [AudioJob]
 }
 
+struct AudioPrecheckResponse: Codable, Equatable {
+    let duplicate: Bool
+    let job: AudioJob?
+}
+
 struct AuthResponse: Codable {
     let token: String
     let refreshToken: String?

@@ -169,6 +169,10 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     // ---- 高级会员音频上传 ----
     suspend fun audioJobs(token: String): AudioJobList = get("/audio/jobs", token)
 
+    /** 上传前去重预检：传文件哈希，命中则后端返回已有任务，可跳过整段上传。 */
+    suspend fun audioPrecheck(fileHash: String, token: String): AudioPrecheck =
+        get("/audio/precheck?file_hash=$fileHash", token)
+
     suspend fun uploadAudio(file: File, token: String): AudioJob {
         val mediaType = "audio/mpeg".toMediaType()
         val body: RequestBody = MultipartBody.Builder()

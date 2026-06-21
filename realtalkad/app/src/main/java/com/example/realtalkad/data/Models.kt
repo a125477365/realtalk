@@ -354,6 +354,9 @@ data class AudioJob(
 data class AudioJobList(val items: List<AudioJob>)
 
 @Serializable
+data class AudioPrecheck(val duplicate: Boolean, val job: AudioJob? = null)
+
+@Serializable
 data class AudioUploadInitRequest(val filename: String, @SerialName("size_bytes") val sizeBytes: Long)
 
 @Serializable

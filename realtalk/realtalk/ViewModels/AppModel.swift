@@ -1,4 +1,6 @@
+import AVFoundation
 import Combine
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -1046,8 +1048,33 @@ final class AppModel: ObservableObject {
             statusMessage = "请先登录"
             return
         }
+        // App 本地判断文件大小与时长（无需后端往返），超限直接拒绝
+        let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
+        if size > 300 * 1024 * 1024 {
+            statusMessage = "文件过大，最大 300MB"
+            return
+        }
+        if let duration = try? await AVURLAsset(url: fileURL).load(.duration) {
+            let seconds = CMTimeGetSeconds(duration)
+            if seconds.isFinite, seconds > 6 * 3600 {
+                statusMessage = "音频过长，最长 6 小时"
+                return
+            }
+        }
+
         isUploadingAudio = true
         defer { isUploadingAudio = false }
+
+        // App 计算文件哈希做上传前去重预检：同文件已生成过场景则直接复用，省去整段上传
+        if let hash = Self.fileSHA256(fileURL),
+           let pre = try? await api.audioPrecheck(fileHash: hash, token: token),
+           pre.duplicate {
+            statusMessage = "该录音此前已生成过场景，已直接复用，无需重复上传"
+            await loadAudioJobs()
+            await loadTodayScenarios()
+            return
+        }
+
         do {
             // 断点续传上传，网络波动自动续传，适合大文件
             _ = try await api.uploadAudioResumable(fileURL: fileURL, token: token) { [weak self] fraction in
@@ -1068,6 +1095,17 @@ final class AppModel: ObservableObject {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    /// 流式计算文件 SHA-256（与后端一致），用于上传前去重预检。
+    private static func fileSHA256(_ url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try? handle.read(upToCount: 1024 * 1024), chunk.isEmpty == false {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     func createRecharge(amountCents: Int, method: String) async {

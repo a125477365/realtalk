@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.Instant
 import java.time.LocalTime
@@ -887,7 +888,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun uploadRecording(file: File) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
+            // App 本地判断文件大小与时长（无需后端往返），超限直接拒绝
+            if (file.length() > 300L * 1024 * 1024) { statusMessage.value = "文件过大，最大 300MB"; return@launch }
+            val durationSec = audioDurationSeconds(file)
+            if (durationSec > 6 * 3600) { statusMessage.value = "音频过长，最长 6 小时"; return@launch }
+
             isUploadingAudio.value = true
+            // App 计算文件哈希做上传前去重预检：同文件已生成过场景则直接复用，省去整段上传
+            val hash = fileSha256(file)
+            if (hash != null) {
+                val pre = runCatching { api.audioPrecheck(hash, token) }.getOrNull()
+                if (pre?.duplicate == true) {
+                    statusMessage.value = "该录音此前已生成过场景，已直接复用，无需重复上传"
+                    loadAudioJobs(); loadTodayScenarios()
+                    isUploadingAudio.value = false
+                    return@launch
+                }
+            }
             runCatching {
                 api.uploadAudioResumable(file, token) { fraction ->
                     statusMessage.value = "上传中 ${(fraction * 100).toInt()}%"
@@ -906,6 +923,33 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { statusMessage.value = it.message ?: "上传失败" }
             isUploadingAudio.value = false
         }
+    }
+
+    /** 流式计算文件 SHA-256（与后端一致），用于上传前去重预检。 */
+    private suspend fun fileSha256(file: File): String? = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buf = ByteArray(1024 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        }.getOrNull()
+    }
+
+    /** 本地读取音频时长（秒）；读不到返回 0（按通过处理，交由后端兜底）。 */
+    private suspend fun audioDurationSeconds(file: File): Long = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching {
+            val mmr = android.media.MediaMetadataRetriever()
+            mmr.setDataSource(file.absolutePath)
+            val ms = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            mmr.release()
+            ms / 1000L
+        }.getOrDefault(0L)
     }
 
     /**

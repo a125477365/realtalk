@@ -1740,6 +1740,14 @@ async def audio_upload_chunk(
     return {"upload_id": upload_id, "received_bytes": part.stat().st_size}
 
 
+@app.get("/audio/precheck")
+def audio_precheck(file_hash: str = Query(...), user: UserOut = Depends(current_user)) -> dict:
+    """上传前去重预检：客户端先算文件哈希，若同用户同文件已成功生成过场景则直接复用，省去整段上传。"""
+    _require_audio_ready(user)
+    existing = db.find_audio_job_by_hash(user.id, file_hash)
+    return {"duplicate": existing is not None, "job": AudioJobOut(**existing).model_dump() if existing else None}
+
+
 @app.post("/audio/upload/complete", response_model=AudioJobOut)
 async def audio_upload_complete(
     upload_id: str = Query(...),
