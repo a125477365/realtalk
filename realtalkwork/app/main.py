@@ -1615,10 +1615,18 @@ def _audio_suffix(filename: str | None) -> str:
     return suffix
 
 
-async def _start_audio_job(user_id: str, filename: str, dest, size: int) -> dict:
+def _file_sha256(path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def _start_audio_job(user_id: str, filename: str, dest, size: int, file_hash: str | None = None) -> dict:
     from .audio_pipeline import dispatch_or_process
 
-    job = db.create_audio_job(user_id, filename, size)
+    job = db.create_audio_job(user_id, filename, size, file_hash=file_hash)
     asyncio.create_task(dispatch_or_process(job["id"], user_id, dest))
     return job
 
@@ -1746,7 +1754,13 @@ async def audio_upload_complete(
     dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
     part.rename(dest)
     size = dest.stat().st_size
-    job = await _start_audio_job(user.id, filename or dest.name, dest, size)
+    # 文件内容哈希幂等：同一用户同一文件已成功生成过场景，直接复用，不重复转写/重复生成
+    file_hash = await asyncio.to_thread(_file_sha256, dest)
+    existing = db.find_audio_job_by_hash(user.id, file_hash)
+    if existing is not None:
+        dest.unlink(missing_ok=True)
+        return AudioJobOut(**existing)
+    job = await _start_audio_job(user.id, filename or dest.name, dest, size, file_hash=file_hash)
     return AudioJobOut(**job)
 
 

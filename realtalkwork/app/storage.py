@@ -334,10 +334,12 @@ audio_jobs = Table(
     Column("error", Text),
     Column("scene_id", Text),
     Column("transcript_chars", Integer, nullable=False, default=0),
+    Column("file_hash", Text),  # 文件内容哈希，用于同文件同用户幂等去重
     Column("created_at", Text, nullable=False),
     Column("updated_at", Text, nullable=False),
 )
 Index("idx_audio_jobs_user_created", audio_jobs.c.user_id, audio_jobs.c.created_at)
+Index("idx_audio_jobs_user_hash", audio_jobs.c.user_id, audio_jobs.c.file_hash)
 
 ai_usage = Table(
     "ai_usage",
@@ -400,6 +402,7 @@ class Database:
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
             self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
+            self._ensure_column(conn, "audio_jobs", "file_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
                 conn,
@@ -933,7 +936,7 @@ class Database:
 
     # ---- 音频转写任务 ----
 
-    def create_audio_job(self, user_id: str, filename: str, size_bytes: int) -> dict[str, Any]:
+    def create_audio_job(self, user_id: str, filename: str, size_bytes: int, file_hash: str | None = None) -> dict[str, Any]:
         job_id = str(uuid.uuid4())
         now = _iso(_now())
         with self.engine.begin() as conn:
@@ -944,11 +947,27 @@ class Database:
                     filename=filename,
                     size_bytes=size_bytes,
                     status="pending",
+                    file_hash=file_hash,
                     created_at=now,
                     updated_at=now,
                 )
             )
         return self.get_audio_job(user_id, job_id)
+
+    def find_audio_job_by_hash(self, user_id: str, file_hash: str) -> dict[str, Any] | None:
+        """同一用户、同一文件哈希、已成功生成场景的任务——用于幂等，避免同一文件重复转写生成。"""
+        if not file_hash:
+            return None
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(audio_jobs).where(
+                    audio_jobs.c.user_id == user_id,
+                    audio_jobs.c.file_hash == file_hash,
+                    audio_jobs.c.status == "completed",
+                    audio_jobs.c.scene_id.isnot(None),
+                ).order_by(audio_jobs.c.created_at.desc())
+            ).mappings().fetchone()
+        return _audio_job_dict(row) if row else None
 
     def get_audio_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
