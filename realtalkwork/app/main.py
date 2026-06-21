@@ -2029,15 +2029,18 @@ async def roleplay_message(
         had_rejected_attempt,
     )
     stored_feedback = feedback or evaluation.feedback.strip() or "回答正确，已继续下一句。"
-    db.add_roleplay_message(
-        user.id,
-        session.session_id,
-        speaker="user",
-        role=session.selected_role,
-        content=request.message.strip(),
-        translation=target_line.source_text,
-        feedback=(stored_feedback if final_guidance else feedback or None),
-    )
+    # 实时指导：只有说对了（accepted）才把用户这句计入字幕；说错的不进字幕，
+    # 仅在指导区给出中文纠正、让用户重新尝试。事后指导 accepted 恒为真，所以照常进字幕并继续。
+    if accepted:
+        db.add_roleplay_message(
+            user.id,
+            session.session_id,
+            speaker="user",
+            role=session.selected_role,
+            content=request.message.strip(),
+            translation=target_line.source_text,
+            feedback=(stored_feedback if final_guidance else feedback or None),
+        )
     db.add_practice_result(
         user.id,
         session.session_id,

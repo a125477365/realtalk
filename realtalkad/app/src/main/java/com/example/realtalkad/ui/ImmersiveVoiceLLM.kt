@@ -6,7 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,9 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,7 +24,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -58,7 +53,6 @@ private object RTVoice {
 @Composable
 fun ImmersiveVoiceLLMScreen(model: AppViewModel) {
     val phase by model.realtime.phase.collectAsState()
-    val transcript by model.realtime.transcript.collectAsState()
     val review by model.realtime.review.collectAsState()
     val statusText by model.realtime.statusText.collectAsState()
     val inputLevel by model.realtime.inputLevel.collectAsState()
@@ -100,41 +94,15 @@ fun ImmersiveVoiceLLMScreen(model: AppViewModel) {
                 ) { Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp) }
             }
 
-            // 字幕
-            val listState = rememberLazyListState()
-            LaunchedEffect(transcript.size) {
-                if (transcript.isNotEmpty()) listState.animateScrollToItem(transcript.lastIndex)
-            }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                items(transcript) { line ->
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            if (line.role == "user") "You" else "AI",
-                            color = if (line.role == "user") RTVoice.User else Color.White.copy(alpha = 0.7f),
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = (12f * fontScale).sp,
-                        )
-                        Text(
-                            line.text,
-                            color = Color.White.copy(alpha = 0.92f),
-                            fontSize = (19f * fontScale).sp,
-                            fontWeight = FontWeight.Medium,
-                            lineHeight = (25f * fontScale).sp,
-                        )
-                    }
-                }
-            }
-
+            // 纯语音流对接：不做文字/语音转换，不显示字幕与指导，
+            // 界面中央只有一个跟随语音频率跳动的提示圈。
+            Spacer(Modifier.weight(1f))
             if (finished) {
                 ReviewCard(model, review, phase, statusText, fontScale)
             } else {
                 VoiceControls(phase, statusText, inputLevel, aiSpeaking, fontScale) { model.endVoiceLLMPractice() }
             }
+            Spacer(Modifier.weight(1f))
         }
     }
 }

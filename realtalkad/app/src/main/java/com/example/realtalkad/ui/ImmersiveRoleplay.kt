@@ -127,11 +127,6 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                         Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp)
                     }
                 }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeChip(if (conversationMode == "manual") "手工触发式" else "沉浸式", fontScale)
-                    ModeChip(if (guidanceMode == "final") "结束后指导" else "实时指导", fontScale)
-                }
             }
 
             // 字幕区（含双语/仅英文切换）
@@ -190,7 +185,6 @@ private fun SubtitlePane(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("字幕 · 已确认对话", color = Color.White.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold, fontSize = (11f * fontScale).sp)
             Spacer(Modifier.weight(1f))
             Box(Modifier.width(150.dp)) {
                 BrandSegmented(
@@ -222,8 +216,6 @@ private fun GuidancePane(nextLineHint: String?, guidanceTexts: List<String>, gui
             .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
-        Text("指导", color = Color.White.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold, fontSize = (11f * fontScale).sp)
-        Spacer(Modifier.height(6.dp))
         Column(
             Modifier.verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -370,19 +362,6 @@ private fun PromptCircle(
             }
         }
     }
-}
-
-@Composable
-private fun ModeChip(text: String, fontScale: Float) {
-    Text(
-        text,
-        color = Color.White.copy(alpha = 0.8f),
-        fontSize = (11f * fontScale).sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier
-            .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-    )
 }
 
 /** 手工触发式：长按说话；向左滑到取消区松手=取消，否则=发送。 */

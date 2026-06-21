@@ -21,15 +21,17 @@ struct ImmersiveVoiceLLMView: View {
 
             VStack(spacing: 0) {
                 header
-                captions
                 Spacer(minLength: 0)
                 if isFinished {
                     reviewCard
                 } else {
+                    // 纯语音流对接：不做文字/语音转换，不显示字幕与指导，
+                    // 界面中央只有一个跟随语音频率跳动的提示圈。
                     orb
                     statusLine
                     endButton
                 }
+                Spacer(minLength: 0)
             }
             .padding(.bottom, 24)
         }
@@ -73,35 +75,6 @@ struct ImmersiveVoiceLLMView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-    }
-
-    private var captions: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(realtime.transcript) { line in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(line.role == .user ? "You" : "AI")
-                                .font(.system(size: 12 * model.fontScale, weight: .semibold))
-                                .foregroundStyle(line.role == .user ? Palette.user : .white.opacity(0.7))
-                            Text(line.text)
-                                .font(.system(size: 19 * model.fontScale, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.92))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .id(line.id)
-                    }
-                    Color.clear.frame(height: 8).id("bottom")
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-            }
-            .scrollIndicators(.hidden)
-            .onChange(of: realtime.transcript.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo("bottom", anchor: .bottom) }
-            }
-        }
-        .frame(maxHeight: .infinity)
     }
 
     // 实时语音律动圆球：用户说话时绿色随电平跳动，AI 说话时紫色脉冲

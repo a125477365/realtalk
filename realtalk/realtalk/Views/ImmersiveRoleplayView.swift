@@ -69,12 +69,6 @@ struct ImmersiveRoleplayView: View {
                 }
                 .buttonStyle(.plain)
             }
-
-            HStack(spacing: 8) {
-                modeChip(model.conversationMode == .manual ? "手工触发式" : "沉浸式")
-                modeChip(model.guidanceMode == .final ? "结束后指导" : "实时指导")
-                Spacer()
-            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
@@ -85,7 +79,6 @@ struct ImmersiveRoleplayView: View {
     private var subtitlePane: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                paneLabel("字幕 · 已确认对话")
                 Spacer()
                 BrandSegmentedPicker(
                     selection: $model.showDialogueContent,
@@ -135,8 +128,6 @@ struct ImmersiveRoleplayView: View {
 
     private var guidancePane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            paneLabel("指导")
-                .padding(.horizontal, 20)
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
@@ -226,20 +217,6 @@ struct ImmersiveRoleplayView: View {
                 Color.clear.frame(height: 20)
             }
         }
-    }
-
-    private func paneLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11 * model.fontScale, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.5))
-    }
-
-    private func modeChip(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11 * model.fontScale, weight: .medium))
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(.white.opacity(0.12), in: Capsule())
     }
 
     private var isUserTurnNow: Bool {
