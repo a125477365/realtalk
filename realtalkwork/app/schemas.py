@@ -326,6 +326,15 @@ class NonmemberLimits(BaseModel):
     daily_capture_seconds: int
 
 
+class CaptureQuotaResponse(BaseModel):
+    """采集前/采集中查询的剩余额度（按 token 估算）。"""
+    remaining_tokens: int          # 估算还能用于采集→生成场景的 token 余量（0 表示已用尽）
+    can_capture: bool              # 是否允许开始采集（额度未用尽）
+    approx_sentences: int          # 余量大约还能采集多少句
+    is_member: bool
+    message: str = ""              # 不足/超额时给用户的提示文案
+
+
 class BillingAccountResponse(BaseModel):
     user: UserOut
     ledger: list[BillingLedgerItem]

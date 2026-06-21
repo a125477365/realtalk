@@ -143,6 +143,9 @@ final class AppModel: ObservableObject {
     private var captureScheduleLoop: Task<Void, Never>?
     /// 用户在某采集时段内手动停止后，抑制自动采集直到该时段结束（避免停了又被自动重启）。
     private var autoCaptureSuppressedUntil: Date?
+    /// 本次采集开始时拿到的剩余额度（token）与起始已采集字符数，用于采集中定时预估、超额自动停止。
+    private var captureRemainingTokens: Int?
+    private var captureBaselineChars: Int = 0
     private var answerTimeoutTask: Task<Void, Never>?
     private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
@@ -397,6 +400,7 @@ final class AppModel: ObservableObject {
             if autoCaptureEnabled, let end = currentAutoWindowEnd() {
                 autoCaptureSuppressedUntil = end
             }
+            captureRemainingTokens = nil
             speech.stop(savePartial: true)
             statusMessage = "已停止采集，正在发送给后台并生成场景…"
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -405,9 +409,43 @@ final class AppModel: ObservableObject {
                 await loadTodayScenarios()
             }
         } else {
+            await startCaptureWithQuotaCheck()
+        }
+    }
+
+    /// 待同步内容的总字符数（≈token），用于采集中的额度预估。
+    private var pendingCharCount: Int {
+        transcripts.pendingUpload.reduce(0) { $0 + $1.text.count }
+    }
+
+    /// 开始采集前查询剩余额度：超额则拦截不采集；额度不足则提示但仍允许；记录额度用于采集中自动停止。
+    private func startCaptureWithQuotaCheck() async {
+        captureRemainingTokens = nil
+        if let token = auth.token, let quota = try? await api.captureQuota(token: token) {
+            if quota.canCapture == false {
+                statusMessage = quota.message
+                return
+            }
+            captureRemainingTokens = quota.remainingTokens
+            captureBaselineChars = pendingCharCount
+            await speech.start()
+            statusMessage = quota.message.isEmpty ? "正在采集真实对话" : quota.message
+        } else {
             await speech.start()
             statusMessage = "正在采集真实对话"
         }
+    }
+
+    /// 采集中定时预估：已采集字符数超过开始时的剩余额度则自动停止并提交生成场景。
+    private func enforceCaptureQuotaDuringRecording() async {
+        guard speech.isRecording, let remaining = captureRemainingTokens else { return }
+        let collected = max(0, pendingCharCount - captureBaselineChars)
+        guard collected >= remaining else { return }
+        captureRemainingTokens = nil
+        speech.stop(savePartial: true)
+        statusMessage = "已达当月额度，已自动停止采集并提交生成场景"
+        let uploaded = await uploadPending()
+        if uploaded > 0 { await loadTodayScenarios() }
     }
 
     func saveCaptureSchedule() {
@@ -1243,6 +1281,7 @@ final class AppModel: ObservableObject {
         captureScheduleLoop = Task { [weak self] in
             while Task.isCancelled == false {
                 await self?.evaluateAutomaticCaptureWindow()
+                await self?.enforceCaptureQuotaDuringRecording()
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
             }
         }
@@ -1261,8 +1300,8 @@ final class AppModel: ObservableObject {
             // 用户手动停止过本时段：本时段内不再自动重启
             if autoCaptureSuppressedUntil != nil { return }
             if speech.isRecording == false {
-                await speech.start()
-                statusMessage = "已按默认时间开始采集"
+                // 自动采集同样先校验额度，超额则不启动并提示
+                await startCaptureWithQuotaCheck()
             }
         } else if speech.isRecording {
             speech.stop(savePartial: true)

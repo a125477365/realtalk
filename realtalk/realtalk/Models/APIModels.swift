@@ -488,6 +488,22 @@ struct RechargeConfirmRequest: Codable {
     }
 }
 
+struct CaptureQuotaResponse: Codable {
+    let remainingTokens: Int
+    let canCapture: Bool
+    let approxSentences: Int
+    let isMember: Bool
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case remainingTokens = "remaining_tokens"
+        case canCapture = "can_capture"
+        case approxSentences = "approx_sentences"
+        case isMember = "is_member"
+        case message
+    }
+}
+
 struct SupportTicketCreateRequest: Codable {
     let category: String
     let subject: String

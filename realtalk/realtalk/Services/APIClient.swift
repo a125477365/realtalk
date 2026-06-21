@@ -180,6 +180,10 @@ final class APIClient {
         )
     }
 
+    func captureQuota(token: String) async throws -> CaptureQuotaResponse {
+        try await get("/capture/quota", token: token, queryItems: [])
+    }
+
     func todayScenarios(token: String) async throws -> ScenarioListResponse {
         try await get("/scenario/today", token: token, queryItems: [])
     }

@@ -125,6 +125,8 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         )
     }
 
+    suspend fun captureQuota(token: String): CaptureQuota = get("/capture/quota", token)
+
     // ---- 场景 ----
     suspend fun todayScenarios(token: String): ScenarioListResponse = get("/scenario/today", token)
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)

@@ -57,6 +57,7 @@ from .schemas import (
     AIChatResponse,
     BillingAccountResponse,
     BillingResponse,
+    CaptureQuotaResponse,
     CaptureUploadChunkRequest,
     CaptureUploadChunkResponse,
     CaptureUploadCompleteRequest,
@@ -1485,6 +1486,12 @@ async def _generate_and_save_capture_scenarios(user_id: str, items: list[Transcr
     return saved
 
 
+@app.get("/capture/quota", response_model=CaptureQuotaResponse)
+def capture_quota(user: UserOut = Depends(current_user)) -> CaptureQuotaResponse:
+    """采集前/采集中查询剩余额度（按 token 估算），供客户端提示或自动停止。"""
+    return capture_quota_info(user)
+
+
 @app.post("/capture/upload/init", response_model=CaptureUploadInitResponse)
 def capture_upload_init(
     request: CaptureUploadInitRequest,
@@ -2203,6 +2210,41 @@ def enforce_capture_quota(user: UserOut, items: list[TranscriptItem]) -> None:
             detail=f"非会员每日可采集的对话有限（每天约 {limit} 字），升级会员可解锁更多，或明天再来。",
         )
     db.record_capture_input(user.id, char_count)
+
+
+def capture_quota_info(user: UserOut) -> CaptureQuotaResponse:
+    """估算用户还能用于采集→生成场景的 token 余量（采集会调文本模型生成场景）。"""
+    from .ark_client import resolve_ai_config
+
+    sentence_tokens = 30  # 估算：平均每句对话约 30 token
+    if user.plan_tier == "free":
+        chat_left = max(0, db.get_nonmember_daily_chat_tokens() - db.tokens_used_today(user.id))
+        cap_left = max(0, db.get_nonmember_daily_capture_tokens() - db.capture_tokens_used_today(user.id))
+        remaining = min(chat_left, cap_left)
+        is_member = False
+    else:
+        remaining_cents = max(0.0, monthly_budget_cents(user) - db.cost_used_this_cycle(user.id))
+        price = resolve_ai_config().input_price_per_1m_cents or 80.0
+        remaining = int(remaining_cents / price * 1_000_000) if price > 0 else 0
+        is_member = True
+    can = remaining > 0
+    approx = remaining // sentence_tokens
+    if not can:
+        message = (
+            "已超过当月可用额度，暂时无法采集；本月额度下月恢复，或升级会员获得更多额度。"
+            if is_member else "今日免费额度已用尽，明天恢复，或升级会员获得更多额度。"
+        )
+    elif remaining < 1000:
+        message = f"额度不足，大约还能采集 {approx} 句，请尽快升级会员或留意用量。"
+    else:
+        message = ""
+    return CaptureQuotaResponse(
+        remaining_tokens=remaining,
+        can_capture=can,
+        approx_sentences=approx,
+        is_member=is_member,
+        message=message,
+    )
 
 
 def nonmember_limits_info() -> NonmemberLimits:

@@ -87,6 +87,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var autoCaptureRunning = false
     // 用户在某采集时段内手动停止后，抑制自动重启直到该时段结束
     private var autoCaptureSuppressedUntil: LocalTime? = null
+    // 本次采集开始时的剩余额度(token)与起始字符数，用于采集中定时预估、超额自动停止
+    private var captureRemainingTokens: Int? = null
+    private var captureBaselineChars = 0
     private val refreshMutex = Mutex()
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
@@ -202,12 +205,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (capture.isRecording) stopCapture() else startCapture()
     }
 
-    /** 供 Siri/Google 助手语音指令与主界面按钮共用：开始采集。 */
+    /** 供 Siri/Google 助手语音指令与主界面按钮共用：开始采集（先校验额度）。 */
     fun startCapture() {
         if (capture.isRecording) return
         autoCaptureRunning = false
-        capture.start()
-        statusMessage.value = "正在采集真实对话"
+        viewModelScope.launch { startCaptureWithQuotaCheck("正在采集真实对话") }
+    }
+
+    private fun pendingCharCount(): Int = transcriptStore.pending().sumOf { it.text.length }
+
+    /** 开始采集前查询剩余额度：超额拦截、不足提示但允许；记录额度用于采集中自动停止。 */
+    private suspend fun startCaptureWithQuotaCheck(okMessage: String) {
+        captureRemainingTokens = null
+        val token = auth.token
+        val quota = if (token != null) runCatching { api.captureQuota(token) }.getOrNull() else null
+        if (quota != null) {
+            if (!quota.canCapture) { statusMessage.value = quota.message; return }
+            captureRemainingTokens = quota.remainingTokens
+            captureBaselineChars = pendingCharCount()
+            capture.start()
+            statusMessage.value = if (quota.message.isBlank()) okMessage else quota.message
+        } else {
+            capture.start()
+            statusMessage.value = okMessage
+        }
+    }
+
+    /** 采集中定时预估：已采集字符数超过开始时的剩余额度则自动停止并提交。 */
+    private fun enforceCaptureQuotaDuringRecording() {
+        if (!capture.isRecording) return
+        val remaining = captureRemainingTokens ?: return
+        val collected = (pendingCharCount() - captureBaselineChars).coerceAtLeast(0)
+        if (collected >= remaining) {
+            captureRemainingTokens = null
+            capture.stop()
+            autoCaptureRunning = false
+            statusMessage.value = "已达当月额度，已自动停止采集并提交生成场景"
+            uploadPendingAndRefresh()
+        }
     }
 
     /** 供语音指令与主界面按钮共用：停止采集并推送生成场景。 */
@@ -215,6 +250,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!capture.isRecording) return
         // 若在自动采集时段内手动停止：抑制本时段的自动重启
         if (autoCaptureEnabled.value) currentAutoWindowEnd()?.let { autoCaptureSuppressedUntil = it }
+        captureRemainingTokens = null
         capture.stop()
         autoCaptureRunning = false
         statusMessage.value = "已停止采集，正在发送给后台并生成场景…"
@@ -590,6 +626,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         captureScheduleJob = viewModelScope.launch {
             while (true) {
                 evaluateAutomaticCaptureWindow()
+                enforceCaptureQuotaDuringRecording()
                 delay(30_000)
             }
         }
@@ -605,8 +642,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val suppressed = insideWindow && autoCaptureSuppressedUntil != null
         if (insideWindow && !capture.isRecording && !suppressed) {
             autoCaptureRunning = true
-            capture.start()
-            statusMessage.value = "已按默认时间开始采集"
+            // 自动采集同样先校验额度，超额则不启动并提示
+            viewModelScope.launch { startCaptureWithQuotaCheck("已按默认时间开始采集") }
         } else if (!insideWindow && autoCaptureRunning && capture.isRecording) {
             capture.stop()
             autoCaptureRunning = false

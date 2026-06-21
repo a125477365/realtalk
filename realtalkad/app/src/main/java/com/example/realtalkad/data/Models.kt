@@ -230,6 +230,15 @@ data class TokenUsageInfo(
 )
 
 @Serializable
+data class CaptureQuota(
+    @SerialName("remaining_tokens") val remainingTokens: Int,
+    @SerialName("can_capture") val canCapture: Boolean,
+    @SerialName("approx_sentences") val approxSentences: Int,
+    @SerialName("is_member") val isMember: Boolean,
+    val message: String = "",
+)
+
+@Serializable
 data class SupportTicketCreateRequest(val category: String, val subject: String, val body: String)
 
 @Serializable
