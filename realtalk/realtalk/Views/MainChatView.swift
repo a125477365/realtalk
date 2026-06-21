@@ -228,13 +228,22 @@ struct MainChatView: View {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if scenarioScope == "all" {
-                            ForEach(groupedScenarios, id: \.day) { group in
-                                Text(dayLabel(group.day))
-                                    .font(.system(size: 12 * model.fontScale, weight: .semibold))
-                                    .foregroundStyle(RTTheme.textSecondary)
-                                    .padding(.horizontal, 16)
-                                    .padding(.top, 6)
-                                ForEach(group.items) { scenarioCard($0) }
+                            let today = todayScenarioItems
+                            let history = historyGroups
+                            if today.isEmpty == false {
+                                sectionHeader("今天")
+                                ForEach(today) { scenarioCard($0) }
+                            }
+                            if history.isEmpty == false {
+                                sectionHeader("历史")
+                                ForEach(history, id: \.day) { group in
+                                    Text(group.day.formatted(.dateTime.year().month().day()))
+                                        .font(.system(size: 11 * model.fontScale, weight: .medium))
+                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                                        .padding(.horizontal, 20)
+                                        .padding(.top, 2)
+                                    ForEach(group.items) { scenarioCard($0) }
+                                }
                             }
                         } else {
                             ForEach(model.todayScenarios) { scenarioCard($0) }
@@ -248,20 +257,30 @@ struct MainChatView: View {
         .padding(.bottom, 8)
     }
 
-    /// 「全部」场景按自然日分组（日期降序，组内按时间降序）。
-    private var groupedScenarios: [(day: Date, items: [ScenarioSummary])] {
+    /// 今天的场景（时间降序）。
+    private var todayScenarioItems: [ScenarioSummary] {
         let cal = Calendar.current
-        let groups = Dictionary(grouping: model.todayScenarios) { cal.startOfDay(for: $0.createdAt) }
+        return model.todayScenarios
+            .filter { cal.isDateInToday($0.createdAt) }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// 历史场景：非今天，按自然日分组（日期降序，组内时间降序）。
+    private var historyGroups: [(day: Date, items: [ScenarioSummary])] {
+        let cal = Calendar.current
+        let past = model.todayScenarios.filter { cal.isDateInToday($0.createdAt) == false }
+        let groups = Dictionary(grouping: past) { cal.startOfDay(for: $0.createdAt) }
         return groups
             .map { (day: $0.key, items: $0.value.sorted { $0.createdAt > $1.createdAt }) }
             .sorted { $0.day > $1.day }
     }
 
-    private func dayLabel(_ day: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(day) { return "今天" }
-        if cal.isDateInYesterday(day) { return "昨天" }
-        return day.formatted(.dateTime.year().month().day())
+    private func sectionHeader(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13 * model.fontScale, weight: .semibold))
+            .foregroundStyle(RTTheme.textPrimary)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
     }
 
     @ViewBuilder

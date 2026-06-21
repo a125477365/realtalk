@@ -113,17 +113,6 @@ fun BrandSegmented(
     }
 }
 
-/// 场景日期友好标签：今天 / 昨天 / 原日期（dateStr 形如 2026-06-20）。
-private fun friendlyDay(dateStr: String): String {
-    val today = java.time.LocalDate.now().toString()
-    val yesterday = java.time.LocalDate.now().minusDays(1).toString()
-    return when (dateStr) {
-        today -> "今天"
-        yesterday -> "昨天"
-        else -> dateStr
-    }
-}
-
 /// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。
 @androidx.compose.runtime.Composable
 private fun ScenarioCard(
@@ -315,14 +304,33 @@ fun MainChatScreen(model: AppViewModel) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (scenarioScope == "all") {
-                    // 「全部」按日期分组（日期降序）
-                    scenarios.groupBy { it.createdAt.take(10) }.entries.sortedByDescending { it.key }.forEach { (day, group) ->
-                        item(key = "h-$day") {
-                            Text(friendlyDay(day), fontWeight = FontWeight.SemiBold, fontSize = (12 * fontScale).sp,
-                                color = RT.TextSecondary, modifier = Modifier.padding(top = 4.dp))
+                    // 「今天 / 历史」两段；历史内再按日期分组
+                    val today = java.time.LocalDate.now().toString()
+                    val todayItems = scenarios.filter { it.createdAt.take(10) == today }
+                    val historyGroups = scenarios.filter { it.createdAt.take(10) != today }
+                        .groupBy { it.createdAt.take(10) }.entries.sortedByDescending { it.key }
+                    if (todayItems.isNotEmpty()) {
+                        item(key = "sec-today") {
+                            Text("今天", fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp,
+                                color = RT.TextPrimary, modifier = Modifier.padding(top = 4.dp))
                         }
-                        items(group, key = { it.sceneId }) { summary ->
-                            ScenarioCard(summary, fontScale, showDate = true) { roleDialogFor = summary }
+                        items(todayItems, key = { it.sceneId }) { summary ->
+                            ScenarioCard(summary, fontScale, showDate = false) { roleDialogFor = summary }
+                        }
+                    }
+                    if (historyGroups.isNotEmpty()) {
+                        item(key = "sec-history") {
+                            Text("历史", fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp,
+                                color = RT.TextPrimary, modifier = Modifier.padding(top = 8.dp))
+                        }
+                        historyGroups.forEach { (day, group) ->
+                            item(key = "d-$day") {
+                                Text(day, fontWeight = FontWeight.Medium, fontSize = (11 * fontScale).sp,
+                                    color = RT.TextSecondary.copy(alpha = 0.8f), modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+                            }
+                            items(group, key = { it.sceneId }) { summary ->
+                                ScenarioCard(summary, fontScale, showDate = true) { roleDialogFor = summary }
+                            }
                         }
                     }
                 } else {
