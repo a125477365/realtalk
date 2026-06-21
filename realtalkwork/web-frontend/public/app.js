@@ -208,7 +208,7 @@ function renderNav() {
     item("overview", "账户概览"),
     item("plans", "会员套餐"),
     item("scenes", "我的场景"),
-    item("upload", "上传录音"),
+    item("upload", "上传语音文件"),
     item("tickets", "客服工单"),
     "  </nav>",
     '  <button class="user-chip" onclick="doLogout()" title="退出登录">',
@@ -466,7 +466,7 @@ function renderUpload() {
         : j.scene_id ? '<button class="btn btn-ghost btn-sm" onclick="go(\'scenes\')">查看场景</button>' : "—") + "</td></tr>";
   }).join("");
   return [
-    '<div class="card"><h3>上传录音生成场景 <span class="sub">支持 mp3 / wav / m4a，最长 6 小时、最大 300MB；转写完成后自动删除音频文件</span></h3>',
+    '<div class="card"><h3>上传已有语音文件生成场景 <span class="sub">支持 mp3 / wav / m4a，最长 6 小时、最大 300MB；转写完成后自动删除音频文件</span></h3>',
     isPremium
       ? [
           '<div class="dropzone" id="dropzone"><div class="big">🎙️</div>',

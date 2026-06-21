@@ -179,9 +179,9 @@ fun AccountSheet(model: AppViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("上传录音生成场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
+                    Text("上传已有语音文件生成场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
                     Text(
-                        if (user?.planTier == "premium") "本地文件或蓝牙录音笔 · 最长 6 小时 / 300MB"
+                        if (user?.planTier == "premium") "支持 mp3 / wav / m4a · 最长 6 小时 / 300MB"
                         else "高级会员专属功能，升级后可用",
                         fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
                     )
@@ -632,7 +632,7 @@ fun UploadSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onBack) { Text("‹ 返回") }
-                Text("上传录音", fontWeight = FontWeight.SemiBold)
+                Text("上传语音文件", fontWeight = FontWeight.SemiBold)
             }
         }
         item {

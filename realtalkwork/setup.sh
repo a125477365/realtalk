@@ -72,6 +72,9 @@ if $DEPLOY_BACKEND; then
   ENV_LINES+=("API_PORT=$REPLY_VALUE")
   API_PORT="$REPLY_VALUE"
 
+  # 是否为「全新数据库」：只有新建库时才需要把模型/语音等 DB 存储参数初始化进库；
+  # 连接已有库（外部库，或沿用已初始化的内置数据目录）则这些配置库里已有，不再重复询问。
+  FRESH_DB=false
   note "数据库二选一：内置 PostgreSQL 容器，或填写已有数据库连接串（分布式/托管库）。"
   ask "使用内置 PostgreSQL 容器？(yes=内置 / no=外部数据库)" "yes"
   if [ "$REPLY_VALUE" = "yes" ]; then
@@ -127,6 +130,7 @@ if $DEPLOY_BACKEND; then
     else
       ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
       PG_PW="$REPLY_VALUE"
+      FRESH_DB=true   # 新初始化的内置库 → 需要把模型/语音等参数写入并落库
     fi
 
     # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）
@@ -175,34 +179,40 @@ if $DEPLOY_BACKEND; then
   ADMIN_PW_VALUE="$REPLY_VALUE"
   ENV_LINES+=("ADMIN_PASSWORD=$ADMIN_PW_VALUE")
 
-  note "AI 模型可跳过，部署后在管理台「系统设置 → AI 模型对接」配置（推荐）。"
-  ask "AI Base URL（回车跳过）" ""
-  AI_BASE_URL="$REPLY_VALUE"
-  if [ -n "$AI_BASE_URL" ]; then
-    ask_secret "AI API Key"; AI_KEY="$REPLY_VALUE"
-    ask "模型名称" "doubao-seed-1-6-251015"
-    ENV_LINES+=("AI_BASE_URL=$AI_BASE_URL" "AI_API_KEY=$AI_KEY" "AI_MODEL=$REPLY_VALUE")
-  else
-    ENV_LINES+=("AI_BASE_URL=" "AI_API_KEY=" "AI_MODEL=")
-  fi
+  # 以下「AI 模型 / 实时语音」属于保存在数据库（app_settings）的参数：
+  # 仅在新建数据库时询问并写入（首次启动会落库）；连接已有库时库里已有，跳过询问，可在管理台改。
+  if $FRESH_DB; then
+    note "AI 模型可跳过，部署后在管理台「系统设置 → AI 模型对接」配置（推荐）。"
+    ask "AI Base URL（回车跳过）" ""
+    AI_BASE_URL="$REPLY_VALUE"
+    if [ -n "$AI_BASE_URL" ]; then
+      ask_secret "AI API Key"; AI_KEY="$REPLY_VALUE"
+      ask "模型名称" "doubao-seed-1-6-251015"
+      ENV_LINES+=("AI_BASE_URL=$AI_BASE_URL" "AI_API_KEY=$AI_KEY" "AI_MODEL=$REPLY_VALUE")
+    else
+      ENV_LINES+=("AI_BASE_URL=" "AI_API_KEY=" "AI_MODEL=")
+    fi
 
-  # ---- 高级会员实时语音大模型（OpenAI 兼容 Realtime API，可跳过）----
-  note "高级会员实时语音对练（可跳过，建议部署后在管理台「系统设置」配置）。"
-  ask "实时语音 Base URL（OpenAI 兼容 Realtime WSS，回车跳过）" ""
-  RT_BASE="$REPLY_VALUE"
-  if [ -n "$RT_BASE" ]; then
-    ask_secret "实时语音 API Key"; RT_KEY="$REPLY_VALUE"
-    ask "实时语音模型" "gpt-4o-realtime-preview"; RT_MODEL="$REPLY_VALUE"
-    ask "语音音色" "alloy"; RT_VOICE="$REPLY_VALUE"
-    note "实时语音计费单价（分/百万 token），文本/音频分开；用量计入用户当月费用额度（会员月费50%）。"
-    ask "  输入·文本 单价" "400"; RT_P_IT="$REPLY_VALUE"
-    ask "  输入·音频 单价" "2800"; RT_P_IA="$REPLY_VALUE"
-    ask "  输出·文本 单价" "1600"; RT_P_OT="$REPLY_VALUE"
-    ask "  输出·音频 单价" "5600"; RT_P_OA="$REPLY_VALUE"
-    ENV_LINES+=("REALTIME_BASE_URL=$RT_BASE" "REALTIME_API_KEY=$RT_KEY" "REALTIME_MODEL=$RT_MODEL" "REALTIME_VOICE=$RT_VOICE")
-    ENV_LINES+=("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_IT" "REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_IA" "REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_OT" "REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_OA")
+    # ---- 高级会员实时语音大模型（OpenAI 兼容 Realtime API，可跳过）----
+    note "高级会员实时语音对练（可跳过，建议部署后在管理台「系统设置」配置）。"
+    ask "实时语音 Base URL（OpenAI 兼容 Realtime WSS，回车跳过）" ""
+    RT_BASE="$REPLY_VALUE"
+    if [ -n "$RT_BASE" ]; then
+      ask_secret "实时语音 API Key"; RT_KEY="$REPLY_VALUE"
+      ask "实时语音模型" "gpt-4o-realtime-preview"; RT_MODEL="$REPLY_VALUE"
+      ask "语音音色" "alloy"; RT_VOICE="$REPLY_VALUE"
+      note "实时语音计费单价（分/百万 token），文本/音频分开；用量计入用户当月费用额度（会员月费50%）。"
+      ask "  输入·文本 单价" "400"; RT_P_IT="$REPLY_VALUE"
+      ask "  输入·音频 单价" "2800"; RT_P_IA="$REPLY_VALUE"
+      ask "  输出·文本 单价" "1600"; RT_P_OT="$REPLY_VALUE"
+      ask "  输出·音频 单价" "5600"; RT_P_OA="$REPLY_VALUE"
+      ENV_LINES+=("REALTIME_BASE_URL=$RT_BASE" "REALTIME_API_KEY=$RT_KEY" "REALTIME_MODEL=$RT_MODEL" "REALTIME_VOICE=$RT_VOICE")
+      ENV_LINES+=("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_IT" "REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_IA" "REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_OT" "REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_OA")
+    else
+      ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
+    fi
   else
-    ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
+    note "连接已有数据库：AI 模型 / 实时语音 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
   fi
 
   ask "worker 进程数（建议=CPU核数）" "4"

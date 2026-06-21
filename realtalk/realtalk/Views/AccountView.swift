@@ -153,8 +153,8 @@ struct AccountPanelView: View {
             VStack(spacing: 0) {
                 premiumRow(
                     icon: "waveform.badge.plus",
-                    title: "上传录音生成场景",
-                    subtitle: isPremium ? "本地文件或蓝牙录音笔 · 最长 6 小时" : "高级会员专属，升级后可用",
+                    title: "上传已有语音文件生成场景",
+                    subtitle: isPremium ? "支持 mp3 / wav / m4a · 最长 6 小时" : "高级会员专属，升级后可用",
                     action: { if isPremium { showingUpload = true } else { showingMembership = true } }
                 )
                 Divider().padding(.leading, 44)
@@ -579,7 +579,7 @@ struct UploadRecordingView: View {
                     }
                 }
             }
-            .navigationTitle("上传录音")
+            .navigationTitle("上传语音文件")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
