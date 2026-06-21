@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -80,96 +83,73 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val level by model.practiceAudioLevel.collectAsState()
     val aiLevel by model.aiAudioLevel.collectAsState()
 
-    val captions = buildList {
-        state?.messages?.forEach { m ->
-            add(ImmCaption(if (m.speaker == "user") "You" else "AI", m.content, m.translation.orEmpty(), Color.White))
-            if (guidanceMode == "realtime" && m.speaker == "user" && !m.feedback.isNullOrBlank()) {
-                add(ImmCaption("AI", m.feedback, "", RTImm.Correction))
+    // 字幕区：只显示 AI 与用户已确认的对话内容（不含纠正）
+    val dialogueCaptions = state?.messages?.map {
+        ImmCaption(if (it.speaker == "user") "You" else "AI", it.content, it.translation.orEmpty(), Color.White)
+    } ?: emptyList()
+
+    // 指导区：实时指导=每轮中文纠正；结束后指导=结束时整体评分/建议
+    val guidanceTexts = buildList {
+        if (guidanceMode == "realtime") {
+            state?.messages?.forEach { m ->
+                if (m.speaker == "user" && !m.feedback.isNullOrBlank()) add(m.feedback!!.trim())
             }
         }
-        // 实时模式展示每轮纠正；结束后指导模式仅在完成/按需评估时由 latestFeedback 给出最终建议
-        val feedback = state?.latestFeedback?.trim().orEmpty()
-        if (feedback.isNotBlank() && lastOrNull()?.text != feedback) {
-            add(ImmCaption("AI", feedback, "", RTImm.Correction))
-        }
+        val fb = state?.latestFeedback?.trim().orEmpty()
+        if (fb.isNotBlank() && lastOrNull() != fb) add(fb)
     }
 
-    val promptText = state?.nextLine
+    // 下一句要说的中文提示（仅展示、不语音播报）
+    val nextLineHint = state?.nextLine
         ?.takeIf { state?.completed == false && !isWorking && !isSpeaking }
         ?.let {
-            val prefix = if (state?.latestAccepted == false) "请用英文继续说" else "请用英文说"
+            val prefix = if (state?.latestAccepted == false) "请你继续说" else "请你说"
             "$prefix：${it.sourceText}"
         }
 
-    val listState = rememberLazyListState()
-    LaunchedEffect(captions.size, state?.latestFeedback) {
-        if (captions.isNotEmpty()) listState.animateScrollToItem(captions.lastIndex)
-    }
-
     Box(
-        Modifier.fillMaxSize()
-            .background(Brush.verticalGradient(listOf(RTImm.Top, RTImm.Bottom)))
+        Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(RTImm.Top, RTImm.Bottom)))
     ) {
         Column(Modifier.fillMaxSize()) {
+            // 顶栏
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(
-                            state?.scenario?.title ?: "对练",
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = (17f * fontScale).sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Text(state?.scenario?.title ?: "对练", color = Color.White, fontWeight = FontWeight.SemiBold,
+                            fontSize = (17f * fontScale).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         state?.let {
-                            Text(
-                                "第 ${minOf(it.progress + 1, it.total)} / ${it.total} 句 · 我演 ${model.roleName(it.selectedRole)}",
-                                color = Color.White.copy(alpha = 0.6f),
-                                fontSize = (12f * fontScale).sp,
-                            )
+                            Text("第 ${minOf(it.progress + 1, it.total)} / ${it.total} 句 · 我演 ${model.roleName(it.selectedRole)}",
+                                color = Color.White.copy(alpha = 0.6f), fontSize = (12f * fontScale).sp)
                         }
                     }
-                    Box(
-                        Modifier.size(36.dp)
-                            .background(Color.White.copy(alpha = 0.12f), CircleShape)
-                            .clickable { model.closeImmersive() },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp) }
+                    Box(Modifier.size(36.dp).background(Color.White.copy(alpha = 0.12f), CircleShape)
+                        .clickable { model.closeImmersive() }, contentAlignment = Alignment.Center) {
+                        Text("x", color = Color.White.copy(alpha = 0.85f), fontSize = (15 * fontScale).sp)
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
-                // 对话中不可切换：只读展示当前方式（在设置里改）
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ModeChip(if (conversationMode == "manual") "手工触发式" else "沉浸式", fontScale)
                     ModeChip(if (guidanceMode == "final") "结束后指导" else "实时指导", fontScale)
                 }
-                Spacer(Modifier.height(10.dp))
-                // 字幕显示可在对话界面切换（双语 / 仅英文）
-                BrandSegmented(
-                    options = listOf("bilingual" to "双语字幕", "en" to "仅英文"),
-                    selected = if (showSubtitles) "bilingual" else "en",
-                    fontScale = fontScale,
-                ) { model.setShowSubtitles(it == "bilingual") }
             }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
-            ) {
-                itemsIndexed(captions) { idx, item ->
-                    CaptionRow(item, showSubtitles, isCurrent = idx == captions.lastIndex, fontScale = fontScale)
-                }
+            // 字幕区（含双语/仅英文切换）
+            SubtitlePane(dialogueCaptions, showSubtitles, fontScale, Modifier.weight(1f)) {
+                model.setShowSubtitles(it == "bilingual")
             }
 
+            // 指导区
+            GuidancePane(nextLineHint, guidanceTexts, guidanceMode, fontScale)
+
+            // 控制区（下一句提示已移到指导区，这里不显示 promptText）
             val isUserTurnNow = state?.completed == false && !isWorking && !isSpeaking &&
                 state?.nextLine != null && isVoiceActive
             if (conversationMode == "manual" && isUserTurnNow) {
-                ManualTalkControl(model, promptText, partial, fontScale)
+                ManualTalkControl(model, null, partial, fontScale)
             } else {
                 PromptCircle(
-                    promptText = promptText,
+                    promptText = null,
                     completed = state?.completed == true,
                     isWorking = isWorking,
                     isSpeaking = isSpeaking,
@@ -187,6 +167,77 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                     },
                     onReplay = { model.replayScenario() },
                     onEvaluate = { model.requestFinalEvaluation() },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitlePane(
+    captions: List<ImmCaption>,
+    showSubtitles: Boolean,
+    fontScale: Float,
+    modifier: Modifier,
+    onToggle: (String) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(captions.size) {
+        if (captions.isNotEmpty()) listState.animateScrollToItem(captions.lastIndex)
+    }
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("字幕 · 已确认对话", color = Color.White.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold, fontSize = (11f * fontScale).sp)
+            Spacer(Modifier.weight(1f))
+            Box(Modifier.width(150.dp)) {
+                BrandSegmented(
+                    options = listOf("bilingual" to "双语", "en" to "仅英文"),
+                    selected = if (showSubtitles) "bilingual" else "en",
+                    fontScale = fontScale,
+                    onSelect = onToggle,
+                )
+            }
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            itemsIndexed(captions) { idx, item ->
+                CaptionRow(item, showSubtitles, isCurrent = idx == captions.lastIndex, fontScale = fontScale)
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuidancePane(nextLineHint: String?, guidanceTexts: List<String>, guidanceMode: String, fontScale: Float) {
+    Column(
+        Modifier.fillMaxWidth().height(150.dp).padding(horizontal = 12.dp)
+            .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(16.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text("指导", color = Color.White.copy(alpha = 0.5f), fontWeight = FontWeight.SemiBold, fontSize = (11f * fontScale).sp)
+        Spacer(Modifier.height(6.dp))
+        Column(
+            Modifier.verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (nextLineHint != null) {
+                Text(nextLineHint, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (16f * fontScale).sp)
+            }
+            guidanceTexts.forEach { t ->
+                Text("· $t", color = RTImm.Correction, fontSize = (14f * fontScale).sp)
+            }
+            if (nextLineHint == null && guidanceTexts.isEmpty()) {
+                Text(
+                    if (guidanceMode == "final") "结束后会给出整体评分与建议" else "AI 的中文纠正建议会显示在这里",
+                    color = Color.White.copy(alpha = 0.4f), fontSize = (13f * fontScale).sp,
                 )
             }
         }

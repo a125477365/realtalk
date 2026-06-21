@@ -731,7 +731,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (partialSubtitle.value.isNotBlank()) { scheduleAnswerTimeout(); return@launch }
             practice.stop()
             appendChat(ChatMessage.Sender.ASSISTANT, "提示：${next.sourceText}\n试着说：${next.english}")
-            voice.speak("Take your time. Try saying: ${next.english}") { listenForNextTurn() }
+            // 下一句提示仅在指导区展示，不做 AI 语音播报（item 3）
+            listenForNextTurn()
         }
     }
 
@@ -756,13 +757,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         listenForNextTurn()
     }
 
-    /** 给当前轮的英文提示并朗读，随后继续聆听。 */
+    /** 给当前轮的中文提示（仅展示、不语音播报，item 3），随后继续聆听。 */
     fun requestHint() {
         val next = roleplay?.nextLine ?: return
         appendChat(ChatMessage.Sender.ASSISTANT, "提示：${next.sourceText}\n试着说：${next.english}")
         cancelAnswerTimeout()
         practice.stop()
-        voice.speak("Try saying: ${next.english}") { listenForNextTurn() }
+        listenForNextTurn()
     }
 
     /** 关闭沉浸式：先暂停语音对话，再退出全屏。 */

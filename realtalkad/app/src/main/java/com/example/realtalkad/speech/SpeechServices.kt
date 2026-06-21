@@ -223,7 +223,9 @@ class VoicePlayer(context: Context) {
 
     fun speak(text: String, completion: (() -> Unit)? = null) {
         if (!ready || text.isBlank()) { completion?.invoke(); return }
-        tts.language = Locale.US
+        // 含中文（如纠正/评分建议）用中文 TTS，否则英文，避免中文被英文引擎读乱（item 3）
+        val hasHan = text.any { it.code in 0x4E00..0x9FFF }
+        tts.language = if (hasHan) Locale.CHINESE else Locale.US
         tts.setSpeechRate(0.92f)   // 稍放慢，减少吞字/含糊，提升清晰度
         tts.setPitch(1.0f)
         isSpeaking = true
