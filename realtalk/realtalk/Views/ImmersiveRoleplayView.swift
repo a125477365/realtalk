@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// 对话界面拆为两个区：
+/// - 字幕区：只显示 AI 与用户已确认的对话内容，可实时切换双语/仅英文。
+/// - 指导区：显示「下一句要说的中文提示」（仅展示、不语音播报）；实时指导时显示 AI 的中文纠正建议
+///   （纠正会用中文语音播报），结束后指导时仅在结束后显示并播报最终评分与建议。
 struct ImmersiveRoleplayView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var practiceSpeech: SpeechPracticeManager
@@ -12,13 +16,13 @@ struct ImmersiveRoleplayView: View {
     private let manualCancelThreshold: CGFloat = -70
 
     private enum Palette {
-        // 深蓝调暗色背景（呼应品牌渐变的蓝端，同时保证字幕可读）
         static let top = Color(red: 0.07, green: 0.11, blue: 0.22)
         static let bottom = Color(red: 0.02, green: 0.03, blue: 0.08)
         static let listen = Color(red: 0.12, green: 0.74, blue: 0.38)
         static let speak = Color(red: 0.88, green: 0.18, blue: 0.18)
         static let thinking = Color(red: 0.32, green: 0.30, blue: 0.88)
         static let muted = Color.white.opacity(0.18)
+        static let guide = Color(red: 1.0, green: 0.82, blue: 0.42)   // 指导/纠正色
     }
 
     var body: some View {
@@ -26,14 +30,17 @@ struct ImmersiveRoleplayView: View {
             LinearGradient(colors: [Palette.top, Palette.bottom], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
+            VStack(spacing: 8) {
                 header
-                captions
-                promptAndControl
+                subtitlePane        // 上：字幕区（已确认对话）
+                guidancePane        // 中：指导区（提示 + 纠正/评分）
+                controlBar          // 下：麦克风与控制
             }
         }
         .preferredColorScheme(.dark)
     }
+
+    // MARK: 顶栏
 
     private var header: some View {
         VStack(spacing: 10) {
@@ -63,55 +70,57 @@ struct ImmersiveRoleplayView: View {
                 .buttonStyle(.plain)
             }
 
-            // 对话中不可切换：只读展示当前方式（在设置里改）
             HStack(spacing: 8) {
                 modeChip(model.conversationMode == .manual ? "手工触发式" : "沉浸式")
                 modeChip(model.guidanceMode == .final ? "结束后指导" : "实时指导")
                 Spacer()
             }
-
-            // 字幕显示可在对话界面中切换（与「今天/全部」同款选项栏）
-            BrandSegmentedPicker(
-                selection: $model.showDialogueContent,
-                options: [(true, "双语字幕"), (false, "仅英文")],
-                fontScale: model.fontScale
-            )
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
-        .padding(.bottom, 8)
     }
 
-    private var captions: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    ForEach(Array(captionItems.enumerated()), id: \.offset) { idx, item in
-                        captionRow(item, isCurrent: idx == captionItems.count - 1)
-                            .id(idx)
-                    }
-                    Color.clear.frame(height: 24).id("bottom")
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 18)
+    // MARK: 字幕区（只显示已确认对话；可切换双语/仅英文）
+
+    private var subtitlePane: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                paneLabel("字幕 · 已确认对话")
+                Spacer()
+                BrandSegmentedPicker(
+                    selection: $model.showDialogueContent,
+                    options: [(true, "双语"), (false, "仅英文")],
+                    fontScale: model.fontScale
+                )
+                .frame(width: 150)
             }
-            .scrollIndicators(.hidden)
-            .onChange(of: captionItems.count) { _, _ in scrollDown(proxy) }
-            .onChange(of: model.roleplay?.latestFeedback) { _, _ in scrollDown(proxy) }
-        }
-    }
+            .padding(.horizontal, 20)
 
-    private func scrollDown(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.3)) {
-            proxy.scrollTo("bottom", anchor: .bottom)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(Array(subtitleItems.enumerated()), id: \.offset) { idx, item in
+                            captionRow(item, isCurrent: idx == subtitleItems.count - 1)
+                        }
+                        Color.clear.frame(height: 8).id("subBottom")
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: subtitleItems.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo("subBottom", anchor: .bottom) }
+                }
+            }
         }
+        .frame(maxHeight: .infinity)
     }
 
     private func captionRow(_ item: Caption, isCurrent: Bool) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("\(item.speaker): \(item.text)")
-                .font(.system(size: isCurrent ? 28 * model.fontScale : 22 * model.fontScale, weight: .semibold, design: .rounded))
-                .foregroundStyle(item.color.opacity(isCurrent ? 1 : 0.50))
+                .font(.system(size: isCurrent ? 26 * model.fontScale : 21 * model.fontScale, weight: .semibold, design: .rounded))
+                .foregroundStyle(item.color.opacity(isCurrent ? 1 : 0.5))
                 .lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if model.showDialogueContent, item.translation.isEmpty == false {
@@ -122,18 +131,62 @@ struct ImmersiveRoleplayView: View {
         }
     }
 
-    private var promptAndControl: some View {
-        VStack(spacing: 12) {
-            if let prompt = promptText {
-                Text(prompt)
-                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .padding(.horizontal, 22)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+    // MARK: 指导区（下一句中文提示 + 纠正/评分；提示仅展示不播报）
 
+    private var guidancePane: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            paneLabel("指导")
+                .padding(.horizontal, 20)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let hint = nextLineHint {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "text.bubble")
+                                    .foregroundStyle(.white.opacity(0.7))
+                                Text(hint)
+                                    .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        ForEach(Array(guidanceItems.enumerated()), id: \.offset) { _, text in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "lightbulb")
+                                    .foregroundStyle(Palette.guide)
+                                Text(text)
+                                    .font(.system(size: 14 * model.fontScale))
+                                    .foregroundStyle(Palette.guide)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        if nextLineHint == nil && guidanceItems.isEmpty {
+                            Text(model.guidanceMode == .final ? "结束后会给出整体评分与建议" : "AI 的中文纠正建议会显示在这里")
+                                .font(.system(size: 13 * model.fontScale))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+                        Color.clear.frame(height: 4).id("guideBottom")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: guidanceItems.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.3)) { proxy.scrollTo("guideBottom", anchor: .bottom) }
+                }
+            }
+        }
+        .frame(height: 168)
+        .frame(maxWidth: .infinity)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.10)))
+        .padding(.horizontal, 12)
+    }
+
+    // MARK: 控制区（麦克风 + 状态 + 重玩/评分按钮）
+
+    private var controlBar: some View {
+        VStack(spacing: 10) {
             if model.conversationMode == .manual && isUserTurnNow {
                 manualTalkControl
             } else {
@@ -144,7 +197,6 @@ struct ImmersiveRoleplayView: View {
                 .font(.system(size: 13 * model.fontScale, weight: .medium))
                 .foregroundStyle(.white.opacity(0.62))
 
-            // 完成后可一键重玩；「结束后指导」模式可随时取最终评分（中途退出也有评价）
             if model.roleplay?.completed == true {
                 Button {
                     Task { await model.replayScenario() }
@@ -152,12 +204,11 @@ struct ImmersiveRoleplayView: View {
                     Label("重新对话", systemImage: "arrow.counterclockwise")
                         .font(.system(size: 14 * model.fontScale, weight: .semibold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
+                        .padding(.horizontal, 18).padding(.vertical, 10)
                         .overlay(Capsule().stroke(.white.opacity(0.5)))
                 }
                 .buttonStyle(.plain)
-                .padding(.bottom, 24)
+                .padding(.bottom, 20)
             } else if model.guidanceMode == .final {
                 Button {
                     Task { await model.requestFinalEvaluation() }
@@ -165,26 +216,29 @@ struct ImmersiveRoleplayView: View {
                     Text("查看评分与建议")
                         .font(.system(size: 14 * model.fontScale, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
+                        .padding(.horizontal, 18).padding(.vertical, 10)
                         .overlay(Capsule().stroke(.white.opacity(0.4)))
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isWorking)
-                .padding(.bottom, 24)
+                .padding(.bottom, 20)
             } else {
-                Color.clear.frame(height: 24)
+                Color.clear.frame(height: 20)
             }
         }
-        .animation(.easeOut(duration: 0.22), value: promptText)
+    }
+
+    private func paneLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11 * model.fontScale, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.5))
     }
 
     private func modeChip(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 11 * model.fontScale, weight: .medium))
             .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 10).padding(.vertical, 4)
             .background(.white.opacity(0.12), in: Capsule())
     }
 
@@ -196,7 +250,6 @@ struct ImmersiveRoleplayView: View {
             && model.isVoiceConversationActive
     }
 
-    // 沉浸式：点击/自动聆听的圆形按钮
     private var circleButton: some View {
         Button {
             if voice.isSpeaking {
@@ -209,16 +262,14 @@ struct ImmersiveRoleplayView: View {
                 ZStack {
                     Circle()
                         .fill(circleColor)
-                        .frame(width: 86, height: 86)
+                        .frame(width: 82, height: 82)
                         .scaleEffect(circleScale(at: timeline.date))
                         .shadow(color: circleColor.opacity(0.35), radius: 24, y: 8)
                     if model.isWorking {
-                        ProgressView()
-                            .tint(.white)
-                            .scaleEffect(1.2)
+                        ProgressView().tint(.white).scaleEffect(1.2)
                     } else {
                         Image(systemName: circleIcon)
-                            .font(.system(size: 30, weight: .semibold))
+                            .font(.system(size: 28, weight: .semibold))
                             .foregroundStyle(model.roleplay?.completed == true ? .black.opacity(0.35) : .white)
                     }
                 }
@@ -228,10 +279,9 @@ struct ImmersiveRoleplayView: View {
         .disabled(model.roleplay?.completed == true)
     }
 
-    // 手工触发式：长按说话，左滑取消、右滑（或居中松手）发送
     private var manualTalkControl: some View {
         let willCancel = manualPressing && manualDragX < manualCancelThreshold
-        return VStack(spacing: 14) {
+        return VStack(spacing: 12) {
             if manualPressing {
                 Text(practiceSpeech.partialText.isEmpty ? "请说英文…" : practiceSpeech.partialText)
                     .font(.system(size: 16 * model.fontScale))
@@ -254,11 +304,11 @@ struct ImmersiveRoleplayView: View {
             ZStack {
                 Circle()
                     .fill(willCancel ? Color.red : (manualPressing ? Palette.listen : Palette.thinking))
-                    .frame(width: 92, height: 92)
+                    .frame(width: 88, height: 88)
                     .scaleEffect(manualPressing ? 1.08 : 1)
                     .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
                 Image(systemName: manualPressing ? (willCancel ? "xmark" : "waveform") : "mic.fill")
-                    .font(.system(size: 30, weight: .semibold))
+                    .font(.system(size: 28, weight: .semibold))
                     .foregroundStyle(.white)
             }
             .gesture(
@@ -274,22 +324,17 @@ struct ImmersiveRoleplayView: View {
                         let cancel = manualDragX < manualCancelThreshold
                         manualPressing = false
                         manualDragX = 0
-                        if cancel {
-                            model.cancelManualUtterance()
-                        } else {
-                            model.sendManualUtterance()
-                        }
+                        if cancel { model.cancelManualUtterance() } else { model.sendManualUtterance() }
                     }
             )
             .animation(.easeOut(duration: 0.15), value: manualPressing)
         }
     }
 
-    private var promptText: String? {
-        guard model.roleplay?.completed == false else { return nil }
-        guard model.isWorking == false, voice.isSpeaking == false else { return nil }
-        guard let next = model.roleplay?.nextLine else { return nil }
-        let prefix = model.roleplay?.latestAccepted == false ? "请用英文继续说" : "请用英文说"
+    /// 下一句要说的中文提示（仅展示、不语音播报）。实时/事后指导都会提示。
+    private var nextLineHint: String? {
+        guard model.roleplay?.completed == false, let next = model.roleplay?.nextLine else { return nil }
+        let prefix = model.roleplay?.latestAccepted == false ? "请你继续说" : "请你说"
         return "\(prefix)：\(next.sourceText)"
     }
 
@@ -321,14 +366,8 @@ struct ImmersiveRoleplayView: View {
     }
 
     private func circleScale(at date: Date) -> CGFloat {
-        if practiceSpeech.isListening {
-            // 绿色：随用户说话的真实麦克风电平跳动
-            return 1 + CGFloat(practiceSpeech.audioLevel) * 0.28
-        }
-        if voice.isSpeaking {
-            // 红色：随 AI 实际朗读的逐词音律跳动（非固定正弦）
-            return 1 + CGFloat(voice.audioLevel) * 0.28
-        }
+        if practiceSpeech.isListening { return 1 + CGFloat(practiceSpeech.audioLevel) * 0.28 }
+        if voice.isSpeaking { return 1 + CGFloat(voice.audioLevel) * 0.28 }
         return 1
     }
 
@@ -339,30 +378,33 @@ struct ImmersiveRoleplayView: View {
         var color: Color
     }
 
-    private var captionItems: [Caption] {
+    /// 字幕区：只含 AI 与用户的已确认对话内容（不含纠正建议）。
+    private var subtitleItems: [Caption] {
         guard let rp = model.roleplay else { return [] }
-        var items: [Caption] = []
-        for msg in rp.messages {
-            items.append(
-                Caption(
-                    speaker: msg.speaker == "user" ? "You" : "AI",
-                    text: msg.content,
-                    translation: msg.translation ?? "",
-                    color: msg.speaker == "user" ? Color.white.opacity(0.92) : Color.white
-                )
+        return rp.messages.map { msg in
+            Caption(
+                speaker: msg.speaker == "user" ? "You" : "AI",
+                text: msg.content,
+                translation: msg.translation ?? "",
+                color: msg.speaker == "user" ? Color.white.opacity(0.92) : Color.white
             )
-            if model.guidanceMode == .realtime,
-               msg.speaker == "user",
-               let feedback = msg.feedback?.trimmingCharacters(in: .whitespacesAndNewlines),
-               feedback.isEmpty == false {
-                items.append(Caption(speaker: "AI", text: feedback, translation: "", color: Color(red: 1.0, green: 0.82, blue: 0.42)))
+        }
+    }
+
+    /// 指导区：实时指导=每轮中文纠正；结束后指导=结束后的整体评分与建议。
+    private var guidanceItems: [String] {
+        guard let rp = model.roleplay else { return [] }
+        var items: [String] = []
+        if model.guidanceMode == .realtime {
+            for msg in rp.messages where msg.speaker == "user" {
+                if let fb = msg.feedback?.trimmingCharacters(in: .whitespacesAndNewlines), fb.isEmpty == false {
+                    items.append(fb)
+                }
             }
         }
-        // 实时模式展示每轮纠正；结束后指导模式仅在完成/按需评估时由 latestFeedback 给出最终建议
-        if let feedback = rp.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
-           feedback.isEmpty == false,
-           items.last?.text != feedback {
-            items.append(Caption(speaker: "AI", text: feedback, translation: "", color: Color(red: 1.0, green: 0.82, blue: 0.42)))
+        if let fb = rp.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
+           fb.isEmpty == false, items.last != fb {
+            items.append(fb)
         }
         return items
     }

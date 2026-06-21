@@ -1162,11 +1162,8 @@ final class AppModel: ObservableObject {
         }
         practiceSpeech.stop(emit: false)
         appendChat(.assistant, "提示：\(next.sourceText)\n试着说：\(next.english)")
-        voice.speak("Take your time. Try saying: \(next.english)") { [weak self] in
-            Task { @MainActor in
-                await self?.listenForNextRoleplayTurn()
-            }
-        }
+        // 下一句提示仅在指导区展示，不做 AI 语音播报（item 3）
+        await listenForNextRoleplayTurn()
     }
 
     private func appendChat(_ sender: ChatMessage.Sender, _ text: String) {
@@ -1192,12 +1189,9 @@ final class AppModel: ObservableObject {
         })
 
         guard isVoiceConversationActive else { return }
-        guard roleplay?.completed == false, let next = roleplay?.nextLine else { return }
-        voice.speak("Try saying: \(next.english)") { [weak self] in
-            Task { @MainActor in
-                await self?.listenForNextRoleplayTurn()
-            }
-        }
+        guard roleplay?.completed == false, roleplay?.nextLine != nil else { return }
+        // 下一句提示仅在指导区展示，不做 AI 语音播报（item 3）
+        await listenForNextRoleplayTurn()
     }
 
     private func isPracticeHelpRequest(_ text: String) -> Bool {
