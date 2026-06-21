@@ -299,6 +299,7 @@ function renderSidebar() {
     nav("users", "\u7528\u6237\u7ba1\u7406", "\ud83d\udc65"),
     nav("orders", "\u5145\u503c\u8ba2\u5355", "\ud83d\udcb3"),
     nav("tickets", "\u5ba2\u670d\u5de5\u5355", "\ud83c\udfab"),
+    nav("presets", "\u901a\u7528\u573a\u666f", "\ud83d\uddc2\ufe0f"),
     nav("admins", "\u7ba1\u7406\u5458\u7ba1\u7406", "\ud83d\udc64"),
     nav("settings", "\u7cfb\u7edf\u8bbe\u7f6e", "\u2699\ufe0f"),
   "  </nav>",
@@ -1610,6 +1611,139 @@ function updateSidebarAdmin() {
 }
 
 // ============================================================
+// 通用场景目录（主/子场景，只存标题；用户没有录音时直接选场景与 AI 练口语）
+// ============================================================
+function renderPresetsPage() {
+  return [
+    '<div class="page-header"><h1>通用场景</h1>',
+    '  <p class="subtitle">配置「主场景 → 子场景」列表。只保存标题，不保存对话内容；用户在 App 里选中某个子场景后，由 AI 即时生成约 40 句中英双语对话再进入对练。可随时增删，立即生效。</p>',
+    "</div>",
+    '<div id="presets-root"><div class="card">加载中…</div></div>',
+    '<div style="margin-top:14px;display:flex;gap:10px;align-items:center">',
+    '  <button class="btn" onclick="presetAddGroup()">+ 添加主场景</button>',
+    '  <button class="btn btn-primary" onclick="presetSave()">保存全部</button>',
+    '  <span class="hint">内容须为健康日常话题，避免政治、宗教、种族等敏感内容。</span>',
+    "</div>",
+  ].join("");
+}
+
+function presetGenId(prefix) {
+  return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function renderPresetsList() {
+  var root = getEl("presets-root");
+  if (!root) return;
+  var catalog = window._presetCatalog || [];
+  if (!catalog.length) {
+    root.innerHTML = '<div class="card"><p class="hint">还没有任何主场景，点击下方「添加主场景」开始配置。</p></div>';
+    return;
+  }
+  root.innerHTML = catalog.map(function(group, gi) {
+    var subs = (group.subs || []).map(function(sub, si) {
+      return [
+        '<div style="display:flex;gap:8px;align-items:center;margin:6px 0">',
+        '  <span class="hint" style="width:48px">子场景</span>',
+        '  <input type="text" value="' + esc(sub.title || "") + '" maxlength="60" placeholder="子场景标题，如 外出就餐" style="flex:1"',
+        '    oninput="presetSetSubTitle(' + gi + "," + si + ', this.value)" />',
+        '  <button class="btn btn-danger" onclick="presetDeleteSub(' + gi + "," + si + ')">删除</button>',
+        "</div>",
+      ].join("");
+    }).join("");
+    return [
+      '<div class="card" style="margin-bottom:14px">',
+      '  <div style="display:flex;gap:8px;align-items:center">',
+      '    <span class="hint" style="width:48px">主场景</span>',
+      '    <input type="text" value="' + esc(group.title || "") + '" maxlength="60" placeholder="主场景标题，如 日常生活场景" style="flex:1;font-weight:600"',
+      '      oninput="presetSetGroupTitle(' + gi + ', this.value)" />',
+      '    <button class="btn btn-danger" onclick="presetDeleteGroup(' + gi + ')">删除主场景</button>',
+      "  </div>",
+      '  <div style="margin-top:10px;padding-left:6px">' + subs + "</div>",
+      '  <button class="btn" style="margin-top:6px" onclick="presetAddSub(' + gi + ')">+ 添加子场景</button>',
+      "</div>",
+    ].join("");
+  }).join("");
+}
+
+function presetSetGroupTitle(gi, val) {
+  if (window._presetCatalog && window._presetCatalog[gi]) window._presetCatalog[gi].title = val;
+}
+
+function presetSetSubTitle(gi, si, val) {
+  var g = window._presetCatalog && window._presetCatalog[gi];
+  if (g && g.subs && g.subs[si]) g.subs[si].title = val;
+}
+
+function presetAddGroup() {
+  if (!window._presetCatalog) window._presetCatalog = [];
+  window._presetCatalog.push({ id: presetGenId("g"), title: "", subs: [] });
+  renderPresetsList();
+}
+
+function presetDeleteGroup(gi) {
+  if (!window._presetCatalog) return;
+  if (!confirm("确定删除该主场景及其下所有子场景？")) return;
+  window._presetCatalog.splice(gi, 1);
+  renderPresetsList();
+}
+
+function presetAddSub(gi) {
+  var g = window._presetCatalog && window._presetCatalog[gi];
+  if (!g) return;
+  if (!g.subs) g.subs = [];
+  g.subs.push({ id: presetGenId("s"), title: "" });
+  renderPresetsList();
+}
+
+function presetDeleteSub(gi, si) {
+  var g = window._presetCatalog && window._presetCatalog[gi];
+  if (!g || !g.subs) return;
+  g.subs.splice(si, 1);
+  renderPresetsList();
+}
+
+function loadPresets() {
+  apiGet("/admin/api/settings/presets").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      window._presetCatalog = (d.items || []).map(function(g) {
+        return { id: g.id, title: g.title, subs: (g.subs || []).map(function(s) { return { id: s.id, title: s.title }; }) };
+      });
+      renderPresetsList();
+    });
+  });
+}
+
+function presetSave() {
+  var catalog = window._presetCatalog || [];
+  var out = [];
+  for (var gi = 0; gi < catalog.length; gi++) {
+    var g = catalog[gi];
+    var gtitle = (g.title || "").trim();
+    if (!gtitle) { toast("第 " + (gi + 1) + " 个主场景标题不能为空", "error"); return; }
+    var subs = [];
+    var rawSubs = g.subs || [];
+    for (var si = 0; si < rawSubs.length; si++) {
+      var stitle = (rawSubs[si].title || "").trim();
+      if (!stitle) { toast("「" + gtitle + "」下第 " + (si + 1) + " 个子场景标题不能为空", "error"); return; }
+      subs.push({ id: rawSubs[si].id || presetGenId("s"), title: stitle });
+    }
+    out.push({ id: g.id || presetGenId("g"), title: gtitle, subs: subs });
+  }
+  apiPost("/admin/api/settings/presets", out).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    r.json().then(function(d) {
+      window._presetCatalog = (d.items || []).map(function(g) {
+        return { id: g.id, title: g.title, subs: (g.subs || []).map(function(s) { return { id: s.id, title: s.title }; }) };
+      });
+      renderPresetsList();
+      toast("通用场景已保存", "success");
+    });
+  });
+}
+
+// ============================================================
 // Main render
 // ============================================================
 function renderApp(loginOpts) {
@@ -1631,6 +1765,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "user_detail") pageContent = renderUserDetailPage();
   else if (state.currentTab === "orders") pageContent = renderOrdersPage();
   else if (state.currentTab === "tickets") pageContent = renderTicketsPage();
+  else if (state.currentTab === "presets") pageContent = renderPresetsPage();
   else if (state.currentTab === "usage") pageContent = renderUsagePage();
   else if (state.currentTab === "admins") pageContent = renderAdminMgmtPage();
   else if (state.currentTab === "settings") pageContent = renderSettingsPage();
@@ -1734,6 +1869,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "user_detail") loadUserDetail();
   else if (state.currentTab === "orders") loadOrders();
   else if (state.currentTab === "tickets") loadTickets();
+  else if (state.currentTab === "presets") loadPresets();
   else if (state.currentTab === "usage") loadUsage();
   else if (state.currentTab === "admins") loadAdminList();
   else if (state.currentTab === "settings") loadSettings();
@@ -1768,6 +1904,14 @@ window.submitChangePassword = submitChangePassword;
 window.loadOrders = loadOrders;
 window.loadUsage = loadUsage;
 window.savePlans = savePlans;
+window.loadPresets = loadPresets;
+window.presetAddGroup = presetAddGroup;
+window.presetDeleteGroup = presetDeleteGroup;
+window.presetAddSub = presetAddSub;
+window.presetDeleteSub = presetDeleteSub;
+window.presetSetGroupTitle = presetSetGroupTitle;
+window.presetSetSubTitle = presetSetSubTitle;
+window.presetSave = presetSave;
 window.saveQuota = saveQuota;
 window.saveAsr = saveAsr;
 window.markOrderPaid = markOrderPaid;
