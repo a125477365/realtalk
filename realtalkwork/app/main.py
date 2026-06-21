@@ -240,6 +240,8 @@ async def startup() -> None:
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
     seed_default_admin()
+    # 首装把「管理台可配置」参数从 env 落库（仅补缺）；以后以 DB 为准
+    db.seed_app_settings_from_env()
 
 
 def _authenticate_token(token: str) -> UserOut:

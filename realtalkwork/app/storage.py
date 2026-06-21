@@ -1027,6 +1027,58 @@ class Database:
                     insert(app_settings).values(key=key, value_text=value, updated_at=now)
                 )
 
+    def seed_app_settings_from_env(self) -> int:
+        """首次部署：把「管理台可在线配置」的参数从 env 初始化进 app_settings（仅补缺、不覆盖）。
+
+        这些参数代码里都是「DB 优先、env 兜底」读取的；首装时把 env 值落库后，管理台即可见并管理，
+        且后续以 DB 为准。连接已有数据库时这些键已存在 → 幂等空操作。返回新写入的键数。
+        """
+        s = settings
+        # 数值类（价格/限额/比例/预估）：始终用默认值补缺
+        numeric = {
+            "ai_input_price_per_1m_cents": s.ai_input_price_per_1m_cents,
+            "ai_output_price_per_1m_cents": s.ai_output_price_per_1m_cents,
+            "ai_timeout_seconds": s.ai_timeout_seconds,
+            "realtime_input_text_price_per_1m_cents": s.realtime_input_text_price_per_1m_cents,
+            "realtime_input_audio_price_per_1m_cents": s.realtime_input_audio_price_per_1m_cents,
+            "realtime_output_text_price_per_1m_cents": s.realtime_output_text_price_per_1m_cents,
+            "realtime_output_audio_price_per_1m_cents": s.realtime_output_audio_price_per_1m_cents,
+            "daily_token_limit_free": s.daily_token_limit_free,
+            "daily_token_limit_basic": s.daily_token_limit_basic,
+            "daily_token_limit_premium": s.daily_token_limit_premium,
+            "budget_ratio": s.budget_ratio,
+            "nonmember_daily_chat_tokens": s.nonmember_daily_chat_tokens,
+            "nonmember_daily_capture_tokens": s.nonmember_daily_capture_tokens,
+            "nonmember_daily_capture_seconds": s.nonmember_daily_capture_seconds,
+            "monthly_price_cents": s.monthly_price_cents,
+            "ai_estimate_output_tokens": s.ai_estimate_output_tokens,
+            "ai_estimate_min_input_tokens": s.ai_estimate_min_input_tokens,
+        }
+        # 连接/密钥类：仅当 env 非空才补，避免把空串写进库
+        strings = {
+            "ai_base_url": getattr(s, "ai_base_url", None),
+            "ai_api_key": getattr(s, "ai_api_key", None),
+            "ai_model": getattr(s, "ai_model", None),
+            "realtime_base_url": getattr(s, "realtime_base_url", None),
+            "realtime_api_key": getattr(s, "realtime_api_key", None),
+            "realtime_model": getattr(s, "realtime_model", None),
+            "realtime_voice": getattr(s, "realtime_voice", None),
+            "asr_base_url": getattr(s, "asr_base_url", None),
+            "asr_api_key": getattr(s, "asr_api_key", None),
+            "asr_model": getattr(s, "asr_model", None),
+        }
+        existing = self.get_app_settings_map(list(numeric) + list(strings))
+        written = 0
+        for key, value in numeric.items():
+            if key not in existing and value is not None:
+                self.set_app_setting(key, str(value))
+                written += 1
+        for key, value in strings.items():
+            if key not in existing and value:
+                self.set_app_setting(key, str(value))
+                written += 1
+        return written
+
     def update_subscription(
         self,
         user_id: str,
