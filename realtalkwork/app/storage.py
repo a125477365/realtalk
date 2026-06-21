@@ -1050,11 +1050,14 @@ class Database:
                 )
 
     def seed_app_settings_from_env(self) -> int:
-        """首次部署：把「管理台可在线配置」的参数从 env 初始化进 app_settings（仅补缺、不覆盖）。
+        """只在「全新数据库的首次启动」把这些「DB 存储型」参数从 env/默认值初始化进 app_settings。
 
-        这些参数代码里都是「DB 优先、env 兜底」读取的；首装时把 env 值落库后，管理台即可见并管理，
-        且后续以 DB 为准。连接已有数据库时这些键已存在 → 幂等空操作。返回新写入的键数。
+        以后这些参数以 DB 为唯一来源（管理台管理）；用标记 settings_seeded 确保只跑一次，
+        不会每次启动都跑，也不会覆盖管理台改过或管理员删过的值。返回新写入的键数。
         """
+        # 已初始化过则直接跳过（首次落库后置标记）
+        if self.get_app_setting_str("settings_seeded") == "1":
+            return 0
         s = settings
         # 数值类（价格/限额/比例/预估）：始终用默认值补缺
         numeric = {
@@ -1099,6 +1102,8 @@ class Database:
             if key not in existing and value:
                 self.set_app_setting(key, str(value))
                 written += 1
+        # 置首装完成标记，确保只跑一次（之后以 DB 为唯一来源）
+        self.set_app_setting("settings_seeded", "1")
         return written
 
     def update_subscription(
