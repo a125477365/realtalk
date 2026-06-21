@@ -85,6 +85,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var answerTimeoutJob: Job? = null
     private var captureScheduleJob: Job? = null
     private var autoCaptureRunning = false
+    // 用户在某采集时段内手动停止后，抑制自动重启直到该时段结束
+    private var autoCaptureSuppressedUntil: LocalTime? = null
     private val refreshMutex = Mutex()
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
@@ -211,6 +213,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 供语音指令与主界面按钮共用：停止采集并推送生成场景。 */
     fun stopCapture() {
         if (!capture.isRecording) return
+        // 若在自动采集时段内手动停止：抑制本时段的自动重启
+        if (autoCaptureEnabled.value) currentAutoWindowEnd()?.let { autoCaptureSuppressedUntil = it }
         capture.stop()
         autoCaptureRunning = false
         statusMessage.value = "已停止采集，正在发送给后台并生成场景…"
@@ -594,7 +598,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun evaluateAutomaticCaptureWindow() {
         if (!autoCaptureEnabled.value || auth.token == null || isVoiceActive.value) return
         val insideWindow = isNowInsideAutomaticCaptureWindow()
-        if (insideWindow && !capture.isRecording) {
+        // 抑制只在「被停止的那个时段内」有效；时段变化/结束后清除
+        if (autoCaptureSuppressedUntil != null && !(insideWindow && currentAutoWindowEnd() == autoCaptureSuppressedUntil)) {
+            autoCaptureSuppressedUntil = null
+        }
+        val suppressed = insideWindow && autoCaptureSuppressedUntil != null
+        if (insideWindow && !capture.isRecording && !suppressed) {
             autoCaptureRunning = true
             capture.start()
             statusMessage.value = "已按默认时间开始采集"
@@ -604,6 +613,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             statusMessage.value = "已按默认时间结束采集"
             uploadPendingAndRefresh()
         }
+    }
+
+    /** 当前时刻所在采集时段的结束时间；不在任何时段返回 null。 */
+    private fun currentAutoWindowEnd(now: LocalTime = LocalTime.now()): LocalTime? {
+        captureWindows.value.forEach { (s, e) ->
+            val start = parseCaptureTime(s) ?: return@forEach
+            val end = parseCaptureTime(e) ?: return@forEach
+            if (start == end) return@forEach
+            val inside = if (start.isBefore(end)) !now.isBefore(start) && now.isBefore(end)
+                else !now.isBefore(start) || now.isBefore(end)
+            if (inside) return end
+        }
+        return null
     }
 
     private fun isNowInsideAutomaticCaptureWindow(now: LocalTime = LocalTime.now()): Boolean {

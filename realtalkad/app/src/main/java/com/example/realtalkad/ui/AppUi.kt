@@ -113,6 +113,41 @@ fun BrandSegmented(
     }
 }
 
+/// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。
+@androidx.compose.runtime.Composable
+private fun ScenarioCard(
+    summary: com.example.realtalkad.data.ScenarioSummary,
+    fontScale: Float,
+    showDate: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .background(RT.Surface, androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+            .border(1.dp, RT.Hairline, androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+            .clickable { onClick() }
+            .padding(14.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                summary.title, fontWeight = FontWeight.SemiBold, fontSize = (15 * fontScale).sp,
+                color = RT.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                summary.summary, fontSize = (13 * fontScale).sp, color = RT.TextSecondary,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            val meta = if (showDate) "${summary.lineCount} 句 · ${summary.createdAt.take(16).replace("T", " ")}"
+            else "${summary.lineCount} 句"
+            Text(meta, fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+        }
+        Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
+    }
+}
+
 @Composable
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
@@ -268,25 +303,20 @@ fun MainChatScreen(model: AppViewModel) {
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(scenarios, key = { it.sceneId }) { summary ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .background(RT.Surface, RoundedCornerShape(14.dp))
-                            .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
-                            .clickable { roleDialogFor = summary }
-                            .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(summary.title, fontWeight = FontWeight.SemiBold, fontSize = (15 * fontScale).sp,
-                                color = RT.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Spacer(Modifier.height(3.dp))
-                            Text(summary.summary, fontSize = (13 * fontScale).sp, color = RT.TextSecondary,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Spacer(Modifier.height(4.dp))
-                            Text("${summary.lineCount} 句", fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+                if (scenarioScope == "all") {
+                    // 「全部」按日期分组（日期降序）
+                    scenarios.groupBy { it.createdAt.take(10) }.entries.sortedByDescending { it.key }.forEach { (day, group) ->
+                        item(key = "h-$day") {
+                            Text(day, fontWeight = FontWeight.SemiBold, fontSize = (12 * fontScale).sp,
+                                color = RT.TextSecondary, modifier = Modifier.padding(top = 4.dp))
                         }
-                        Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
+                        items(group, key = { it.sceneId }) { summary ->
+                            ScenarioCard(summary, fontScale, showDate = true) { roleDialogFor = summary }
+                        }
+                    }
+                } else {
+                    items(scenarios, key = { it.sceneId }) { summary ->
+                        ScenarioCard(summary, fontScale, showDate = false) { roleDialogFor = summary }
                     }
                 }
             }

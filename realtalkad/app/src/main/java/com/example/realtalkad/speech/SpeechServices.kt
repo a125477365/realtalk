@@ -224,6 +224,8 @@ class VoicePlayer(context: Context) {
     fun speak(text: String, completion: (() -> Unit)? = null) {
         if (!ready || text.isBlank()) { completion?.invoke(); return }
         tts.language = Locale.US
+        tts.setSpeechRate(0.92f)   // 稍放慢，减少吞字/含糊，提升清晰度
+        tts.setPitch(1.0f)
         isSpeaking = true
         onStateChange?.invoke(true)
         startMetering()

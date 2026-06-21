@@ -141,6 +141,8 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = ""
 
     private var captureScheduleLoop: Task<Void, Never>?
+    /// 用户在某采集时段内手动停止后，抑制自动采集直到该时段结束（避免停了又被自动重启）。
+    private var autoCaptureSuppressedUntil: Date?
     private var answerTimeoutTask: Task<Void, Never>?
     private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
@@ -391,6 +393,10 @@ final class AppModel: ObservableObject {
 
     func toggleRecording() async {
         if speech.isRecording {
+            // 若在自动采集时段内手动停止：抑制本时段的自动重启，直到该时段结束
+            if autoCaptureEnabled, let end = currentAutoWindowEnd() {
+                autoCaptureSuppressedUntil = end
+            }
             speech.stop(savePartial: true)
             statusMessage = "已停止采集，正在发送给后台并生成场景…"
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -1246,7 +1252,14 @@ final class AppModel: ObservableObject {
         guard autoCaptureEnabled else { return }
         guard isVoiceConversationActive == false else { return }
 
+        // 抑制期过了就清除
+        if let until = autoCaptureSuppressedUntil, Date() >= until {
+            autoCaptureSuppressedUntil = nil
+        }
+
         if isNowInsideAutomaticCaptureWindow() {
+            // 用户手动停止过本时段：本时段内不再自动重启
+            if autoCaptureSuppressedUntil != nil { return }
             if speech.isRecording == false {
                 await speech.start()
                 statusMessage = "已按默认时间开始采集"
@@ -1277,5 +1290,23 @@ final class AppModel: ObservableObject {
     private func minutesSinceStartOfDay(_ date: Date, calendar: Calendar) -> Int {
         let components = calendar.dateComponents([.hour, .minute], from: date)
         return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    /// 当前时刻所在采集时段的结束时间（今天）；不在任何时段返回 nil。
+    private func currentAutoWindowEnd(now: Date = Date()) -> Date? {
+        let calendar = Calendar.current
+        let current = minutesSinceStartOfDay(now, calendar: calendar)
+        for window in captureWindows {
+            let start = minutesSinceStartOfDay(window.start, calendar: calendar)
+            let end = minutesSinceStartOfDay(window.end, calendar: calendar)
+            if start == end { continue }
+            let inside = start < end ? (current >= start && current < end) : (current >= start || current < end)
+            guard inside else { continue }
+            let comps = calendar.dateComponents([.hour, .minute], from: window.end)
+            var endToday = calendar.date(bySettingHour: comps.hour ?? 0, minute: comps.minute ?? 0, second: 0, of: now) ?? now
+            if start >= end { endToday = calendar.date(byAdding: .day, value: 1, to: endToday) ?? endToday } // 跨天时段，结束在次日
+            return endToday
+        }
+        return nil
     }
 }

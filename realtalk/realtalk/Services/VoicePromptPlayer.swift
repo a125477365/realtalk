@@ -64,10 +64,25 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
 
         let prompt = queue.removeFirst()
         let utterance = AVSpeechUtterance(string: prompt.text)
-        utterance.voice = AVSpeechSynthesisVoice(language: prompt.language)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.88
-        utterance.pitchMultiplier = 1.02
+        // 优先选用「增强/高级」音质的语音，紧凑(compact)版常有吞字/含糊；同时给一点起播延迟避免首字被切
+        utterance.voice = Self.bestVoice(for: prompt.language)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9
+        utterance.pitchMultiplier = 1.0
+        utterance.preUtteranceDelay = 0.06
         synthesizer.speak(utterance)
+    }
+
+    private static var voiceCache: [String: AVSpeechSynthesisVoice?] = [:]
+
+    /// 同语言下优先 premium > enhanced > 默认，提升清晰度。
+    private static func bestVoice(for language: String) -> AVSpeechSynthesisVoice? {
+        if let cached = voiceCache[language] { return cached }
+        let candidates = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == language }
+        let chosen = candidates.first { $0.quality == .premium }
+            ?? candidates.first { $0.quality == .enhanced }
+            ?? AVSpeechSynthesisVoice(language: language)
+        voiceCache[language] = chosen
+        return chosen
     }
 
     // MARK: 音律跳动（基于真实朗读进度，逐词脉冲 + 衰减）

@@ -224,47 +224,77 @@ struct MainChatView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                // 竖排列表，方便逐条选择
+                // 竖排列表；「全部」按日期分组展示
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 10) {
-                        ForEach(model.todayScenarios) { summary in
-                            Button {
-                                roleDialogScenario = summary
-                            } label: {
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(summary.title)
-                                            .font(.system(size: 16 * model.fontScale, weight: .semibold))
-                                            .foregroundStyle(RTTheme.textPrimary)
-                                            .lineLimit(1)
-                                        Text(summary.summary)
-                                            .font(.system(size: 13 * model.fontScale))
-                                            .foregroundStyle(RTTheme.textSecondary)
-                                            .lineLimit(2)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                        Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: .omitted, time: .shortened))")
-                                            .font(.system(size: 11 * model.fontScale))
-                                            .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
-                                    }
-                                    Image(systemName: "chevron.right")
-                                        .font(.footnote)
-                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
-                                }
-                                .padding(14)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if scenarioScope == "all" {
+                            ForEach(groupedScenarios, id: \.day) { group in
+                                Text(dayLabel(group.day))
+                                    .font(.system(size: 12 * model.fontScale, weight: .semibold))
+                                    .foregroundStyle(RTTheme.textSecondary)
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 6)
+                                ForEach(group.items) { scenarioCard($0) }
                             }
-                            .buttonStyle(.plain)
+                        } else {
+                            ForEach(model.todayScenarios) { scenarioCard($0) }
                         }
                     }
-                    .padding(.horizontal, 16)
                     .padding(.top, 4)
                 }
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .padding(.bottom, 8)
+    }
+
+    /// 「全部」场景按自然日分组（日期降序，组内按时间降序）。
+    private var groupedScenarios: [(day: Date, items: [ScenarioSummary])] {
+        let cal = Calendar.current
+        let groups = Dictionary(grouping: model.todayScenarios) { cal.startOfDay(for: $0.createdAt) }
+        return groups
+            .map { (day: $0.key, items: $0.value.sorted { $0.createdAt > $1.createdAt }) }
+            .sorted { $0.day > $1.day }
+    }
+
+    private func dayLabel(_ day: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(day) { return "今天" }
+        if cal.isDateInYesterday(day) { return "昨天" }
+        return day.formatted(.dateTime.year().month().day())
+    }
+
+    @ViewBuilder
+    private func scenarioCard(_ summary: ScenarioSummary) -> some View {
+        Button {
+            roleDialogScenario = summary
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(summary.title)
+                        .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(summary.summary)
+                        .font(.system(size: 13 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(summary.lineCount) 句 · \(summary.createdAt.formatted(date: scenarioScope == "all" ? .abbreviated : .omitted, time: .shortened))")
+                        .font(.system(size: 11 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote)
+                    .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
     }
 
     private var captureButton: some View {
