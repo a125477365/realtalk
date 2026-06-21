@@ -434,10 +434,28 @@ struct BillingLedgerItem: Identifiable, Codable, Equatable {
     }
 }
 
+struct NonmemberLimits: Codable, Equatable {
+    let dailyChatTokens: Int
+    let dailyCaptureTokens: Int
+    let dailyCaptureSeconds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case dailyChatTokens = "daily_chat_tokens"
+        case dailyCaptureTokens = "daily_capture_tokens"
+        case dailyCaptureSeconds = "daily_capture_seconds"
+    }
+}
+
 struct BillingAccountResponse: Codable, Equatable {
     let user: AppUser
     let ledger: [BillingLedgerItem]
     let usage: TokenUsageInfo?
+    let nonmemberLimits: NonmemberLimits?
+
+    enum CodingKeys: String, CodingKey {
+        case user, ledger, usage
+        case nonmemberLimits = "nonmember_limits"
+    }
 }
 
 struct RechargeCreateRequest: Codable {

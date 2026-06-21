@@ -148,6 +148,8 @@ final class AppModel: ObservableObject {
     private var captureBaselineChars: Int = 0
     /// 上次重试上传待同步内容的时间（每小时重试一次，直到成功；后端按内容哈希幂等去重）。
     private var lastUploadRetryAt: Date?
+    /// 非会员每日采集时长限制：采集开始时刻，用于客户端本地计时与限额（后端看不到采集过程）。
+    private var captureStartedAt: Date?
     private var answerTimeoutTask: Task<Void, Never>?
     private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
@@ -403,6 +405,7 @@ final class AppModel: ObservableObject {
                 autoCaptureSuppressedUntil = end
             }
             captureRemainingTokens = nil
+            commitCaptureSeconds()
             speech.stop(savePartial: true)
             statusMessage = "已停止采集，正在发送给后台并生成场景…"
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -420,9 +423,62 @@ final class AppModel: ObservableObject {
         transcripts.pendingUpload.reduce(0) { $0 + $1.text.count }
     }
 
+    // MARK: 非会员每日采集时长限额（客户端本地强制；后端不感知采集过程）
+
+    private var isNonMember: Bool { auth.user?.effectiveTier == "free" }
+    private var nonmemberCaptureSecondsLimit: Int { billingAccount?.nonmemberLimits?.dailyCaptureSeconds ?? 300 }
+
+    private func captureDayKey() -> String {
+        let f = DateFormatter()
+        f.calendar = Calendar.current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date())
+    }
+
+    /// 今日已采集秒数（跨天自动归零）。
+    private var capturedSecondsToday: Int {
+        guard defaults.string(forKey: "realtalk.captureSecondsDay") == captureDayKey() else { return 0 }
+        return defaults.integer(forKey: "realtalk.captureSecondsValue")
+    }
+
+    private func addCapturedSeconds(_ seconds: Int) {
+        guard seconds > 0 else { return }
+        let base = capturedSecondsToday
+        defaults.set(captureDayKey(), forKey: "realtalk.captureSecondsDay")
+        defaults.set(base + seconds, forKey: "realtalk.captureSecondsValue")
+    }
+
+    /// 把本次采集已进行的时长累计进今日计数（停止采集时调用）。
+    private func commitCaptureSeconds() {
+        if let started = captureStartedAt {
+            addCapturedSeconds(Int(Date().timeIntervalSince(started)))
+        }
+        captureStartedAt = nil
+    }
+
+    /// 采集中定时检查：非会员今日采集时长超限则自动停止并提交。
+    private func enforceCaptureSecondsLimit() async {
+        guard speech.isRecording, isNonMember else { return }
+        let limit = nonmemberCaptureSecondsLimit
+        guard limit > 0 else { return }
+        let elapsed = captureStartedAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
+        guard capturedSecondsToday + elapsed >= limit else { return }
+        commitCaptureSeconds()
+        speech.stop(savePartial: true)
+        captureRemainingTokens = nil
+        statusMessage = "今日免费采集时长已用完，已停止并提交；升级会员可不限时长"
+        let uploaded = await uploadPending()
+        if uploaded > 0 { await loadTodayScenarios() }
+    }
+
     /// 开始采集前查询剩余额度：超额则拦截不采集；额度不足则提示但仍允许；记录额度用于采集中自动停止。
     private func startCaptureWithQuotaCheck() async {
         captureRemainingTokens = nil
+        // 非会员每日采集时长限额（客户端本地强制；后端看不到采集过程）
+        if isNonMember, nonmemberCaptureSecondsLimit > 0, capturedSecondsToday >= nonmemberCaptureSecondsLimit {
+            statusMessage = "今日免费采集时长已用完，升级会员可不限时长，或明天再来"
+            return
+        }
         if let token = auth.token, let quota = try? await api.captureQuota(token: token) {
             if quota.canCapture == false {
                 statusMessage = quota.message
@@ -431,9 +487,11 @@ final class AppModel: ObservableObject {
             captureRemainingTokens = quota.remainingTokens
             captureBaselineChars = pendingCharCount
             await speech.start()
+            captureStartedAt = Date()
             statusMessage = quota.message.isEmpty ? "正在采集真实对话" : quota.message
         } else {
             await speech.start()
+            captureStartedAt = Date()
             statusMessage = "正在采集真实对话"
         }
     }
@@ -455,6 +513,7 @@ final class AppModel: ObservableObject {
         let collected = max(0, pendingCharCount - captureBaselineChars)
         guard collected >= remaining else { return }
         captureRemainingTokens = nil
+        commitCaptureSeconds()
         speech.stop(savePartial: true)
         statusMessage = "已达当月额度，已自动停止采集并提交生成场景"
         let uploaded = await uploadPending()
@@ -1289,6 +1348,7 @@ final class AppModel: ObservableObject {
             while Task.isCancelled == false {
                 await self?.evaluateAutomaticCaptureWindow()
                 await self?.enforceCaptureQuotaDuringRecording()
+                await self?.enforceCaptureSecondsLimit()
                 await self?.retryPendingUploadsIfNeeded()
                 try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
             }
@@ -1312,6 +1372,7 @@ final class AppModel: ObservableObject {
                 await startCaptureWithQuotaCheck()
             }
         } else if speech.isRecording {
+            commitCaptureSeconds()
             speech.stop(savePartial: true)
             statusMessage = "已按默认时间结束采集"
             let uploaded = await uploadPending()

@@ -73,6 +73,15 @@ class AuthStore(context: Context) {
         get() = prefs.getString("appearance", "system") ?: "system"
         set(value) = prefs.edit().putString("appearance", value).apply()
 
+    // 非会员每日采集时长本地计数（跨天归零）
+    var captureSecondsDay: String
+        get() = prefs.getString("capture_seconds_day", "") ?: ""
+        set(value) = prefs.edit().putString("capture_seconds_day", value).apply()
+
+    var captureSecondsValue: Int
+        get() = prefs.getInt("capture_seconds_value", 0)
+        set(value) = prefs.edit().putInt("capture_seconds_value", value).apply()
+
     /** 开发模式微信登录：同一设备稳定复用一个 code，对应同一个账号 */
     val devWeChatCode: String
         get() {

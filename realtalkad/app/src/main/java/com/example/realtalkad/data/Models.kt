@@ -276,10 +276,18 @@ data class LedgerItem(
 )
 
 @Serializable
+data class NonmemberLimits(
+    @SerialName("daily_chat_tokens") val dailyChatTokens: Int = 1000,
+    @SerialName("daily_capture_tokens") val dailyCaptureTokens: Int = 1000,
+    @SerialName("daily_capture_seconds") val dailyCaptureSeconds: Int = 300,
+)
+
+@Serializable
 data class BillingAccount(
     val user: AppUser,
     val ledger: List<LedgerItem> = emptyList(),
     val usage: TokenUsageInfo? = null,
+    @SerialName("nonmember_limits") val nonmemberLimits: NonmemberLimits? = null,
 )
 
 @Serializable

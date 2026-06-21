@@ -92,6 +92,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var captureBaselineChars = 0
     // 上次重试上传待同步内容的时间（每小时重试一次直到成功；后端按内容哈希幂等去重）
     private var lastUploadRetryAt = 0L
+    // 非会员每日采集时长本地计时（后端看不到采集过程，只能 app 控制）
+    private var captureStartedAt = 0L
     private val refreshMutex = Mutex()
 
     val isAuthenticated: StateFlow<AppUser?> get() = user
@@ -216,9 +218,53 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun pendingCharCount(): Int = transcriptStore.pending().sumOf { it.text.length }
 
+    // ---- 非会员每日采集时长限额（客户端本地强制） ----
+
+    private fun isNonMember(): Boolean = user.value?.planTier == "free"
+    private fun nonmemberCaptureSecondsLimit(): Int = billing.value?.nonmemberLimits?.dailyCaptureSeconds ?: 300
+    private fun today(): String = java.time.LocalDate.now().toString()
+
+    private fun capturedSecondsToday(): Int =
+        if (auth.captureSecondsDay == today()) auth.captureSecondsValue else 0
+
+    private fun addCapturedSeconds(seconds: Int) {
+        if (seconds <= 0) return
+        val base = capturedSecondsToday()
+        auth.captureSecondsDay = today()
+        auth.captureSecondsValue = base + seconds
+    }
+
+    /** 停止采集时把本次时长累计进今日计数。 */
+    private fun commitCaptureSeconds() {
+        if (captureStartedAt != 0L) {
+            addCapturedSeconds(((System.currentTimeMillis() - captureStartedAt) / 1000L).toInt())
+        }
+        captureStartedAt = 0L
+    }
+
+    /** 采集中定时检查：非会员今日采集时长超限则自动停止并提交。 */
+    private fun enforceCaptureSecondsLimit() {
+        if (!capture.isRecording || !isNonMember()) return
+        val limit = nonmemberCaptureSecondsLimit()
+        if (limit <= 0) return
+        val elapsed = if (captureStartedAt != 0L) ((System.currentTimeMillis() - captureStartedAt) / 1000L).toInt() else 0
+        if (capturedSecondsToday() + elapsed < limit) return
+        commitCaptureSeconds()
+        captureRemainingTokens = null
+        capture.stop()
+        autoCaptureRunning = false
+        statusMessage.value = "今日免费采集时长已用完，已停止并提交；升级会员可不限时长"
+        uploadPendingAndRefresh()
+    }
+
     /** 开始采集前查询剩余额度：超额拦截、不足提示但允许；记录额度用于采集中自动停止。 */
     private suspend fun startCaptureWithQuotaCheck(okMessage: String) {
         captureRemainingTokens = null
+        // 非会员每日采集时长限额（客户端本地强制）
+        if (isNonMember() && nonmemberCaptureSecondsLimit() > 0 && capturedSecondsToday() >= nonmemberCaptureSecondsLimit()) {
+            statusMessage.value = "今日免费采集时长已用完，升级会员可不限时长，或明天再来"
+            return
+        }
         val token = auth.token
         val quota = if (token != null) runCatching { api.captureQuota(token) }.getOrNull() else null
         if (quota != null) {
@@ -226,9 +272,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             captureRemainingTokens = quota.remainingTokens
             captureBaselineChars = pendingCharCount()
             capture.start()
+            captureStartedAt = System.currentTimeMillis()
             statusMessage.value = if (quota.message.isBlank()) okMessage else quota.message
         } else {
             capture.start()
+            captureStartedAt = System.currentTimeMillis()
             statusMessage.value = okMessage
         }
     }
@@ -250,6 +298,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val collected = (pendingCharCount() - captureBaselineChars).coerceAtLeast(0)
         if (collected >= remaining) {
             captureRemainingTokens = null
+            commitCaptureSeconds()
             capture.stop()
             autoCaptureRunning = false
             statusMessage.value = "已达当月额度，已自动停止采集并提交生成场景"
@@ -263,6 +312,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 若在自动采集时段内手动停止：抑制本时段的自动重启
         if (autoCaptureEnabled.value) currentAutoWindowEnd()?.let { autoCaptureSuppressedUntil = it }
         captureRemainingTokens = null
+        commitCaptureSeconds()
         capture.stop()
         autoCaptureRunning = false
         statusMessage.value = "已停止采集，正在发送给后台并生成场景…"
@@ -639,6 +689,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             while (true) {
                 evaluateAutomaticCaptureWindow()
                 enforceCaptureQuotaDuringRecording()
+                enforceCaptureSecondsLimit()
                 retryPendingUploadsIfNeeded()
                 delay(30_000)
             }
@@ -658,6 +709,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // 自动采集同样先校验额度，超额则不启动并提示
             viewModelScope.launch { startCaptureWithQuotaCheck("已按默认时间开始采集") }
         } else if (!insideWindow && autoCaptureRunning && capture.isRecording) {
+            commitCaptureSeconds()
             capture.stop()
             autoCaptureRunning = false
             statusMessage.value = "已按默认时间结束采集"
