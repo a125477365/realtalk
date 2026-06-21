@@ -182,11 +182,10 @@ private fun SubtitlePane(
     }
     Column(modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Spacer(Modifier.weight(1f))
-            Box(Modifier.width(150.dp)) {
+            Box(Modifier.fillMaxWidth()) {
                 BrandSegmented(
                     options = listOf("bilingual" to "双语", "en" to "仅英文"),
                     selected = if (showSubtitles) "bilingual" else "en",

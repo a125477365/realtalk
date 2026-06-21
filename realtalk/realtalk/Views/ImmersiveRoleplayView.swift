@@ -78,16 +78,12 @@ struct ImmersiveRoleplayView: View {
 
     private var subtitlePane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Spacer()
-                BrandSegmentedPicker(
-                    selection: $model.showDialogueContent,
-                    options: [(true, "双语"), (false, "仅英文")],
-                    fontScale: model.fontScale
-                )
-                .frame(width: 150)
-            }
-            .padding(.horizontal, 20)
+            BrandSegmentedPicker(
+                selection: $model.showDialogueContent,
+                options: [(true, "双语"), (false, "仅英文")],
+                fontScale: model.fontScale
+            )
+            .padding(.horizontal, 16)
 
             ScrollViewReader { proxy in
                 ScrollView {
