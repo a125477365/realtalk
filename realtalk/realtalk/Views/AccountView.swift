@@ -162,8 +162,8 @@ struct AccountPanelView: View {
                 Divider().padding(.leading, 44)
                 premiumRow(
                     icon: "mic.circle.fill",
-                    title: "沉浸式直连模型对话练习",
-                    subtitle: isPremium ? "在「设置」开启后，沉浸式对话直接与语音大模型对话" : "高级会员专属，升级后可用",
+                    title: "语音模型对话练习",
+                    subtitle: isPremium ? "在「设置 · 对话方式」选「语音模型对话」，直接与语音大模型语音对话" : "高级会员专属，升级后可用",
                     action: { if isPremium { showingSettings = true } else { membershipPremiumOnly = true; showingMembership = true } }
                 )
             }

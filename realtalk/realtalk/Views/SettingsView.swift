@@ -9,7 +9,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     Picker("对话方式", selection: $model.conversationPreference) {
-                        ForEach(AppModel.ConversationPreference.allCases) { Text($0.title).tag($0) }
+                        ForEach(model.availableConversationPreferences) { Text($0.title).tag($0) }
                     }
                     Picker("AI 指导方式", selection: $model.guidancePreference) {
                         ForEach(AppModel.GuidancePreference.allCases) { Text($0.title).tag($0) }
@@ -17,20 +17,10 @@ struct SettingsView: View {
                 } header: {
                     Text("对话方式").font(.system(size: 13 * model.fontScale))
                 } footer: {
-                    Text("对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。")
+                    Text(model.isPremium
+                         ? "对话中不可切换。语音模型对话：与实时语音大模型直接语音对话，结束给出评分。手工触发式：长按说话、左滑取消、右滑发送。"
+                         : "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。语音模型对话为高级会员专属。")
                         .font(.system(size: 12 * model.fontScale))
-                }
-
-                // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话
-                if model.isPremium {
-                    Section {
-                        Toggle("使用语音大模型进行交流", isOn: $model.voiceLLMPreference)
-                    } header: {
-                        Text("实时语音大模型（高级会员）").font(.system(size: 13 * model.fontScale))
-                    } footer: {
-                        Text("开启后在「沉浸式对话」中与语音大模型直接对话，结束给出评分。手工触发式不支持。")
-                            .font(.system(size: 12 * model.fontScale))
-                    }
                 }
 
                 Section("外观") {
@@ -104,7 +94,6 @@ struct SettingsView: View {
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.guidancePreference) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.conversationPreference) { _, _ in model.savePracticePreferences() }
-            .onChange(of: model.voiceLLMPreference) { _, _ in model.savePracticePreferences() }
         }
     }
 

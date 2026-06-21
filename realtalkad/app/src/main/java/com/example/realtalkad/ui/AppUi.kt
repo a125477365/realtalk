@@ -507,12 +507,19 @@ private fun PrePracticeDialog(model: AppViewModel) {
     val pending by model.pendingPractice.collectAsState()
     val convPref by model.conversationPreference.collectAsState()
     val guidPref by model.guidancePreference.collectAsState()
+    val user by model.user.collectAsState()
     if (pending == null) return
 
     var conversation by remember { mutableStateOf("immersive") }
     var guidance by remember { mutableStateOf("realtime") }
     var rememberConv by remember { mutableStateOf(false) }
     var rememberGuid by remember { mutableStateOf(false) }
+    // 语音模型对话仅高级会员可选
+    val convOptions = buildList {
+        if (user?.planTier == "premium") add("voice" to "语音模型")
+        add("immersive" to "沉浸式")
+        add("manual" to "手工触发")
+    }
 
     AlertDialog(
         onDismissRequest = { model.cancelPendingPractice() },
@@ -522,19 +529,25 @@ private fun PrePracticeDialog(model: AppViewModel) {
                 if (convPref == "ask") {
                     Text("对话方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("immersive" to "沉浸式", "manual" to "手工触发").forEach { (k, l) ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        convOptions.forEach { (k, l) ->
                             OutlinedButton(
                                 onClick = { conversation = k },
                                 modifier = Modifier.weight(1f),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                                 border = androidx.compose.foundation.BorderStroke(1.dp, if (conversation == k) RT.Accent else RT.Hairline),
-                            ) { Text(l, color = if (conversation == k) RT.Accent else RT.TextSecondary) }
+                            ) { Text(l, fontSize = 13.sp, color = if (conversation == k) RT.Accent else RT.TextSecondary) }
                         }
+                    }
+                    if (conversation == "voice") {
+                        Spacer(Modifier.height(4.dp))
+                        Text("与实时语音大模型直接语音对话，结束后给出评分。", fontSize = 11.sp, color = RT.TextSecondary)
                     }
                     CheckRow(rememberConv) { rememberConv = it }
                     Spacer(Modifier.height(12.dp))
                 }
-                if (guidPref == "ask") {
+                // 语音模型对话不走逐句文字指导，故选它时不再询问指导方式
+                if (guidPref == "ask" && conversation != "voice") {
                     Text("指导方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -552,7 +565,8 @@ private fun PrePracticeDialog(model: AppViewModel) {
         },
         confirmButton = {
             TextButton(onClick = {
-                val conv = if (convPref == "ask") conversation else if (convPref == "manual") "manual" else "immersive"
+                // 非 ask 时按保存的偏好（含 voice），由 VM 负责把 voice 解析为高级会员专属
+                val conv = if (convPref == "ask") conversation else convPref
                 val guid = if (guidPref == "ask") guidance else if (guidPref == "final") "final" else "realtime"
                 model.confirmPendingPractice(conv, guid, rememberConv, rememberGuid)
             }) { Text("开始") }

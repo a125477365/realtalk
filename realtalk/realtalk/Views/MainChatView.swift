@@ -505,14 +505,23 @@ private struct PrePracticeSheet: View {
                 if model.conversationPreference == .ask {
                     Section("对话方式") {
                         Picker("对话方式", selection: $conversation) {
+                            if model.isPremium {
+                                Text("语音模型对话").tag(AppModel.ConversationMode.voice)
+                            }
                             Text("沉浸式对话").tag(AppModel.ConversationMode.immersive)
                             Text("手工触发式对话").tag(AppModel.ConversationMode.manual)
                         }
                         .pickerStyle(.segmented)
+                        if conversation == .voice {
+                            Text("与实时语音大模型直接语音对话，结束后给出评分。")
+                                .font(.system(size: 12 * model.fontScale))
+                                .foregroundStyle(.secondary)
+                        }
                         Toggle("以后不再询问，按此设置", isOn: $rememberConversation)
                     }
                 }
-                if model.guidancePreference == .ask {
+                // 语音模型对话不走逐句文字指导，故选它时不再询问指导方式
+                if model.guidancePreference == .ask && conversation != .voice {
                     Section("指导方式") {
                         Picker("指导方式", selection: $guidance) {
                             Text("实时指导").tag(AppModel.GuidanceMode.realtime)
@@ -533,7 +542,7 @@ private struct PrePracticeSheet: View {
                     Button("开始") {
                         let conv: AppModel.ConversationMode = model.conversationPreference == .ask
                             ? conversation
-                            : (model.conversationPreference == .manual ? .manual : .immersive)
+                            : model.resolvedConversationMode(model.conversationPreference)
                         let guid: AppModel.GuidanceMode = model.guidancePreference == .ask
                             ? guidance
                             : (model.guidancePreference == .final ? .final : .realtime)

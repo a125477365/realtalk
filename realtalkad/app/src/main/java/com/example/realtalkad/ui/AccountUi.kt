@@ -207,9 +207,9 @@ fun AccountSheet(model: AppViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("沉浸式直连模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
+                            Text("语音模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
                             Text(
-                                if (user?.planTier == "premium") "在「设置」开启后，沉浸式对话直接与语音大模型对话"
+                                if (user?.planTier == "premium") "在「设置 · 对话方式」选「语音模型对话」，直接与语音大模型语音对话"
                                 else "高级会员专属，升级后可用",
                                 fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
                             )
@@ -482,7 +482,6 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val continuousVoice by model.continuousVoice.collectAsState()
     val guidancePref by model.guidancePreference.collectAsState()
     val conversationPref by model.conversationPreference.collectAsState()
-    val voiceLLMPref by model.voiceLLMPreference.collectAsState()
     val user by model.user.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
@@ -530,14 +529,21 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item {
             Text("对话方式", fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("immersive" to "沉浸式", "manual" to "手工触发", "ask" to "每次询问").forEach { (key, label) ->
+            // 语音模型对话仅高级会员可选
+            val convOptions = buildList {
+                add("ask" to "每次询问")
+                if (user?.planTier == "premium") add("voice" to "语音模型")
+                add("immersive" to "沉浸式")
+                add("manual" to "手工触发")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                convOptions.forEach { (key, label) ->
                     OutlinedButton(
                         onClick = { model.setConversationPreference(key) },
                         modifier = Modifier.weight(1f),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 8.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, if (conversationPref == key) RT.Accent else RT.Hairline),
-                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (conversationPref == key) RT.Accent else RT.TextSecondary) }
+                    ) { Text(label, fontSize = (11 * fontScale).sp, color = if (conversationPref == key) RT.Accent else RT.TextSecondary) }
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -555,7 +561,10 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。",
+                if (user?.planTier == "premium")
+                    "对话中不可切换。语音模型对话：与实时语音大模型直接语音对话，结束给出评分。手工触发式：长按说话、左滑取消、右滑发送。"
+                else
+                    "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。语音模型对话为高级会员专属。",
                 fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
             )
         }
@@ -570,21 +579,6 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, if (appearance == key) RT.Accent else RT.Hairline),
                     ) { Text(label, fontSize = (12 * fontScale).sp, color = if (appearance == key) RT.Accent else RT.TextSecondary) }
-                }
-            }
-        }
-        // 高级会员：沉浸式直连模型对话练习开关（仅高级可见）
-        if (user?.planTier == "premium") {
-            item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("沉浸式直连模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
-                        Text("开启后沉浸式对话直接与语音大模型对话", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
-                    }
-                    Switch(checked = voiceLLMPref, onCheckedChange = { model.setVoiceLLMPreference(it) })
                 }
             }
         }

@@ -64,9 +64,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
     val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
-    val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/immersive/manual
+    val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/voice/immersive/manual
     val pendingPractice = MutableStateFlow<Pair<ScenarioSummary, String>?>(null) // 非空时弹「对话前询问」
-    val voiceLLMPreference = MutableStateFlow(auth.voiceLLMPreference)   // 高级会员：沉浸式用实时语音大模型
     val showVoiceLLM = MutableStateFlow(false)                          // 控制实时语音沉浸式界面呈现
     val fontScale = MutableStateFlow(auth.fontScale)
     val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
@@ -440,9 +439,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             pendingPractice.value = summary to roleId
             return
         }
-        conversationMode.value = if (conversationPreference.value == "manual") "manual" else "immersive"
+        conversationMode.value = resolvedConversationMode(conversationPreference.value)
         guidanceMode.value = if (guidancePreference.value == "final") "final" else "realtime"
         beginPractice(summary, roleId)
+    }
+
+    /** 把「对话方式偏好」解析为本次会话实际模式：voice（语音模型对话）仅高级会员生效，否则回退沉浸式。 */
+    private fun resolvedConversationMode(pref: String): String = when (pref) {
+        "manual" -> "manual"
+        "voice" -> if (user.value?.planTier == "premium") "voice" else "immersive"
+        else -> "immersive"   // immersive / ask
     }
 
     /** 「对话前询问」确认：按所选模式开始，并按需记住偏好。 */
@@ -453,9 +459,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rememberGuidance: Boolean,
     ) {
         val pending = pendingPractice.value ?: return
-        conversationMode.value = if (conversation == "manual") "manual" else "immersive"
+        val mode = if (conversation == "voice" && user.value?.planTier != "premium") "immersive" else conversation
+        conversationMode.value = mode
         guidanceMode.value = if (guidance == "final") "final" else "realtime"
-        if (rememberConversation) { conversationPreference.value = conversationMode.value; auth.conversationPreference = conversationMode.value }
+        if (rememberConversation) { conversationPreference.value = mode; auth.conversationPreference = mode }
         if (rememberGuidance) { guidancePreference.value = guidanceMode.value; auth.guidancePreference = guidanceMode.value }
         pendingPractice.value = null
         beginPractice(pending.first, pending.second)
@@ -489,14 +496,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 本次是否走实时语音大模型：仅高级会员 + 沉浸式 + 已开启偏好（手工触发式不支持）。 */
+    /** 本次是否走实时语音大模型：仅高级会员且本次对话方式为「语音模型对话」。 */
     private fun shouldUseVoiceLLM(): Boolean =
-        user.value?.planTier == "premium" && conversationMode.value == "immersive" && voiceLLMPreference.value
-
-    fun setVoiceLLMPreference(value: Boolean) {
-        voiceLLMPreference.value = value
-        auth.voiceLLMPreference = value
-    }
+        user.value?.planTier == "premium" && conversationMode.value == "voice"
 
     /** 结束实时语音对练并请求评分（保留界面展示评分）。 */
     fun endVoiceLLMPractice() = realtime.end()

@@ -28,15 +28,10 @@ class AuthStore(context: Context) {
         get() = prefs.getString("guidance_pref", "ask") ?: "ask"
         set(value) = prefs.edit().putString("guidance_pref", value).apply()
 
-    // 对话方式偏好：ask / immersive / manual（默认 ask）。
+    // 对话方式偏好：ask / voice / immersive / manual（默认 ask）。voice=语音模型对话（高级会员）。
     var conversationPreference: String
         get() = prefs.getString("conversation_pref", "ask") ?: "ask"
         set(value) = prefs.edit().putString("conversation_pref", value).apply()
-
-    // 高级会员：沉浸式对话时改用实时语音大模型直接对话（默认关闭=文本式对练）。
-    var voiceLLMPreference: Boolean
-        get() = prefs.getBoolean("voice_llm_pref", false)
-        set(value) = prefs.edit().putBoolean("voice_llm_pref", value).apply()
 
     var autoSpeakAI: Boolean
         get() = prefs.getBoolean("auto_speak_ai", true)

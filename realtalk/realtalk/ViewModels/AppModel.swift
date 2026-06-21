@@ -35,12 +35,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 对话方式（当前会话生效，不可中途切换）。
-    enum ConversationMode: String { case immersive, manual }
+    /// 对话方式（当前会话生效，不可中途切换）。voice = 实时语音大模型直连（高级会员专属）。
+    enum ConversationMode: String { case immersive, manual, voice }
 
-    /// 对话方式偏好：可选「每次开始对话前询问」。
+    /// 对话方式偏好：可选「每次开始对话前询问」。voice（语音模型对话）仅高级会员可选。
     enum ConversationPreference: String, CaseIterable, Identifiable {
         case ask
+        case voice
         case immersive
         case manual
 
@@ -48,6 +49,7 @@ final class AppModel: ObservableObject {
         var title: String {
             switch self {
             case .ask: return "每次开始对话前询问"
+            case .voice: return "语音模型对话"
             case .immersive: return "沉浸式对话"
             case .manual: return "手工触发式对话"
             }
@@ -131,8 +133,6 @@ final class AppModel: ObservableObject {
     @Published var conversationMode: ConversationMode = .immersive   // 当前会话生效
     @Published var conversationPreference: ConversationPreference = .ask
     @Published var pendingPractice: PendingPractice?                 // 非空时弹「对话前询问」
-    /// 高级会员设置：沉浸式对话时改用「实时语音大模型」直接对话（需求第 4 项）。默认关闭（即文本式对练）。
-    @Published var voiceLLMPreference = false
     @Published var showVoiceLLM = false                              // 控制实时语音沉浸式界面呈现
     @Published var autoCaptureEnabled = false
     /// 自动采集时段列表（支持多个）。
@@ -171,7 +171,6 @@ final class AppModel: ObservableObject {
         static let fontScale = "realtalk.fontScale"
         static let guidancePreference = "realtalk.guidancePreference"
         static let conversationPreference = "realtalk.conversationPreference"
-        static let voiceLLMPreference = "realtalk.voiceLLMPreference"
     }
 
     init() {
@@ -201,7 +200,6 @@ final class AppModel: ObservableObject {
            let pref = ConversationPreference(rawValue: raw) {
             conversationPreference = pref
         }
-        voiceLLMPreference = defaults.bool(forKey: DefaultsKey.voiceLLMPreference)
 
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
@@ -357,7 +355,7 @@ final class AppModel: ObservableObject {
             pendingPractice = PendingPractice(summary: summary, roleId: roleId)
             return
         }
-        conversationMode = conversationPreference == .manual ? .manual : .immersive
+        conversationMode = resolvedConversationMode(conversationPreference)
         guidanceMode = guidancePreference == .final ? .final : .realtime
         await beginPractice(summary, roleId: roleId)
     }
@@ -370,10 +368,10 @@ final class AppModel: ObservableObject {
         rememberGuidance: Bool
     ) async {
         guard let pending = pendingPractice else { return }
-        conversationMode = conversation
+        conversationMode = (conversation == .voice && !isPremium) ? .immersive : conversation
         guidanceMode = guidance
         if rememberConversation {
-            conversationPreference = conversation == .manual ? .manual : .immersive
+            conversationPreference = conversationPreference(for: conversationMode)
         }
         if rememberGuidance {
             guidancePreference = guidance == .final ? .final : .realtime
@@ -606,16 +604,38 @@ final class AppModel: ObservableObject {
         defaults.set(fontScale, forKey: DefaultsKey.fontScale)
         defaults.set(guidancePreference.rawValue, forKey: DefaultsKey.guidancePreference)
         defaults.set(conversationPreference.rawValue, forKey: DefaultsKey.conversationPreference)
-        defaults.set(voiceLLMPreference, forKey: DefaultsKey.voiceLLMPreference)
         defaults.set(appearance.rawValue, forKey: DefaultsKey.appearance)
     }
 
     /// 是否高级会员：实时语音大模型对练是高级会员专属能力。
     var isPremium: Bool { auth.user?.effectiveTier == "premium" }
 
-    /// 本次是否走「实时语音大模型」：仅高级会员 + 沉浸式 + 已开启偏好（手工触发式不支持）。
+    /// 「对话方式」可选项：语音模型对话仅高级会员可选，非会员隐藏。
+    var availableConversationPreferences: [ConversationPreference] {
+        ConversationPreference.allCases.filter { $0 != .voice || isPremium }
+    }
+
+    /// 把「对话方式偏好」解析为本次会话实际模式：voice 仅高级会员生效，否则回退沉浸式。
+    func resolvedConversationMode(_ pref: ConversationPreference) -> ConversationMode {
+        switch pref {
+        case .manual: return .manual
+        case .voice: return isPremium ? .voice : .immersive
+        case .immersive, .ask: return .immersive
+        }
+    }
+
+    /// 把本次会话模式映射回可保存的偏好。
+    func conversationPreference(for mode: ConversationMode) -> ConversationPreference {
+        switch mode {
+        case .manual: return .manual
+        case .voice: return .voice
+        case .immersive: return .immersive
+        }
+    }
+
+    /// 本次是否走「实时语音大模型」：仅高级会员且本次对话方式为「语音模型对话」。
     var shouldUseVoiceLLM: Bool {
-        isPremium && conversationMode == .immersive && voiceLLMPreference
+        isPremium && conversationMode == .voice
     }
 
     /// 结束实时语音对练并请求评分（保留界面以展示评分）。
