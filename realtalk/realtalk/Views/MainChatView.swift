@@ -66,6 +66,10 @@ struct MainChatView: View {
                     captureButton
                 }
             }
+            // 中断流程的系统/模型/额度异常：弹失败提示框
+            .alert(item: $model.failureAlert) { alert in
+                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
+            }
             // 开始对练即进入沉浸式字幕；练习完成或退出回到聊天
             .onChange(of: model.roleplay?.sessionId) { _, sid in
                 if sid != nil, model.roleplay?.completed == false { showImmersive = true }
@@ -394,7 +398,7 @@ struct MainChatView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(model.isGeneratingPreset)
+                        .disabled(model.isBusy)
                     }
                 }
             }
@@ -445,6 +449,7 @@ struct MainChatView: View {
             .padding(.horizontal, 16)
         }
         .buttonStyle(.plain)
+        .disabled(model.isBusy)
     }
 
     private var captureButton: some View {
@@ -466,7 +471,9 @@ struct MainChatView: View {
             .padding(.bottom, 14)
         }
         .buttonStyle(.plain)
-        .disabled(model.isWorking)
+        // 等待后台处理（含通用场景生成）时禁用，避免误触发新请求；采集中仍可点击以停止
+        .disabled(model.isBusy)
+        .opacity(model.isBusy ? 0.55 : 1)
         .background(RTTheme.background)
     }
 

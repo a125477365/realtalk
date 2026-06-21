@@ -80,6 +80,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetScenarioGroup>>(emptyList()) // 通用场景目录
     val isGeneratingPreset = MutableStateFlow(false)
     val generatingSubId = MutableStateFlow<String?>(null)
+    // 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在顶部短暂提示）
+    val failureAlert = MutableStateFlow<FailureAlert?>(null)
+
+    data class FailureAlert(val title: String, val message: String)
+
+    fun dismissFailureAlert() { failureAlert.value = null }
+
+    /** 弹出失败提示框。message 为空时给出兜底说明。统一用弹框，避免与 Toast 重复提示。 */
+    private fun presentFailure(message: String?, title: String = "操作未完成") {
+        val text = message?.trim().orEmpty().ifEmpty { "发生未知错误，请稍后重试。" }
+        failureAlert.value = FailureAlert(title, text)
+    }
 
     private var scenario: Scenario? = null
     private var roleplay: RoleplayState? = null
@@ -256,7 +268,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         captureRemainingTokens = null
         capture.stop()
         autoCaptureRunning = false
-        statusMessage.value = "今日免费采集时长已用完，已停止并提交；升级会员可不限时长"
+        presentFailure("今日免费采集时长已用完，已停止并提交生成场景；升级会员可不限时长。", title = "采集已停止")
         uploadPendingAndRefresh()
     }
 
@@ -265,13 +277,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         captureRemainingTokens = null
         // 非会员每日采集时长限额（客户端本地强制）
         if (isNonMember() && nonmemberCaptureSecondsLimit() > 0 && capturedSecondsToday() >= nonmemberCaptureSecondsLimit()) {
-            statusMessage.value = "今日免费采集时长已用完，升级会员可不限时长，或明天再来"
+            presentFailure("今日免费采集时长已用完，升级会员可不限时长，或明天再来。", title = "无法开始采集")
             return
         }
         val token = auth.token
         val quota = if (token != null) runCatching { api.captureQuota(token) }.getOrNull() else null
         if (quota != null) {
-            if (!quota.canCapture) { statusMessage.value = quota.message; return }
+            if (!quota.canCapture) {
+                presentFailure(quota.message.ifBlank { "当前额度不足，暂时无法采集。" }, title = "无法开始采集")
+                return
+            }
             captureRemainingTokens = quota.remainingTokens
             captureBaselineChars = pendingCharCount()
             capture.start()
@@ -304,7 +319,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             commitCaptureSeconds()
             capture.stop()
             autoCaptureRunning = false
-            statusMessage.value = "已达当月额度，已自动停止采集并提交生成场景"
+            presentFailure("本月 AI 额度已用完，已自动停止采集并提交生成场景；下月自动恢复。", title = "采集已停止")
             uploadPendingAndRefresh()
         }
     }
@@ -426,7 +441,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     )
                 }
-                .onFailure { statusMessage.value = it.message ?: "生成失败" }
+                .onFailure { presentFailure(it.message, title = "场景生成失败") }
             generatingSubId.value = null
             isGeneratingPreset.value = false
         }
@@ -491,7 +506,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     showImmersive.value = true   // 进入对话字幕全屏
                     handleRoleplayState(state)
                 }
-            }.onFailure { statusMessage.value = it.message ?: "开始失败" }
+            }.onFailure { presentFailure(it.message, title = "无法开始练习") }
             isWorking.value = false
         }
     }
@@ -664,7 +679,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 handleRoleplayState(state, spokenPreface = state.latestFeedback)
             }
-            .onFailure { statusMessage.value = it.message ?: "提交失败" }
+            .onFailure {
+                // 系统/模型/额度异常中断了对话流程：停止本轮并弹失败提示框（保留会话，可重试或退出）
+                isVoiceActive.value = false
+                practice.stop()
+                cancelAnswerTimeout()
+                presentFailure(it.message, title = "对话中断")
+            }
         isWorking.value = false
     }
 
@@ -936,9 +957,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             // App 本地判断文件大小与时长（无需后端往返），超限直接拒绝
-            if (file.length() > 300L * 1024 * 1024) { statusMessage.value = "文件过大，最大 300MB"; return@launch }
+            if (file.length() > 300L * 1024 * 1024) { presentFailure("文件过大，最大 300MB。", title = "无法上传"); return@launch }
             val durationSec = audioDurationSeconds(file)
-            if (durationSec > 6 * 3600) { statusMessage.value = "音频过长，最长 6 小时"; return@launch }
+            if (durationSec > 6 * 3600) { presentFailure("音频过长，最长 6 小时。", title = "无法上传"); return@launch }
 
             isUploadingAudio.value = true
             // App 计算文件哈希做上传前去重预检：同文件已生成过场景则直接复用，省去整段上传
@@ -967,7 +988,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     loadTodayScenarios()
                 }
-                .onFailure { statusMessage.value = it.message ?: "上传失败" }
+                .onFailure { presentFailure(it.message, title = "上传失败") }
             isUploadingAudio.value = false
         }
     }

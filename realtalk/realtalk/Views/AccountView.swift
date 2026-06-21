@@ -593,6 +593,9 @@ struct UploadRecordingView: View {
             }
             .navigationTitle("上传语音文件")
             .navigationBarTitleDisplayMode(.inline)
+            .alert(item: $model.failureAlert) { alert in
+                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {

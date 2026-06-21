@@ -37,6 +37,9 @@ struct ImmersiveVoiceLLMView: View {
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(true)
+        .alert(item: $model.failureAlert) { alert in
+            Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
+        }
     }
 
     private var isFinished: Bool {

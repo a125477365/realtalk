@@ -38,6 +38,10 @@ struct ImmersiveRoleplayView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // 对话被系统/模型/额度异常中断时弹失败提示框（沉浸式界面也能看到原因）
+        .alert(item: $model.failureAlert) { alert in
+            Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
+        }
     }
 
     // MARK: 顶栏

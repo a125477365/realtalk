@@ -143,6 +143,25 @@ final class AppModel: ObservableObject {
     @Published var trainingAnswer = ""
     @Published var isWorking = false
     @Published var statusMessage = ""
+    /// 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在主界面显示）。
+    @Published var failureAlert: FailureAlert?
+
+    struct FailureAlert: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+
+    /// 处理中（等待后台）：用于全局禁用其它操作按钮，避免在生成/对练中误触发新请求。
+    var isBusy: Bool { isWorking || isGeneratingPreset }
+
+    /// 弹出失败提示框，并同步到顶部状态文案。message 为空时给出兜底说明。
+    func presentFailure(_ message: String, title: String = "操作未完成") {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = text.isEmpty ? "发生未知错误，请稍后重试。" : text
+        failureAlert = FailureAlert(title: title, message: shown)
+        statusMessage = shown
+    }
 
     private var captureScheduleLoop: Task<Void, Never>?
     /// 用户在某采集时段内手动停止后，抑制自动采集直到该时段结束（避免停了又被自动重启）。
@@ -339,7 +358,7 @@ final class AppModel: ObservableObject {
                 createdAt: now
             )
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "场景生成失败")
             return nil
         }
     }
@@ -404,7 +423,7 @@ final class AppModel: ObservableObject {
             }
         } catch {
             isWorking = false
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "无法开始练习")
         }
     }
 
@@ -438,7 +457,7 @@ final class AppModel: ObservableObject {
             await loadPracticeHistory()
         } catch {
             isWorking = false
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "无法开始语音对练")
         }
     }
 
@@ -510,7 +529,7 @@ final class AppModel: ObservableObject {
         commitCaptureSeconds()
         speech.stop(savePartial: true)
         captureRemainingTokens = nil
-        statusMessage = "今日免费采集时长已用完，已停止并提交；升级会员可不限时长"
+        presentFailure("今日免费采集时长已用完，已停止并提交生成场景；升级会员可不限时长。", title: "采集已停止")
         let uploaded = await uploadPending()
         if uploaded > 0 { await loadTodayScenarios() }
     }
@@ -520,12 +539,12 @@ final class AppModel: ObservableObject {
         captureRemainingTokens = nil
         // 非会员每日采集时长限额（客户端本地强制；后端看不到采集过程）
         if isNonMember, nonmemberCaptureSecondsLimit > 0, capturedSecondsToday >= nonmemberCaptureSecondsLimit {
-            statusMessage = "今日免费采集时长已用完，升级会员可不限时长，或明天再来"
+            presentFailure("今日免费采集时长已用完，升级会员可不限时长，或明天再来。", title: "无法开始采集")
             return
         }
         if let token = auth.token, let quota = try? await api.captureQuota(token: token) {
             if quota.canCapture == false {
-                statusMessage = quota.message
+                presentFailure(quota.message.isEmpty ? "当前额度不足，暂时无法采集。" : quota.message, title: "无法开始采集")
                 return
             }
             captureRemainingTokens = quota.remainingTokens
@@ -559,7 +578,7 @@ final class AppModel: ObservableObject {
         captureRemainingTokens = nil
         commitCaptureSeconds()
         speech.stop(savePartial: true)
-        statusMessage = "已达当月额度，已自动停止采集并提交生成场景"
+        presentFailure("本月 AI 额度已用完，已自动停止采集并提交生成场景；下月自动恢复。", title: "采集已停止")
         let uploaded = await uploadPending()
         if uploaded > 0 { await loadTodayScenarios() }
     }
@@ -877,7 +896,7 @@ final class AppModel: ObservableObject {
             await loadPracticeHistory()
         } catch {
             isVoiceConversationActive = false
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "无法开始对话")
         }
     }
 
@@ -983,8 +1002,10 @@ final class AppModel: ObservableObject {
             }
             await loadPracticeHistory()
         } catch {
+            // 系统/模型/额度异常中断了对话流程：停止本轮并弹失败提示框（保留会话，可重试或退出）
             isVoiceConversationActive = false
-            statusMessage = error.localizedDescription
+            practiceSpeech.stop(emit: false)
+            presentFailure(error.localizedDescription, title: "对话中断")
         }
     }
 
@@ -1115,13 +1136,13 @@ final class AppModel: ObservableObject {
         // App 本地判断文件大小与时长（无需后端往返），超限直接拒绝
         let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
         if size > 300 * 1024 * 1024 {
-            statusMessage = "文件过大，最大 300MB"
+            presentFailure("文件过大，最大 300MB。", title: "无法上传")
             return
         }
         if let duration = try? await AVURLAsset(url: fileURL).load(.duration) {
             let seconds = CMTimeGetSeconds(duration)
             if seconds.isFinite, seconds > 6 * 3600 {
-                statusMessage = "音频过长，最长 6 小时"
+                presentFailure("音频过长，最长 6 小时。", title: "无法上传")
                 return
             }
         }
@@ -1157,7 +1178,7 @@ final class AppModel: ObservableObject {
             }
             await loadTodayScenarios()
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "上传失败")
         }
     }
 

@@ -438,6 +438,7 @@ final class APIClient {
         guard let url = components?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = 120   // 大模型生成/评估可能较慢，给足时间避免客户端提前超时
         addDefaultHeaders(to: &request, token: token)
         return try await send(request)
     }
@@ -449,6 +450,7 @@ final class APIClient {
     ) async throws -> Response {
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
+        request.timeoutInterval = 120   // 大模型生成/评估可能较慢，给足时间避免客户端提前超时
         addDefaultHeaders(to: &request, token: token)
         request.httpBody = try encoder.encode(body)
         return try await send(request)

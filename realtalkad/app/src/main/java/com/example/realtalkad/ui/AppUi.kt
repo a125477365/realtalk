@@ -232,6 +232,22 @@ private fun PresetCatalogList(
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
     if (user == null) LoginScreen(model) else MainChatScreen(model)
+    // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
+    FailureAlertDialog(model)
+}
+
+/// 中断流程的系统/模型/额度异常弹窗：渲染在独立 Dialog 窗口，置于所有界面之上。
+@Composable
+private fun FailureAlertDialog(model: AppViewModel) {
+    val alert by model.failureAlert.collectAsState()
+    alert?.let { a ->
+        AlertDialog(
+            onDismissRequest = { model.dismissFailureAlert() },
+            title = { Text(a.title) },
+            text = { Text(a.message) },
+            confirmButton = { TextButton(onClick = { model.dismissFailureAlert() }) { Text("我知道了") } },
+        )
+    }
 }
 
 /* ---------------- 登录 ---------------- */
@@ -284,6 +300,8 @@ fun MainChatScreen(model: AppViewModel) {
     val presetCatalog by model.presetCatalog.collectAsState()
     val isGeneratingPreset by model.isGeneratingPreset.collectAsState()
     val generatingSubId by model.generatingSubId.collectAsState()
+    // 等待后台处理（含通用场景生成）时禁用其它操作按钮，避免误触发新请求
+    val busy = isWorking || isGeneratingPreset
 
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
@@ -385,7 +403,7 @@ fun MainChatScreen(model: AppViewModel) {
                 Modifier.fillMaxWidth().padding(16.dp, 8.dp)
                     .background(RT.Surface, RoundedCornerShape(14.dp))
                     .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
-                    .clickable { model.toggleRecording() }
+                    .clickable(enabled = !busy) { model.toggleRecording() }
                     .padding(12.dp),
             ) {
                 Text(
@@ -416,7 +434,7 @@ fun MainChatScreen(model: AppViewModel) {
                                 color = RT.TextPrimary, modifier = Modifier.padding(top = 4.dp))
                         }
                         items(todayItems, key = { it.sceneId }) { summary ->
-                            ScenarioCard(summary, fontScale, showDate = false) { roleDialogFor = summary }
+                            ScenarioCard(summary, fontScale, showDate = false) { if (!busy) roleDialogFor = summary }
                         }
                     }
                     if (historyGroups.isNotEmpty()) {
@@ -430,13 +448,13 @@ fun MainChatScreen(model: AppViewModel) {
                                     color = RT.TextSecondary.copy(alpha = 0.8f), modifier = Modifier.padding(start = 4.dp, top = 2.dp))
                             }
                             items(group, key = { it.sceneId }) { summary ->
-                                ScenarioCard(summary, fontScale, showDate = true) { roleDialogFor = summary }
+                                ScenarioCard(summary, fontScale, showDate = true) { if (!busy) roleDialogFor = summary }
                             }
                         }
                     }
                 } else {
                     items(scenarios, key = { it.sceneId }) { summary ->
-                        ScenarioCard(summary, fontScale, showDate = false) { roleDialogFor = summary }
+                        ScenarioCard(summary, fontScale, showDate = false) { if (!busy) roleDialogFor = summary }
                     }
                 }
             }
@@ -450,7 +468,7 @@ fun MainChatScreen(model: AppViewModel) {
                     if (isRecording) androidx.compose.ui.graphics.SolidColor(Color.Red) else RT.BrandBrush,
                     RoundedCornerShape(99.dp),
                 )
-                .clickable(enabled = !isWorking) { model.toggleRecording() },
+                .clickable(enabled = !busy) { model.toggleRecording() },
             contentAlignment = Alignment.Center,
         ) {
             Text(
