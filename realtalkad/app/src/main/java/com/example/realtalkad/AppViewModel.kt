@@ -334,10 +334,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         capture.stop()
         autoCaptureRunning = false
         statusMessage.value = "已停止采集，正在发送给后台并生成场景…"
-        uploadPendingAndRefresh()
+        uploadPendingAndRefresh(notifyFailure = true)
     }
 
-    private fun uploadPendingAndRefresh() {
+    /** notifyFailure=true（用户手动停止采集）失败弹提示框；自动停止/后台重试时静默（内容本地保留、会重试）。 */
+    private fun uploadPendingAndRefresh(notifyFailure: Boolean = false) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             kotlinx.coroutines.delay(400) // 等最后的识别结果落入队列
@@ -353,7 +354,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     statusMessage.value = "已生成 ${it.generated} 个场景，可在列表中选择练习"
                     loadTodayScenarios()
                 }
-                .onFailure { statusMessage.value = "上传失败：${it.message ?: ""}" }
+                .onFailure {
+                    if (notifyFailure) {
+                        presentFailure("采集内容上传失败：${it.message ?: ""}。内容已保留，稍后会自动重试。", title = "上传失败")
+                    } else {
+                        statusMessage.value = "上传失败：${it.message ?: ""}"
+                    }
+                }
         }
     }
 
@@ -564,7 +571,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 isVoiceActive.value = true
                 showImmersive.value = true
                 handleRoleplayState(state)
-            }.onFailure { statusMessage.value = it.message ?: "重新开始失败" }
+            }.onFailure { presentFailure(it.message, title = "重新开始失败") }
             isWorking.value = false
         }
     }
@@ -587,7 +594,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         if (autoSpeakAI.value) voice.speak(it) {}
                     }
                 }
-                .onFailure { statusMessage.value = it.message ?: "评估失败" }
+                .onFailure { presentFailure(it.message, title = "评分获取失败") }
             isWorking.value = false
         }
     }
@@ -838,7 +845,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val token = auth.token ?: return@launch
             runCatching { api.createSupportTicket(category, subject, body, token) }
                 .onSuccess { statusMessage.value = "工单已提交，我们会尽快处理"; loadMyTickets() }
-                .onFailure { statusMessage.value = it.message ?: "提交失败" }
+                .onFailure { presentFailure(it.message, title = "工单提交失败") }
         }
     }
 
@@ -917,7 +924,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             isWorking.value = true
             runCatching { api.createRecharge(0, method, token, planId) }
                 .onSuccess { rechargeOrder.value = it; statusMessage.value = it.message }
-                .onFailure { statusMessage.value = it.message ?: "开通失败" }
+                .onFailure { presentFailure(it.message, title = "开通失败") }
             isWorking.value = false
         }
     }
@@ -927,7 +934,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val token = auth.token ?: return@launch
             runCatching { api.createRecharge(amountCents, method, token) }
                 .onSuccess { rechargeOrder.value = it }
-                .onFailure { statusMessage.value = it.message ?: "创建失败" }
+                .onFailure { presentFailure(it.message, title = "下单失败") }
         }
     }
 
@@ -940,7 +947,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     billing.value = it; user.value = it.user; rechargeOrder.value = null
                     statusMessage.value = "支付成功，当前为${it.user.tierName}"
                 }
-                .onFailure { statusMessage.value = it.message ?: "确认失败" }
+                .onFailure { presentFailure(it.message, title = "支付确认失败") }
         }
     }
 

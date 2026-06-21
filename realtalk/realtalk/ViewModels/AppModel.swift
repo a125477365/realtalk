@@ -472,7 +472,7 @@ final class AppModel: ObservableObject {
             speech.stop(savePartial: true)
             statusMessage = "已停止采集，正在发送给后台并生成场景…"
             try? await Task.sleep(nanoseconds: 400_000_000)
-            let uploaded = await uploadPending()
+            let uploaded = await uploadPending(notifyFailure: true)
             if uploaded > 0 {
                 await loadTodayScenarios()
             }
@@ -670,7 +670,8 @@ final class AppModel: ObservableObject {
 
     /// 上传待同步的转写，返回成功上传的条数（-1=出错，0=无内容）。
     @discardableResult
-    func uploadPending() async -> Int {
+    /// notifyFailure=true（用户手动停止采集时）失败弹提示框；后台每小时自动重试时静默（内容已本地保留、会重试）。
+    func uploadPending(notifyFailure: Bool = false) async -> Int {
         guard let token = auth.token else {
             statusMessage = "请先登录后同步"
             return 0
@@ -689,7 +690,11 @@ final class AppModel: ObservableObject {
             statusMessage = "已生成 \(response.generated) 个场景，可在列表中选择练习"
             return response.acceptedItems
         } catch {
-            statusMessage = "上传失败：\(error.localizedDescription)"
+            if notifyFailure {
+                presentFailure("采集内容上传失败：\(error.localizedDescription)。内容已保留，稍后会自动重试。", title: "上传失败")
+            } else {
+                statusMessage = "上传失败：\(error.localizedDescription)"
+            }
             return -1
         }
     }
@@ -1036,7 +1041,7 @@ final class AppModel: ObservableObject {
                 if autoSpeakAI { voice.speak(feedback) }
             }
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "评分获取失败")
         }
     }
 
@@ -1097,7 +1102,7 @@ final class AppModel: ObservableObject {
             statusMessage = "工单已提交，我们会尽快处理"
             return true
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "工单提交失败")
             return false
         }
     }
@@ -1114,7 +1119,7 @@ final class AppModel: ObservableObject {
             rechargeOrder = try await api.createRecharge(amountCents: 0, method: method, planId: planId, token: token)
             statusMessage = rechargeOrder?.message ?? "订单已创建，请完成支付"
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "下单失败")
         }
     }
 
@@ -1204,7 +1209,7 @@ final class AppModel: ObservableObject {
             rechargeOrder = try await api.createRecharge(amountCents: amountCents, method: method, token: token)
             statusMessage = rechargeOrder?.message ?? "充值订单已创建"
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "下单失败")
         }
     }
 
@@ -1222,7 +1227,7 @@ final class AppModel: ObservableObject {
             self.rechargeOrder = nil
             statusMessage = "支付成功，当前为\(account.user.tierName)"
         } catch {
-            statusMessage = error.localizedDescription
+            presentFailure(error.localizedDescription, title: "支付确认失败")
         }
     }
 
