@@ -64,6 +64,7 @@ fun AccountSheet(model: AppViewModel) {
     var showUpload by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showMembership by remember { mutableStateOf(false) }
+    var showMembershipPremiumOnly by remember { mutableStateOf(false) }
     var showTickets by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { model.refreshBilling(); model.loadPlans() }
@@ -77,7 +78,7 @@ fun AccountSheet(model: AppViewModel) {
         return
     }
     if (showMembership) {
-        MembershipSheetContent(model) { showMembership = false }
+        MembershipSheetContent(model, premiumOnly = showMembershipPremiumOnly) { showMembership = false; showMembershipPremiumOnly = false }
         return
     }
     if (showTickets) {
@@ -147,7 +148,7 @@ fun AccountSheet(model: AppViewModel) {
                 subtitle = if (user?.planTier == "premium") "延长高级会员有效期" else "解锁更多每日用量与高级功能",
                 modifier = Modifier.fillMaxWidth(),
                 fontScale = fontScale,
-            ) { showMembership = true }
+            ) { showMembershipPremiumOnly = false; showMembership = true }
         }
 
         item {
@@ -159,6 +160,70 @@ fun AccountSheet(model: AppViewModel) {
             ) { showSettings = true }
         }
 
+        // 高级会员专属功能（上传录音 + 沉浸式直连模型对话练习）
+        item {
+            Column(Modifier.fillMaxWidth()) {
+                Text("高级会员专属", fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold,
+                    color = RT.TextSecondary, modifier = Modifier.padding(bottom = 8.dp))
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(16.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp)),
+                ) {
+                    // 上传已有语音文件生成场景
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                if (user?.planTier == "premium") showUpload = true
+                                else { showMembershipPremiumOnly = true; showMembership = true }
+                            }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("上传已有语音文件生成场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
+                            Text(
+                                if (user?.planTier == "premium") "支持 mp3 / wav / m4a · 最长 6 小时"
+                                else "高级会员专属，升级后可用",
+                                fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
+                            )
+                        }
+                        Text(
+                            if (user?.planTier == "premium") "›" else "🔒",
+                            fontSize = (16 * fontScale).sp,
+                            color = if (user?.planTier == "premium") RT.TextSecondary else Color(0xFFF59E0B),
+                        )
+                    }
+                    // 分隔线
+                    Spacer(Modifier.height(1.dp).fillMaxWidth().padding(start = 44.dp).background(RT.Hairline))
+                    // 沉浸式直连模型对话练习
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                if (user?.planTier == "premium") { showSettings = true }
+                                else { showMembershipPremiumOnly = true; showMembership = true }
+                            }
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("沉浸式直连模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
+                            Text(
+                                if (user?.planTier == "premium") "在「设置」开启后，沉浸式对话直接与语音大模型对话"
+                                else "高级会员专属，升级后可用",
+                                fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
+                            )
+                        }
+                        Text(
+                            if (user?.planTier == "premium") "›" else "🔒",
+                            fontSize = (16 * fontScale).sp,
+                            color = if (user?.planTier == "premium") RT.TextSecondary else Color(0xFFF59E0B),
+                        )
+                    }
+                }
+            }
+        }
+
         item {
             SettingsEntry(
                 title = "客服工单",
@@ -166,28 +231,6 @@ fun AccountSheet(model: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 fontScale = fontScale,
             ) { showTickets = true }
-        }
-
-        // 上传录音入口
-        item {
-            Row(
-                Modifier.fillMaxWidth()
-                    .background(RT.Surface, RoundedCornerShape(16.dp))
-                    .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
-                    .clickable(enabled = user?.planTier == "premium") { showUpload = true }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("上传已有语音文件生成场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
-                    Text(
-                        if (user?.planTier == "premium") "支持 mp3 / wav / m4a · 最长 6 小时 / 300MB"
-                        else "高级会员专属功能，升级后可用",
-                        fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
-                    )
-                }
-                Text(if (user?.planTier == "premium") "›" else "🔒", fontSize = (16 * fontScale).sp, color = RT.TextSecondary)
-            }
         }
 
         // 账单
@@ -198,17 +241,29 @@ fun AccountSheet(model: AppViewModel) {
                     Text(item.title, fontSize = (13 * fontScale).sp)
                     Text(item.createdAt.take(16).replace("T", " "), fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                 }
-                Text(
-                    (if (item.amountCents >= 0) "+" else "") + money(item.amountCents),
-                    fontSize = (13 * fontScale).sp, fontWeight = FontWeight.Medium,
-                    color = if (item.amountCents >= 0) Color(0xFF16A34A) else RT.TextPrimary,
-                )
+            }
+        }
+
+        // 账号信息（登录方式 + 退出登录，放在底部）
+        item {
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(16.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(16.dp))
+                    .padding(16.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("登录方式", fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
+                    Spacer(Modifier.weight(1f))
+                    Text(user?.displayName ?: "微信用户", fontSize = (13 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Spacer(Modifier.height(1.dp).fillMaxWidth().background(RT.Hairline))
+                TextButton(onClick = { model.logout() }) { Text("退出登录", color = Color.Red) }
             }
         }
 
         item {
             if (status.isNotBlank()) Text(status, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
-            TextButton(onClick = { model.logout() }) { Text("退出登录", color = Color.Red) }
         }
     }
 }
@@ -230,12 +285,13 @@ private fun SettingsEntry(title: String, subtitle: String, modifier: Modifier = 
 
 /** 会员：先选套餐，再弹出微信/支付宝付款方式确认。按档位展示可选套餐。 */
 @Composable
-private fun MembershipSheetContent(model: AppViewModel, onBack: () -> Unit) {
+private fun MembershipSheetContent(model: AppViewModel, premiumOnly: Boolean = false, onBack: () -> Unit) {
     val order by model.rechargeOrder.collectAsState()
     val status by model.statusMessage.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val user by model.user.collectAsState()
     var selectedPlan by remember { mutableStateOf<PlanItem?>(null) }
+    val displayPlans = if (premiumOnly) model.availablePlans().filter { it.tier == "premium" } else model.availablePlans()
 
     fun actionLabel(plan: PlanItem): String {
         val tier = user?.planTier ?: "free"
@@ -257,7 +313,7 @@ private fun MembershipSheetContent(model: AppViewModel, onBack: () -> Unit) {
                 Text("会员", fontWeight = FontWeight.SemiBold)
             }
         }
-        items(model.availablePlans(), key = { it.id }) { plan ->
+        items(displayPlans, key = { it.id }) { plan ->
             Row(
                 Modifier.fillMaxWidth()
                     .background(RT.Surface, RoundedCornerShape(14.dp))
@@ -511,16 +567,16 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                 }
             }
         }
-        // 高级会员专属：沉浸式对话时改用实时语音大模型直接对话（需求第 4 项）
+        // 高级会员：沉浸式直连模型对话练习开关（仅高级可见）
         if (user?.planTier == "premium") {
             item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
-                        Text("使用语音大模型进行交流", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "高级会员专属。开启后「沉浸式对话」将与实时语音大模型直接语音对话，按本场景台词练口语、不涉及无关或敏感话题，结束后给出评分与建议。手工触发式不支持。",
-                            fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
-                        )
+                        Text("沉浸式直连模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
+                        Text("开启后沉浸式对话直接与语音大模型对话", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                     }
                     Switch(checked = voiceLLMPref, onCheckedChange = { model.setVoiceLLMPreference(it) })
                 }

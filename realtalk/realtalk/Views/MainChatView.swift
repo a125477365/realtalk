@@ -313,7 +313,7 @@ struct MainChatView: View {
                 Text(model.isGeneratingPreset ? "正在生成场景对话…" : "暂无通用场景")
                     .font(.system(size: 14 * model.fontScale, weight: .medium))
                     .foregroundStyle(RTTheme.textPrimary)
-                Text("没有录音也能练：选一个场景，AI 会即时生成中英文对话")
+                Text("选择场景，AI 即时生成对话")
                     .font(.system(size: 12 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -324,7 +324,7 @@ struct MainChatView: View {
         } else {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    Text("没有录音也能练：选一个场景，AI 即时生成约 40 句中英文对话再进入对练。")
+                    Text("选择场景即可生成对话，无需录音")
                         .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary)
                         .padding(.horizontal, 16)

@@ -167,7 +167,7 @@ private fun PresetCatalogList(
             Text("暂无通用场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                "没有录音也能练：选一个场景，AI 会即时生成中英文对话",
+                "选择场景即可生成对话，无需录音",
                 fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
             )
         }
@@ -180,7 +180,7 @@ private fun PresetCatalogList(
     ) {
         item(key = "preset-tip") {
             Text(
-                "没有录音也能练：选一个场景，AI 即时生成约 40 句中英文对话再进入对练。",
+                "选择场景即可生成对话，无需录音",
                 fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
                 modifier = Modifier.padding(bottom = 2.dp),
             )

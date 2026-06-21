@@ -16,6 +16,7 @@ struct AccountPanelView: View {
     @State private var showingSettings = false
     @State private var showingUpload = false
     @State private var showingMembership = false
+    @State private var membershipPremiumOnly = false
     @State private var showingTickets = false
 
     private var isPremium: Bool { auth.user?.effectiveTier == "premium" }
@@ -27,9 +28,9 @@ struct AccountPanelView: View {
                     memberCard
                     upgradeEntry
                     premiumFeatures
-                    accountInfoCard
                     supportEntry
                     ledger
+                    accountInfoCard
                     StatusBanner(text: model.statusMessage)
                 }
                 .padding(16)
@@ -47,7 +48,7 @@ struct AccountPanelView: View {
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $showingUpload) { UploadRecordingView() }
-            .sheet(isPresented: $showingMembership) { MembershipView() }
+            .sheet(isPresented: $showingMembership) { MembershipView(premiumOnly: membershipPremiumOnly) }
             .sheet(isPresented: $showingTickets) { SupportTicketsView() }
             .task {
                 await model.loadBillingAccount()
@@ -120,6 +121,7 @@ struct AccountPanelView: View {
 
     private var upgradeEntry: some View {
         Button {
+            membershipPremiumOnly = false
             showingMembership = true
         } label: {
             HStack(spacing: 12) {
@@ -155,14 +157,14 @@ struct AccountPanelView: View {
                     icon: "waveform.badge.plus",
                     title: "上传已有语音文件生成场景",
                     subtitle: isPremium ? "支持 mp3 / wav / m4a · 最长 6 小时" : "高级会员专属，升级后可用",
-                    action: { if isPremium { showingUpload = true } else { showingMembership = true } }
+                    action: { if isPremium { showingUpload = true } else { membershipPremiumOnly = true; showingMembership = true } }
                 )
                 Divider().padding(.leading, 44)
                 premiumRow(
                     icon: "mic.circle.fill",
-                    title: "实时语音对话练习",
+                    title: "沉浸式直连模型对话练习",
                     subtitle: isPremium ? "在「设置」开启后，沉浸式对话直接与语音大模型对话" : "高级会员专属，升级后可用",
-                    action: { if isPremium { showingSettings = true } else { showingMembership = true } }
+                    action: { if isPremium { showingSettings = true } else { membershipPremiumOnly = true; showingMembership = true } }
                 )
             }
             .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
@@ -280,9 +282,6 @@ struct AccountPanelView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text((item.amountCents >= 0 ? "+" : "") + money(item.amountCents))
-                            .font(.system(size: 15 * model.fontScale, weight: .medium).monospacedDigit())
-                            .foregroundStyle(item.amountCents >= 0 ? .green : RTTheme.textPrimary)
                     }
                     .padding(.vertical, 5)
                 }
@@ -307,12 +306,21 @@ struct MembershipView: View {
     @EnvironmentObject private var auth: AuthStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPlan: PlanItem?
+    let premiumOnly: Bool
+
+    init(premiumOnly: Bool = false) {
+        self.premiumOnly = premiumOnly
+    }
+
+    private var displayPlans: [PlanItem] {
+        premiumOnly ? model.availablePlans.filter { $0.tier == "premium" } : model.availablePlans
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 Section(sectionTitle) {
-                    ForEach(model.availablePlans) { plan in
+                    ForEach(displayPlans) { plan in
                         Button { selectedPlan = plan } label: { planRow(plan) }
                             .buttonStyle(.plain)
                     }
@@ -337,6 +345,7 @@ struct MembershipView: View {
     }
 
     private var sectionTitle: String {
+        if premiumOnly { return "升级高级会员" }
         switch auth.user?.effectiveTier {
         case "premium": return "续费高级会员"
         case "basic": return "续费基础 / 升级高级"
