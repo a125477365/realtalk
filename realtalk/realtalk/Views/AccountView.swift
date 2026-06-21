@@ -282,6 +282,9 @@ struct AccountPanelView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Text((item.amountCents >= 0 ? "+" : "") + money(item.amountCents))
+                            .font(.system(size: 15 * model.fontScale, weight: .medium).monospacedDigit())
+                            .foregroundStyle(item.amountCents >= 0 ? .green : .red)
                     }
                     .padding(.vertical, 5)
                 }

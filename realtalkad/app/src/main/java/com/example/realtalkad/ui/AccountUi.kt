@@ -241,6 +241,12 @@ fun AccountSheet(model: AppViewModel) {
                     Text(item.title, fontSize = (13 * fontScale).sp)
                     Text(item.createdAt.take(16).replace("T", " "), fontSize = (10 * fontScale).sp, color = RT.TextSecondary)
                 }
+                Text(
+                    (if (item.amountCents >= 0) "+" else "") + money(item.amountCents),
+                    fontSize = (13 * fontScale).sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (item.amountCents >= 0) Color(0xFF16A34A) else Color(0xFFE03131),
+                )
             }
         }
 
