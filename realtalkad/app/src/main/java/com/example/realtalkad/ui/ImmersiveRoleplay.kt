@@ -103,7 +103,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val nextLineHint = state?.nextLine
         ?.takeIf { state?.completed == false && !isWorking && !isSpeaking }
         ?.let {
-            val prefix = if (state?.latestAccepted == false) "请你继续说" else "请你说"
+            val prefix = if (state?.latestAccepted == false) "请你用英文继续说" else "请你用英文说"
             "$prefix：${it.sourceText}"
         }
 

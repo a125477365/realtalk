@@ -362,7 +362,7 @@ struct ImmersiveRoleplayView: View {
     /// 下一句要说的中文提示（仅展示、不语音播报）。实时/事后指导都会提示。
     private var nextLineHint: String? {
         guard model.roleplay?.completed == false, let next = model.roleplay?.nextLine else { return nil }
-        let prefix = model.roleplay?.latestAccepted == false ? "请你继续说" : "请你说"
+        let prefix = model.roleplay?.latestAccepted == false ? "请你用英文继续说" : "请你用英文说"
         return "\(prefix)：\(next.sourceText)"
     }
 

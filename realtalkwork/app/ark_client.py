@@ -371,8 +371,8 @@ JSON schema:
       "index": 0,
       "speaker": "我/对方/同事/朋友",
       "target_role": "self/counterpart/manager/customer/friend",
-      "source_text": "必须等于 input_lines[0].text",
-      "english": "自然、地道、适合国外真实口语环境的英文",
+      "source_text": "整理后的简洁中文句（必须与本句 english 意思严格对应、一一匹配）",
+      "english": "与本句 source_text 意思一致的自然地道英文",
       "intent": "这句话的沟通目的"
     }}
   ],
@@ -750,8 +750,14 @@ def _normalize_for_score(value: str) -> str:
 
 
 def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, Any]]) -> ScenarioResponse:
+    """修复并校验 AI 还原的场景：
+
+    关键修正——直接使用 AI 每句「成对的 source_text↔english」，不再用原始识别文本覆盖 source_text。
+    此前强行把原始识别原文(可能含识别错误/未清洗)当 source_text，却配上 AI 对「清洗后句子」的英文，
+    AI 一旦合并/清洗了句子，中英文就会错位（如「折过了」配「The rain has stopped」）。
+    现按 AI 的配对逐句采用，连续编号，并校验角色；AI 没给可用内容时才回退离线场景。
+    """
     fallback = _fallback_scenario([TranscriptItem(id=str(item["index"]), timestamp=_safe_timestamp(item), text=item["text"]) for item in atomic_lines])
-    role_ids = {role.id for role in scenario.roles}
     roles = scenario.roles or fallback.roles
     if "self" not in {role.id for role in roles}:
         roles.insert(0, fallback.roles[0])
@@ -760,24 +766,29 @@ def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, An
     role_ids = {role.id for role in roles}
 
     repaired_lines: list[SceneLine] = []
-    by_index = {line.index: line for line in scenario.lines}
-    for item in atomic_lines:
-        fallback_line = fallback.lines[int(item["index"])]
-        candidate = by_index.get(int(item["index"]))
-        if candidate is None:
-            repaired_lines.append(fallback_line)
+    for line in scenario.lines:
+        src = (line.source_text or "").strip()
+        eng = (line.english or "").strip()
+        if not src and not eng:
             continue
-        target_role = candidate.target_role if candidate.target_role in role_ids else fallback_line.target_role
+        if not eng:
+            eng = _offline_translate(src)
+        if not src:
+            src = eng
+        target_role = line.target_role if line.target_role in role_ids else "self"
         repaired_lines.append(
             SceneLine(
-                index=int(item["index"]),
-                speaker=candidate.speaker or fallback_line.speaker,
+                index=len(repaired_lines),
+                speaker=line.speaker or ("我" if target_role == "self" else "对方"),
                 target_role=target_role,
-                source_text=str(item["text"]),
-                english=candidate.english or fallback_line.english,
-                intent=candidate.intent or fallback_line.intent,
+                source_text=src,
+                english=eng,
+                intent=line.intent,
             )
         )
+
+    if not repaired_lines:
+        return fallback
 
     return ScenarioResponse(
         scene_id="",
