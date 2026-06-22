@@ -2032,7 +2032,7 @@ async def roleplay_message(
         accepted,
         had_rejected_attempt,
     )
-    stored_feedback = feedback or evaluation.feedback.strip() or "回答正确，已继续下一句。"
+    stored_feedback = feedback or evaluation.feedback.strip() or ""
     # 实时指导：只有说对了（accepted）才把用户这句计入字幕；说错的不进字幕，
     # 仅在指导区给出中文纠正、让用户重新尝试。事后指导 accepted 恒为真，所以照常进字幕并继续。
     if accepted:
@@ -2621,7 +2621,19 @@ def format_final_roleplay_review(
 
     def _is_positive_ack(text: str) -> bool:
         # 正向确认（说对了）不是「待改进点」，不应进入「优先改」清单
-        return text.lstrip().startswith(("正确", "回答正确")) or "已继续" in text
+        t = text.strip()
+        # 包含纠正/改进关键词的是真正的反馈，不算纯正向确认
+        correction_signals = ("但", "注意", "建议", "改成", "应该是", "试试", "可以更",
+                              "but", "however", "try", "instead", "better", "suggest",
+                              "consider", "注意", "改进", "更自然")
+        has_correction = any(sig in t.lower() for sig in correction_signals)
+        if has_correction:
+            return False
+        # 纯正向确认模式（中/英文）
+        positive_starts = ("正确", "回答正确", "很好", "非常好", "不错", "说得好",
+                           "good", "great", "nice", "well done", "perfect", "excellent")
+        positive_contains = ("已继续", "继续保持")
+        return t.startswith(positive_starts) or any(p in t for p in positive_contains)
 
     weak_points = [
         fb

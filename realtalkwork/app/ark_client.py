@@ -705,16 +705,27 @@ def _fallback_ai_chat(message: str, scenario: ScenarioResponse | None) -> str:
 
 
 def _fallback_roleplay_evaluation(user_text: str, target_line: SceneLine) -> RoleplayEvaluation:
-    score = SequenceMatcher(None, _normalize_for_score(user_text), _normalize_for_score(target_line.english)).ratio()
-    if score >= 0.9:
+    norm_user = _normalize_for_score(user_text)
+    norm_target = _normalize_for_score(target_line.english)
+    char_score = SequenceMatcher(None, norm_user, norm_target).ratio()
+
+    # 词级重叠率：对短句更宽容，只要关键内容词命中就接受
+    user_words = set(norm_user.split())
+    target_words = set(norm_target.split())
+    word_overlap = len(user_words & target_words) / max(len(target_words), 1) if target_words else 0.0
+
+    # 综合评分：字符相似度与词重叠率取较高值
+    score = max(char_score, word_overlap)
+
+    if score >= 0.85:
         feedback = "很自然，基本还原了这句真实对话。"
-    elif score >= 0.72:
+    elif score >= 0.6:
         feedback = "意思到位，可以更注意语序和固定搭配。"
     else:
         feedback = "这句还没贴近真实场景，先跟读参考表达。"
     return RoleplayEvaluation(
         score=round(score, 3),
-        accepted=score >= 0.55,
+        accepted=score >= 0.45,
         feedback=feedback,
         correction=target_line.english,
     )
