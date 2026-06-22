@@ -33,7 +33,11 @@ struct ImmersiveRoleplayView: View {
             VStack(spacing: 8) {
                 header
                 subtitlePane        // 上：字幕区（已确认对话）
-                guidancePane        // 中：指导区（提示 + 纠正/评分）
+                if model.roleplay?.completed == true {
+                    reviewCard      // 完成：最终评分卡（分数 + 建议）
+                } else {
+                    guidancePane    // 中：指导区（提示 + 纠正/评分）
+                }
                 controlBar          // 下：麦克风与控制
             }
         }
@@ -141,6 +145,16 @@ struct ImmersiveRoleplayView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        if let englishHint = model.practiceHintText {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "quote.bubble")
+                                    .foregroundStyle(.white.opacity(0.7))
+                                Text(englishHint)
+                                    .font(.system(size: 15 * model.fontScale, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.92))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                         ForEach(Array(guidanceItems.enumerated()), id: \.offset) { _, text in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "lightbulb")
@@ -172,6 +186,43 @@ struct ImmersiveRoleplayView: View {
         .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.10)))
         .padding(.horizontal, 12)
+    }
+
+    // MARK: 完成评分卡（分数 + 建议）
+
+    private var reviewCard: some View {
+        VStack(spacing: 8) {
+            Text("\(Int(((model.roleplay?.score ?? 0) * 100).rounded()))")
+                .font(.system(size: 46, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+            Text("本轮口语得分")
+                .font(.system(size: 12 * model.fontScale))
+                .foregroundStyle(.white.opacity(0.6))
+            ScrollView {
+                Text(reviewAnalysis)
+                    .font(.system(size: 14 * model.fontScale))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineSpacing(3)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(16)
+        .frame(height: 200)
+        .frame(maxWidth: .infinity)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.12)))
+        .padding(.horizontal, 12)
+    }
+
+    /// 评分卡的分析文字：去掉与大号分数重复的「最终评分 N/100。」前缀。
+    private var reviewAnalysis: String {
+        let fb = (model.roleplay?.latestFeedback ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if fb.hasPrefix("最终评分"), let dot = fb.firstIndex(of: "。") {
+            let rest = String(fb[fb.index(after: dot)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return rest.isEmpty ? "本轮已完成，可点「重新对话」再练一次。" : rest
+        }
+        return fb.isEmpty ? "本轮已完成，可点「重新对话」再练一次。" : fb
     }
 
     // MARK: 控制区（麦克风 + 状态 + 重玩/评分按钮）

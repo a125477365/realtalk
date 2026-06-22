@@ -49,6 +49,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val plans = MutableStateFlow<List<PlanItem>>(emptyList())
     val todayScenarios = MutableStateFlow<List<ScenarioSummary>>(emptyList())
     val partialSubtitle = MutableStateFlow("")
+    val practiceHint = MutableStateFlow<String?>(null)   // 超时未答时的「可以这样说」英文提示，显示在指导区
     val practiceAudioLevel = MutableStateFlow(0f)
     val aiAudioLevel = MutableStateFlow(0f)
     val isRecording = MutableStateFlow(false)
@@ -701,6 +702,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         roleplayState.value = state
         scenario = state.scenario
         selectedRole = state.selectedRole
+        practiceHint.value = null   // 进入新一轮，清掉上一轮的超时英文提示
         if (state.completed) {
             isVoiceActive.value = false
             cancelAnswerTimeout()
@@ -858,6 +860,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val next = roleplay?.nextLine ?: return@launch
             if (partialSubtitle.value.isNotBlank()) { scheduleAnswerTimeout(); return@launch }
             practice.stop()
+            // 在沉浸式指导区显示英文参考（之前 appendChat 只进主聊天流、沉浸式看不到）
+            practiceHint.value = "可以这样说：${next.english}"
             appendChat(ChatMessage.Sender.ASSISTANT, "提示：${next.sourceText}\n试着说：${next.english}")
             // 下一句提示仅在指导区展示，不做 AI 语音播报（item 3）
             listenForNextTurn()

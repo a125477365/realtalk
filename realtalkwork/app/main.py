@@ -1998,13 +1998,15 @@ async def roleplay_message(
     if scenario is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景不存在")
     if session.status == "completed":
-        return roleplay_state_response(user.id, session, scenario, latest_feedback="这轮练习已完成")
+        review = format_final_roleplay_review(session, db.list_roleplay_messages(user.id, session.session_id))
+        return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
 
     target_line = next_user_line(session, scenario)
     if target_line is None:
         session.status = "completed"
         db.update_roleplay_session(session)
-        return roleplay_state_response(user.id, session, scenario, latest_feedback="这轮练习已完成")
+        review = format_final_roleplay_review(session, db.list_roleplay_messages(user.id, session.session_id))
+        return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
 
     evaluation = await evaluate_roleplay_turn(
         request.message.strip(),
@@ -2061,7 +2063,8 @@ async def roleplay_message(
             session.status = "completed"
     db.update_roleplay_session(session)
     latest_feedback = feedback or None
-    if final_guidance and session.status == "completed":
+    # 对话完成时无论实时/事后指导都给出最终评分与建议（本地计算、无额外模型调用）
+    if session.status == "completed":
         latest_feedback = format_final_roleplay_review(
             session,
             db.list_roleplay_messages(user.id, session.session_id),

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.R
+import kotlin.math.roundToInt
 
 private object RTImm {
     // 深蓝调暗色背景（呼应品牌渐变蓝端，同时保证字幕可读）
@@ -79,6 +80,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val guidanceMode by model.guidanceMode.collectAsState()
     val conversationMode by model.conversationMode.collectAsState()
     val partial by model.partialSubtitle.collectAsState()
+    val practiceHint by model.practiceHint.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val level by model.practiceAudioLevel.collectAsState()
     val aiLevel by model.aiAudioLevel.collectAsState()
@@ -134,8 +136,16 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                 model.setShowSubtitles(it == "bilingual")
             }
 
-            // 指导区
-            GuidancePane(nextLineHint, guidanceTexts, guidanceMode, fontScale)
+            // 完成显示最终评分卡；否则显示指导区
+            if (state?.completed == true) {
+                ReviewCard(
+                    score = ((state?.score ?: 0.0) * 100).roundToInt(),
+                    analysis = reviewAnalysis(state?.latestFeedback),
+                    fontScale = fontScale,
+                )
+            } else {
+                GuidancePane(nextLineHint, practiceHint, guidanceTexts, guidanceMode, fontScale)
+            }
 
             // 控制区（下一句提示已移到指导区，这里不显示 promptText）
             val isUserTurnNow = state?.completed == false && !isWorking && !isSpeaking &&
@@ -208,7 +218,7 @@ private fun SubtitlePane(
 }
 
 @Composable
-private fun GuidancePane(nextLineHint: String?, guidanceTexts: List<String>, guidanceMode: String, fontScale: Float) {
+private fun GuidancePane(nextLineHint: String?, englishHint: String?, guidanceTexts: List<String>, guidanceMode: String, fontScale: Float) {
     Column(
         Modifier.fillMaxWidth().height(150.dp).padding(horizontal = 12.dp)
             .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(16.dp))
@@ -222,10 +232,13 @@ private fun GuidancePane(nextLineHint: String?, guidanceTexts: List<String>, gui
             if (nextLineHint != null) {
                 Text(nextLineHint, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (16f * fontScale).sp)
             }
+            if (englishHint != null) {
+                Text(englishHint, color = Color.White.copy(alpha = 0.92f), fontSize = (15f * fontScale).sp)
+            }
             guidanceTexts.forEach { t ->
                 Text("· $t", color = RTImm.Correction, fontSize = (14f * fontScale).sp)
             }
-            if (nextLineHint == null && guidanceTexts.isEmpty()) {
+            if (nextLineHint == null && englishHint == null && guidanceTexts.isEmpty()) {
                 Text(
                     if (guidanceMode == "final") "结束后会给出整体评分与建议" else "AI 的中文纠正建议会显示在这里",
                     color = Color.White.copy(alpha = 0.4f), fontSize = (13f * fontScale).sp,
@@ -233,6 +246,39 @@ private fun GuidancePane(nextLineHint: String?, guidanceTexts: List<String>, gui
             }
         }
     }
+}
+
+/// 完成评分卡：大号分数 + 建议（与 iOS reviewCard 对应）。
+@Composable
+private fun ReviewCard(score: Int, analysis: String, fontScale: Float) {
+    Column(
+        Modifier.fillMaxWidth().height(200.dp).padding(horizontal = 12.dp)
+            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(16.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("$score", color = Color.White, fontWeight = FontWeight.Bold, fontSize = (44f * fontScale).sp)
+        Text("本轮口语得分", color = Color.White.copy(alpha = 0.6f), fontSize = (12f * fontScale).sp)
+        Spacer(Modifier.height(8.dp))
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text(
+                analysis, color = Color.White.copy(alpha = 0.85f),
+                fontSize = (14f * fontScale).sp, lineHeight = (20f * fontScale).sp,
+            )
+        }
+    }
+}
+
+/// 评分卡分析文字：去掉与大号分数重复的「最终评分 N/100。」前缀。
+private fun reviewAnalysis(feedback: String?): String {
+    val fb = feedback?.trim().orEmpty()
+    val fallback = "本轮已完成，可点「重新对话」再练一次。"
+    if (fb.startsWith("最终评分")) {
+        val idx = fb.indexOf('。')
+        if (idx >= 0) return fb.substring(idx + 1).trim().ifEmpty { fallback }
+    }
+    return fb.ifEmpty { fallback }
 }
 
 @Composable

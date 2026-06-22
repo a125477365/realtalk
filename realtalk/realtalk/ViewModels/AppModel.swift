@@ -128,6 +128,8 @@ final class AppModel: ObservableObject {
     @Published var autoSpeakAI = true
     @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
+    /// 超时未答时 AI 给出的「可以这样说」英文提示，显示在沉浸式指导区（不再只进不可见的主聊天流）。
+    @Published var practiceHintText: String?
     @Published var guidanceMode: GuidanceMode = .realtime            // 当前会话生效（不可中途切）
     @Published var guidancePreference: GuidancePreference = .ask     // 设置里的偏好
     @Published var conversationMode: ConversationMode = .immersive   // 当前会话生效
@@ -975,12 +977,9 @@ final class AppModel: ObservableObject {
 
         cancelAnswerTimeout()
 
-        if isPracticeHelpRequest(answer) {
-            appendChat(.user, answer)
-            await providePracticeHint(for: answer)
-            return
-        }
-
+        // 对练中所有发言都送 /roleplay/message 评分推进：
+        // 即使用户说中文/「不知道怎么说」，后端也会判低分并在指导区给出应说的英文（correction），用户照着重说即可。
+        // （此前命中关键词会改走 /ai/chat，提示只进了主聊天流、沉浸式界面看不到，且对话永不推进，表现为卡在第一句。）
         lastSpokenAnswer = answer
         appendChat(.user, answer)
 
@@ -1245,6 +1244,7 @@ final class AppModel: ObservableObject {
         roleplay = state
         scenario = state.scenario
         selectedRoleID = state.selectedRole
+        practiceHintText = nil   // 进入新一轮，清掉上一轮的超时英文提示
         if state.completed {
             isVoiceConversationActive = false
             cancelAnswerTimeout()
@@ -1348,6 +1348,8 @@ final class AppModel: ObservableObject {
             return
         }
         practiceSpeech.stop(emit: false)
+        // 在沉浸式指导区显示英文参考（之前 appendChat 只进主聊天流、沉浸式看不到）
+        practiceHintText = "可以这样说：\(next.english)"
         appendChat(.assistant, "提示：\(next.sourceText)\n试着说：\(next.english)")
         // 下一句提示仅在指导区展示，不做 AI 语音播报（item 3）
         await listenForNextRoleplayTurn()
