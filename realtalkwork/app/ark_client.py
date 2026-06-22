@@ -213,14 +213,15 @@ async def generate_preset_scenario(
     sub_title: str,
     user_id: str | None = None,
 ) -> ScenarioResponse:
-    """通用场景：用户没有录音时，直接按主题让 AI 即时虚构约 40 句中英双语对话。"""
+    """管理台「用 AI 生成草稿」：按主题让 AI 虚构约 40 句中英双语对话。
+
+    生成失败/未配置时直接抛异常（不再静默回退到固定占位内容），
+    以便把真实原因反馈给运维——否则会出现「每次生成的都是同一段、与主题无关」的占位草稿。
+    """
     config = resolve_ai_config()
-    if config.enabled:
-        try:
-            return await _generate_preset_scenario_with_model(group_title, sub_title, user_id, config)
-        except Exception:
-            return _fallback_preset_scenario(group_title, sub_title)
-    return _fallback_preset_scenario(group_title, sub_title)
+    if not config.enabled:
+        raise RuntimeError("尚未配置 AI 模型（API Key）；请先在管理台「系统设置 · 模型」中配置后再生成")
+    return await _generate_preset_scenario_with_model(group_title, sub_title, user_id, config)
 
 
 async def generate_ai_chat_reply(
@@ -904,7 +905,8 @@ def _sanitize_preset_scenario(
         )
 
     if len(clean_lines) < 6:
-        return _fallback_preset_scenario(group_title, sub_title)
+        # 不再返回固定占位内容（会让运维以为生成成功、却是与主题无关的同一段）；直接报错让其重试
+        raise ValueError("模型返回的有效对话过短（可能被内容过滤清空或未按要求生成）；请重试，或把场景标题写得更具体")
 
     title = scenario.title.strip() or f"{group_title} · {sub_title}".strip(" ·")
     summary = scenario.summary.strip() or f"围绕「{sub_title}」的英语口语练习场景。"

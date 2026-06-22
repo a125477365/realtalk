@@ -687,10 +687,21 @@ async def admin_generate_preset_draft(
     request: PresetSceneGenerateRequest,
     admin: dict = Depends(current_admin),
 ) -> ScenarioResponse:
-    """用 AI 按主题生成一份对话草稿，返回给运维编辑后再保存（不落库）。"""
+    """用 AI 按主题生成一份对话草稿，返回给运维编辑后再保存（不落库）。
+
+    生成失败/模型未配置时返回明确错误原因（而不是静默给一段与主题无关的固定占位草稿）。
+    """
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    return await generate_preset_scenario(request.group, request.title, user_id=None)
+    try:
+        return await generate_preset_scenario(request.group, request.title, user_id=None)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 把真实原因反馈给运维
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI 生成草稿失败：{str(exc)[:200]}",
+        )
 
 
 @app.get("/admin/api/settings/quota")
