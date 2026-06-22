@@ -1616,130 +1616,193 @@ function updateSidebarAdmin() {
 function renderPresetsPage() {
   return [
     '<div class="page-header"><h1>通用场景</h1>',
-    '  <p class="subtitle">配置「主场景 → 子场景」列表。只保存标题，不保存对话内容；用户在 App 里选中某个子场景后，由 AI 即时生成约 40 句中英双语对话再进入对练。可随时增删，立即生效。</p>',
+    '  <p class="subtitle">运维预置的全局场景（所有用户可见可练）。每个场景保存完整中英文对话，格式与用户自采集场景一致；可点「用 AI 生成草稿」自动生成后再修改保存，随时可改。</p>',
     "</div>",
     '<div id="presets-root"><div class="card">加载中…</div></div>',
-    '<div style="margin-top:14px;display:flex;gap:10px;align-items:center">',
-    '  <button class="btn" onclick="presetAddGroup()">+ 添加主场景</button>',
-    '  <button class="btn btn-primary" onclick="presetSave()">保存全部</button>',
-    '  <span class="hint">内容须为健康日常话题，避免政治、宗教、种族等敏感内容。</span>',
-    "</div>",
   ].join("");
 }
 
-function presetGenId(prefix) {
-  return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
-function renderPresetsList() {
-  var root = getEl("presets-root");
-  if (!root) return;
-  var catalog = window._presetCatalog || [];
-  if (!catalog.length) {
-    root.innerHTML = '<div class="card"><p class="hint">还没有任何主场景，点击下方「添加主场景」开始配置。</p></div>';
-    return;
-  }
-  root.innerHTML = catalog.map(function(group, gi) {
-    var subs = (group.subs || []).map(function(sub, si) {
-      return [
-        '<div style="display:flex;gap:8px;align-items:center;margin:6px 0">',
-        '  <span class="hint" style="width:48px">子场景</span>',
-        '  <input type="text" value="' + esc(sub.title || "") + '" maxlength="60" placeholder="子场景标题，如 外出就餐" style="flex:1"',
-        '    oninput="presetSetSubTitle(' + gi + "," + si + ', this.value)" />',
-        '  <button class="btn btn-danger" onclick="presetDeleteSub(' + gi + "," + si + ')">删除</button>',
-        "</div>",
-      ].join("");
-    }).join("");
-    return [
-      '<div class="card" style="margin-bottom:14px">',
-      '  <div style="display:flex;gap:8px;align-items:center">',
-      '    <span class="hint" style="width:48px">主场景</span>',
-      '    <input type="text" value="' + esc(group.title || "") + '" maxlength="60" placeholder="主场景标题，如 日常生活场景" style="flex:1;font-weight:600"',
-      '      oninput="presetSetGroupTitle(' + gi + ', this.value)" />',
-      '    <button class="btn btn-danger" onclick="presetDeleteGroup(' + gi + ')">删除主场景</button>',
-      "  </div>",
-      '  <div style="margin-top:10px;padding-left:6px">' + subs + "</div>",
-      '  <button class="btn" style="margin-top:6px" onclick="presetAddSub(' + gi + ')">+ 添加子场景</button>',
-      "</div>",
-    ].join("");
-  }).join("");
-}
-
-function presetSetGroupTitle(gi, val) {
-  if (window._presetCatalog && window._presetCatalog[gi]) window._presetCatalog[gi].title = val;
-}
-
-function presetSetSubTitle(gi, si, val) {
-  var g = window._presetCatalog && window._presetCatalog[gi];
-  if (g && g.subs && g.subs[si]) g.subs[si].title = val;
-}
-
-function presetAddGroup() {
-  if (!window._presetCatalog) window._presetCatalog = [];
-  window._presetCatalog.push({ id: presetGenId("g"), title: "", subs: [] });
-  renderPresetsList();
-}
-
-function presetDeleteGroup(gi) {
-  if (!window._presetCatalog) return;
-  if (!confirm("确定删除该主场景及其下所有子场景？")) return;
-  window._presetCatalog.splice(gi, 1);
-  renderPresetsList();
-}
-
-function presetAddSub(gi) {
-  var g = window._presetCatalog && window._presetCatalog[gi];
-  if (!g) return;
-  if (!g.subs) g.subs = [];
-  g.subs.push({ id: presetGenId("s"), title: "" });
-  renderPresetsList();
-}
-
-function presetDeleteSub(gi, si) {
-  var g = window._presetCatalog && window._presetCatalog[gi];
-  if (!g || !g.subs) return;
-  g.subs.splice(si, 1);
-  renderPresetsList();
-}
+var PRESET_DEFAULT_ROLES = [
+  { id: "self", name: "我", description: "用户可扮演的角色", is_user_candidate: true },
+  { id: "counterpart", name: "对方", description: "另一位对话角色", is_user_candidate: true },
+];
 
 function loadPresets() {
-  apiGet("/admin/api/settings/presets").then(function(r) {
-    if (!r || !r.ok) return;
+  window._presetEditing = null;
+  apiGet("/admin/api/presets").then(function(r) {
+    if (!r || !r.ok) { handleApiError(r); return; }
     r.json().then(function(d) {
-      window._presetCatalog = (d.items || []).map(function(g) {
-        return { id: g.id, title: g.title, subs: (g.subs || []).map(function(s) { return { id: s.id, title: s.title }; }) };
-      });
-      renderPresetsList();
+      window._presetScenes = d.items || [];
+      renderPresetsRoot();
     });
   });
 }
 
-function presetSave() {
-  var catalog = window._presetCatalog || [];
-  var out = [];
-  for (var gi = 0; gi < catalog.length; gi++) {
-    var g = catalog[gi];
-    var gtitle = (g.title || "").trim();
-    if (!gtitle) { toast("第 " + (gi + 1) + " 个主场景标题不能为空", "error"); return; }
-    var subs = [];
-    var rawSubs = g.subs || [];
-    for (var si = 0; si < rawSubs.length; si++) {
-      var stitle = (rawSubs[si].title || "").trim();
-      if (!stitle) { toast("「" + gtitle + "」下第 " + (si + 1) + " 个子场景标题不能为空", "error"); return; }
-      subs.push({ id: rawSubs[si].id || presetGenId("s"), title: stitle });
-    }
-    out.push({ id: g.id || presetGenId("g"), title: gtitle, subs: subs });
+function renderPresetsRoot() {
+  var root = getEl("presets-root");
+  if (!root) return;
+  if (window._presetEditing) { root.innerHTML = presetEditorHtml(); return; }
+  var scenes = window._presetScenes || [];
+  var groups = {}; var order = [];
+  scenes.forEach(function(s) {
+    var g = s.group || "通用场景";
+    if (!groups[g]) { groups[g] = []; order.push(g); }
+    groups[g].push(s);
+  });
+  var body = order.map(function(g) {
+    var rows = groups[g].map(function(s) {
+      return [
+        '<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--border,#eee)">',
+        '  <div style="flex:1"><b>' + esc(s.title) + "</b> <span class=\"hint\">· " + s.line_count + " 句</span></div>",
+        '  <button class="btn btn-sm" onclick="presetEditScene(\'' + s.scene_id + "')\">编辑</button>",
+        '  <button class="btn btn-sm btn-danger" onclick="presetDeleteScene(\'' + s.scene_id + "','" + esc(s.title) + "')\">删除</button>",
+        "</div>",
+      ].join("");
+    }).join("");
+    return '<div class="card" style="margin-bottom:14px"><h2 style="margin:0 0 4px">' + esc(g) + "</h2>" + rows + "</div>";
+  }).join("");
+  if (!scenes.length) body = '<div class="card"><p class="hint">还没有预置场景。点「新增场景」创建第一个。</p></div>';
+  root.innerHTML = body +
+    '<div style="margin-top:6px"><button class="btn btn-primary" onclick="presetNewScene()">+ 新增场景</button></div>';
+}
+
+function presetNewScene() {
+  window._presetEditing = { scene_id: null, group: "", title: "", summary: "",
+    roles: PRESET_DEFAULT_ROLES.map(function(r){return Object.assign({}, r);}), lines: [], sort: 0 };
+  renderPresetsRoot();
+}
+
+function presetEditScene(sceneId) {
+  var s = (window._presetScenes || []).filter(function(x){return x.scene_id === sceneId;})[0];
+  if (!s) return;
+  window._presetEditing = JSON.parse(JSON.stringify(s));
+  if (!window._presetEditing.roles || !window._presetEditing.roles.length) {
+    window._presetEditing.roles = PRESET_DEFAULT_ROLES.map(function(r){return Object.assign({}, r);});
   }
-  apiPost("/admin/api/settings/presets", out).then(function(r) {
+  renderPresetsRoot();
+}
+
+function presetCancelEdit() { window._presetEditing = null; renderPresetsRoot(); }
+
+function presetEditorHtml() {
+  var e = window._presetEditing;
+  var roleOpts = function(sel) {
+    return (e.roles || []).map(function(r) {
+      return '<option value="' + esc(r.id) + '"' + (r.id === sel ? " selected" : "") + ">" + esc(r.name) + "</option>";
+    }).join("");
+  };
+  var lineRows = (e.lines || []).map(function(l, i) {
+    return [
+      '<tr>',
+      '<td>' + (i + 1) + "</td>",
+      '<td><select onchange="presetSetLine(' + i + ",'target_role',this.value)\">" + roleOpts(l.target_role) + "</select></td>",
+      '<td><input type="text" value="' + esc(l.source_text || "") + '" placeholder="中文" style="width:100%" oninput="presetSetLine(' + i + ",'source_text',this.value)\" /></td>",
+      '<td><input type="text" value="' + esc(l.english || "") + '" placeholder="English" style="width:100%" oninput="presetSetLine(' + i + ",'english',this.value)\" /></td>",
+      '<td><button class="btn btn-sm btn-danger" onclick="presetDeleteLine(' + i + ')">删</button></td>',
+      "</tr>",
+    ].join("");
+  }).join("");
+  return [
+    '<div class="card">',
+    '  <h2 style="margin-top:0">' + (e.scene_id ? "编辑场景" : "新增场景") + "</h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>主场景（分组）</label><input type="text" id="pe-group" value="' + esc(e.group || "") + '" placeholder="如 日常生活场景" oninput="presetEditField(\'group\',this.value)" /></div>',
+    '    <div class="form-group"><label>子场景标题</label><input type="text" id="pe-title" value="' + esc(e.title || "") + '" placeholder="如 外出就餐" oninput="presetEditField(\'title\',this.value)" /></div>',
+    "  </div>",
+    '  <div class="form-group"><label>场景简介</label><input type="text" value="' + esc(e.summary || "") + '" placeholder="一句话描述这个场景" oninput="presetEditField(\'summary\',this.value)" /></div>',
+    '  <div style="display:flex;gap:10px;align-items:center;margin:8px 0">',
+    '    <button class="btn" id="pe-gen" onclick="presetGenerateDraft()">✨ 用 AI 生成草稿</button>',
+    '    <span class="hint">按上面的主场景/子场景标题生成约 40 句中英对话，填入下表后可自由修改。内容须健康、无政治/敏感。</span>',
+    "  </div>",
+    '  <div class="table-wrap"><table><thead><tr><th>#</th><th>角色</th><th>中文</th><th>English</th><th></th></tr></thead>',
+    '  <tbody id="pe-lines">' + lineRows + "</tbody></table></div>",
+    '  <button class="btn btn-sm" style="margin-top:6px" onclick="presetAddLine()">+ 添加一句</button>',
+    '  <div style="margin-top:14px;display:flex;gap:10px">',
+    '    <button class="btn btn-primary" onclick="presetSaveScene()">保存</button>',
+    '    <button class="btn" onclick="presetCancelEdit()">取消</button>',
+    "  </div>",
+    "</div>",
+  ].join("");
+}
+
+function presetEditField(field, val) { if (window._presetEditing) window._presetEditing[field] = val; }
+function presetSetLine(i, field, val) {
+  var e = window._presetEditing;
+  if (e && e.lines && e.lines[i]) e.lines[i][field] = val;
+}
+function presetAddLine() {
+  var e = window._presetEditing; if (!e) return;
+  if (!e.lines) e.lines = [];
+  var rid = (e.lines.length % 2 === 0) ? "self" : "counterpart";
+  e.lines.push({ index: e.lines.length, speaker: "", target_role: rid, source_text: "", english: "", intent: "" });
+  renderPresetsRoot();
+}
+function presetDeleteLine(i) {
+  var e = window._presetEditing; if (!e || !e.lines) return;
+  e.lines.splice(i, 1);
+  renderPresetsRoot();
+}
+
+function presetGenerateDraft() {
+  var e = window._presetEditing; if (!e) return;
+  var group = (e.group || "").trim(); var title = (e.title || "").trim();
+  if (!title) { toast("请先填写子场景标题", "error"); return; }
+  var btn = getEl("pe-gen"); if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  apiPost("/admin/api/presets/generate", { group: group, title: title }).then(function(r) {
+    if (btn) { btn.disabled = false; btn.textContent = "✨ 用 AI 生成草稿"; }
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
     r.json().then(function(d) {
-      window._presetCatalog = (d.items || []).map(function(g) {
-        return { id: g.id, title: g.title, subs: (g.subs || []).map(function(s) { return { id: s.id, title: s.title }; }) };
+      e.roles = (d.roles && d.roles.length) ? d.roles : e.roles;
+      e.lines = (d.lines || []).map(function(l) {
+        return { index: l.index, speaker: l.speaker || "", target_role: l.target_role, source_text: l.source_text, english: l.english, intent: l.intent || "" };
       });
-      renderPresetsList();
-      toast("通用场景已保存", "success");
+      if (!e.summary) e.summary = d.summary || "";
+      renderPresetsRoot();
+      toast("已生成草稿，请检查/修改后保存", "success");
     });
+  });
+}
+
+function presetSaveScene() {
+  var e = window._presetEditing; if (!e) return;
+  var title = (e.title || "").trim();
+  if (!title) { toast("子场景标题不能为空", "error"); return; }
+  var lines = (e.lines || []).filter(function(l){ return (l.source_text||"").trim() || (l.english||"").trim(); });
+  if (!lines.length) { toast("至少要有一句对话", "error"); return; }
+  for (var i = 0; i < lines.length; i++) {
+    if (!(lines[i].source_text||"").trim() || !(lines[i].english||"").trim()) {
+      toast("第 " + (i + 1) + " 句的中文和英文都要填写", "error"); return;
+    }
+  }
+  var payload = {
+    scene_id: e.scene_id || null,
+    group: (e.group || "").trim(),
+    title: title,
+    summary: (e.summary || "").trim(),
+    roles: e.roles || PRESET_DEFAULT_ROLES,
+    lines: lines.map(function(l, idx) {
+      return { index: idx, speaker: l.speaker || "", target_role: l.target_role || "self",
+               source_text: (l.source_text||"").trim(), english: (l.english||"").trim(), intent: l.intent || "" };
+    }),
+    expressions: [],
+    sort: e.sort || 0,
+  };
+  apiPost("/admin/api/presets", payload).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("场景已保存", "success");
+    loadPresets();
+  });
+}
+
+function presetDeleteScene(sceneId, title) {
+  if (!confirm("确定删除场景「" + title + "」？删除后用户将无法再练习它。")) return;
+  apiFetch("/admin/api/presets/" + encodeURIComponent(sceneId), { method: "DELETE" }).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("已删除", "success");
+    loadPresets();
   });
 }
 
@@ -1905,13 +1968,16 @@ window.loadOrders = loadOrders;
 window.loadUsage = loadUsage;
 window.savePlans = savePlans;
 window.loadPresets = loadPresets;
-window.presetAddGroup = presetAddGroup;
-window.presetDeleteGroup = presetDeleteGroup;
-window.presetAddSub = presetAddSub;
-window.presetDeleteSub = presetDeleteSub;
-window.presetSetGroupTitle = presetSetGroupTitle;
-window.presetSetSubTitle = presetSetSubTitle;
-window.presetSave = presetSave;
+window.presetNewScene = presetNewScene;
+window.presetEditScene = presetEditScene;
+window.presetCancelEdit = presetCancelEdit;
+window.presetEditField = presetEditField;
+window.presetSetLine = presetSetLine;
+window.presetAddLine = presetAddLine;
+window.presetDeleteLine = presetDeleteLine;
+window.presetGenerateDraft = presetGenerateDraft;
+window.presetSaveScene = presetSaveScene;
+window.presetDeleteScene = presetDeleteScene;
 window.saveQuota = saveQuota;
 window.saveAsr = saveAsr;
 window.markOrderPaid = markOrderPaid;
