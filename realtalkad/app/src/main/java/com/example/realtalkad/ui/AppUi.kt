@@ -113,6 +113,19 @@ fun BrandSegmented(
     }
 }
 
+/// 上一次对练得分小标签（场景卡用）。
+@Composable
+private fun LastScoreBadge(score: Int?, fontScale: Float) {
+    if (score == null) return
+    val c = if (score >= 80) RT.Success else RT.Accent
+    Text(
+        "上次 $score",
+        color = c, fontWeight = FontWeight.SemiBold, fontSize = (11 * fontScale).sp,
+        modifier = Modifier.background(c.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}
+
 /// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。
 @androidx.compose.runtime.Composable
 private fun ScenarioCard(
@@ -144,19 +157,20 @@ private fun ScenarioCard(
             else "${summary.lineCount} 句"
             Text(meta, fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
         }
+        LastScoreBadge(summary.lastScore, fontScale)
+        Spacer(Modifier.width(8.dp))
         Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
     }
 }
 
-/// 通用场景列表：主场景可展开/收起，点子场景让 AI 即时生成中英对话再进对练（主→子两级选择）。
+/// 通用场景列表：主场景可展开/收起，点子场景直接进入对练（场景已含完整对话，无需生成）。
 @Composable
 private fun PresetCatalogList(
-    groups: List<com.example.realtalkad.data.PresetScenarioGroup>,
+    groups: List<com.example.realtalkad.data.PresetSceneGroup>,
     fontScale: Float,
     expandedGroup: String?,
-    generatingSubId: String?,
     onToggleGroup: (String) -> Unit,
-    onPickSub: (String, String) -> Unit,
+    onPickScene: (com.example.realtalkad.data.PresetSceneItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (groups.isEmpty()) {
@@ -167,7 +181,7 @@ private fun PresetCatalogList(
             Text("暂无通用场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
             Spacer(Modifier.height(6.dp))
             Text(
-                "选择场景即可生成对话，无需录音",
+                "没有录音也能练：选一个场景，直接与 AI 对话",
                 fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
             )
         }
@@ -180,46 +194,47 @@ private fun PresetCatalogList(
     ) {
         item(key = "preset-tip") {
             Text(
-                "选择场景即可生成对话，无需录音",
+                "没有录音也能练：选一个场景，直接进入对话练习",
                 fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
                 modifier = Modifier.padding(bottom = 2.dp),
             )
         }
-        items(groups, key = { it.id }) { group ->
-            val expanded = expandedGroup == group.id
+        items(groups, key = { it.group }) { group ->
+            val expanded = expandedGroup == group.group
             Column(
                 Modifier.fillMaxWidth()
                     .background(RT.Surface, RoundedCornerShape(14.dp))
                     .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp)),
             ) {
                 Row(
-                    Modifier.fillMaxWidth().clickable { onToggleGroup(group.id) }.padding(14.dp),
+                    Modifier.fillMaxWidth().clickable { onToggleGroup(group.group) }.padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(group.title, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp,
+                    Text(group.group, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp,
                         color = RT.TextPrimary, modifier = Modifier.weight(1f))
-                    Text("${group.subs.size} 个", fontSize = (11 * fontScale).sp,
+                    Text("${group.scenes.size} 个", fontSize = (11 * fontScale).sp,
                         color = RT.TextSecondary.copy(alpha = 0.8f))
                     Spacer(Modifier.width(8.dp))
                     Text(if (expanded) "⌄" else "›", color = RT.TextSecondary.copy(alpha = 0.6f),
                         fontSize = (18 * fontScale).sp)
                 }
                 if (expanded) {
-                    group.subs.forEach { sub ->
+                    group.scenes.forEach { scene ->
                         Box(Modifier.fillMaxWidth().height(1.dp).padding(start = 14.dp).background(RT.Hairline))
                         Row(
                             Modifier.fillMaxWidth()
-                                .clickable(enabled = generatingSubId == null) { onPickSub(group.id, sub.id) }
+                                .clickable { onPickScene(scene) }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(sub.title, fontSize = (14 * fontScale).sp, color = RT.TextPrimary,
-                                modifier = Modifier.weight(1f))
-                            if (generatingSubId == sub.id) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (16 * fontScale).sp)
+                            Column(Modifier.weight(1f)) {
+                                Text(scene.title, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
+                                Text("${scene.lineCount} 句", fontSize = (11 * fontScale).sp,
+                                    color = RT.TextSecondary.copy(alpha = 0.8f))
                             }
+                            LastScoreBadge(scene.lastScore, fontScale)
+                            Spacer(Modifier.width(8.dp))
+                            Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (16 * fontScale).sp)
                         }
                     }
                 }
@@ -298,10 +313,8 @@ fun MainChatScreen(model: AppViewModel) {
     val fontScale by model.fontScale.collectAsState()
 
     val presetCatalog by model.presetCatalog.collectAsState()
-    val isGeneratingPreset by model.isGeneratingPreset.collectAsState()
-    val generatingSubId by model.generatingSubId.collectAsState()
-    // 等待后台处理（含通用场景生成）时禁用其它操作按钮，避免误触发新请求
-    val busy = isWorking || isGeneratingPreset
+    // 等待后台处理时禁用其它操作按钮，避免误触发新请求
+    val busy = isWorking
 
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
@@ -390,11 +403,8 @@ fun MainChatScreen(model: AppViewModel) {
                 groups = presetCatalog,
                 fontScale = fontScale,
                 expandedGroup = expandedPresetGroup,
-                generatingSubId = if (isGeneratingPreset) generatingSubId else null,
-                onToggleGroup = { gid -> expandedPresetGroup = if (expandedPresetGroup == gid) null else gid },
-                onPickSub = { gid, sid ->
-                    model.generatePresetScenario(gid, sid) { summary -> roleDialogFor = summary }
-                },
+                onToggleGroup = { g -> expandedPresetGroup = if (expandedPresetGroup == g) null else g },
+                onPickScene = { scene -> if (!busy) roleDialogFor = model.presetSummary(scene) },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
         } else if (scenarios.isEmpty()) {

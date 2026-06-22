@@ -150,6 +150,8 @@ data class ScenarioSummary(
     @SerialName("source_start") val sourceStart: String,
     @SerialName("source_end") val sourceEnd: String,
     @SerialName("created_at") val createdAt: String,
+    @SerialName("last_score") val lastScore: Int? = null,
+    @SerialName("last_practiced_at") val lastPracticedAt: String? = null,
 )
 
 @Serializable
@@ -306,21 +308,22 @@ data class PlanCatalog(val items: List<PlanItem>, @SerialName("trial_days") val 
 @Serializable
 data class SubscribeRequest(@SerialName("plan_id") val planId: String)
 
-// 通用场景（无录音时直接选场景与 AI 练口语）
+// 通用场景（运维预置的全局场景，已含完整对话，可直接对练）
 @Serializable
-data class PresetSubScenario(val id: String, val title: String)
-
-@Serializable
-data class PresetScenarioGroup(val id: String, val title: String, val subs: List<PresetSubScenario> = emptyList())
-
-@Serializable
-data class PresetScenarioCatalog(val items: List<PresetScenarioGroup> = emptyList())
-
-@Serializable
-data class PresetScenarioGenerateRequest(
-    @SerialName("group_id") val groupId: String,
-    @SerialName("sub_id") val subId: String,
+data class PresetSceneItem(
+    @SerialName("scene_id") val sceneId: String,
+    val title: String,
+    @SerialName("line_count") val lineCount: Int,
+    val roles: List<ScenarioRole> = emptyList(),
+    @SerialName("last_score") val lastScore: Int? = null,
+    @SerialName("last_practiced_at") val lastPracticedAt: String? = null,
 )
+
+@Serializable
+data class PresetSceneGroup(val group: String, val scenes: List<PresetSceneItem> = emptyList())
+
+@Serializable
+data class PresetScenarioCatalog(val items: List<PresetSceneGroup> = emptyList())
 
 @Serializable
 data class RechargeCreateRequest(@SerialName("amount_cents") val amountCents: Int, val method: String, @SerialName("plan_id") val planId: String? = null)

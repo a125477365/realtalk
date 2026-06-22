@@ -93,31 +93,36 @@ struct SubscribeRequest: Codable {
     }
 }
 
-// MARK: - 通用场景（无录音时直接选场景与 AI 练口语）
+// MARK: - 通用场景（运维预置的全局场景，已含完整对话，可直接进入对练）
 
-struct PresetSubScenario: Identifiable, Codable, Equatable {
-    let id: String
+struct PresetSceneItem: Identifiable, Codable, Equatable {
+    var id: String { sceneId }
+
+    let sceneId: String
     let title: String
+    let lineCount: Int
+    let roles: [ScenarioRole]
+    let lastScore: Int?
+    let lastPracticedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case sceneId = "scene_id"
+        case title
+        case lineCount = "line_count"
+        case roles
+        case lastScore = "last_score"
+        case lastPracticedAt = "last_practiced_at"
+    }
 }
 
-struct PresetScenarioGroup: Identifiable, Codable, Equatable {
-    let id: String
-    let title: String
-    let subs: [PresetSubScenario]
+struct PresetSceneGroup: Identifiable, Codable, Equatable {
+    var id: String { group }
+    let group: String
+    let scenes: [PresetSceneItem]
 }
 
 struct PresetScenarioCatalogResponse: Codable, Equatable {
-    let items: [PresetScenarioGroup]
-}
-
-struct PresetScenarioGenerateRequest: Codable {
-    let groupId: String
-    let subId: String
-
-    enum CodingKeys: String, CodingKey {
-        case groupId = "group_id"
-        case subId = "sub_id"
-    }
+    let items: [PresetSceneGroup]
 }
 
 struct AudioJob: Identifiable, Codable, Equatable {

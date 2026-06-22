@@ -78,9 +78,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val myTickets = MutableStateFlow<List<com.example.realtalkad.data.SupportTicket>>(emptyList())
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
-    val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetScenarioGroup>>(emptyList()) // 通用场景目录
-    val isGeneratingPreset = MutableStateFlow(false)
-    val generatingSubId = MutableStateFlow<String?>(null)
+    val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetSceneGroup>>(emptyList()) // 通用场景：运维预置的全局场景（分组）
     // 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在顶部短暂提示）
     val failureAlert = MutableStateFlow<FailureAlert?>(null)
 
@@ -423,36 +421,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 选中某个通用子场景：让后端调用 AI 即时生成约 40 句中英对话并落库，成功后回调可对练的场景摘要。 */
-    fun generatePresetScenario(groupId: String, subId: String, onReady: (ScenarioSummary) -> Unit) {
-        if (auth.token == null) { statusMessage.value = "请先登录"; return }
-        if (isGeneratingPreset.value) return
-        viewModelScope.launch {
-            val token = auth.token ?: return@launch
-            isGeneratingPreset.value = true
-            generatingSubId.value = subId
-            statusMessage.value = "正在生成场景对话…"
-            runCatching { api.generatePresetScenario(groupId, subId, token) }
-                .onSuccess { scene ->
-                    statusMessage.value = ""
-                    val now = java.time.Instant.now().toString()
-                    onReady(
-                        ScenarioSummary(
-                            sceneId = scene.sceneId,
-                            title = scene.title,
-                            summary = scene.summary,
-                            roles = scene.roles,
-                            lineCount = scene.lines.size,
-                            sourceStart = now,
-                            sourceEnd = now,
-                            createdAt = now,
-                        )
-                    )
-                }
-                .onFailure { presentFailure(it.message, title = "场景生成失败") }
-            generatingSubId.value = null
-            isGeneratingPreset.value = false
-        }
+    /** 通用场景已含完整对话：直接把预置场景转成摘要，走与「自己场景」完全一样的「选角色 → 对练」流程。 */
+    fun presetSummary(scene: com.example.realtalkad.data.PresetSceneItem): ScenarioSummary {
+        val now = java.time.Instant.now().toString()
+        return ScenarioSummary(
+            sceneId = scene.sceneId,
+            title = scene.title,
+            summary = "",
+            roles = scene.roles,
+            lineCount = scene.lineCount,
+            sourceStart = now,
+            sourceEnd = now,
+            createdAt = now,
+            lastScore = scene.lastScore,
+            lastPracticedAt = scene.lastPracticedAt,
+        )
     }
 
     /** 进入练习前：若指导/对话方式设为 ask，先弹窗让用户选择（对话中不可切换）。 */

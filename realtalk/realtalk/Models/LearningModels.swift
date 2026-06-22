@@ -231,6 +231,8 @@ struct ScenarioSummary: Identifiable, Codable, Equatable {
     let sourceStart: Date
     let sourceEnd: Date
     let createdAt: Date
+    var lastScore: Int? = nil
+    var lastPracticedAt: Date? = nil
 
     enum CodingKeys: String, CodingKey {
         case sceneId = "scene_id"
@@ -241,6 +243,8 @@ struct ScenarioSummary: Identifiable, Codable, Equatable {
         case sourceStart = "source_start"
         case sourceEnd = "source_end"
         case createdAt = "created_at"
+        case lastScore = "last_score"
+        case lastPracticedAt = "last_practiced_at"
     }
 }
 

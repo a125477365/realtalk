@@ -51,7 +51,6 @@ struct MainChatView: View {
     @State private var showImmersive = false
     @State private var scenarioScope = "today"
     @State private var expandedPresetGroupID: String?
-    @State private var generatingSubID: String?
 
     var body: some View {
         NavigationStack {
@@ -206,7 +205,7 @@ struct MainChatView: View {
                         .foregroundStyle(RTTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isLoadingScenarios || model.isGeneratingPreset)
+                .disabled(model.isLoadingScenarios)
             }
             .padding(.horizontal, 16)
 
@@ -305,7 +304,7 @@ struct MainChatView: View {
         }
     }
 
-    // MARK: 通用场景（无录音时直接选场景练口语；主场景 → 子场景两级选择）
+    // MARK: 通用场景（运维预置的全局场景，已含完整对话；主场景 → 子场景两级选择，点开即对练）
 
     @ViewBuilder
     private var presetCatalogView: some View {
@@ -314,10 +313,10 @@ struct MainChatView: View {
                 Image(systemName: "rectangle.stack.badge.person.crop")
                     .font(.title2)
                     .foregroundStyle(RTTheme.textSecondary)
-                Text(model.isGeneratingPreset ? "正在生成场景对话…" : "暂无通用场景")
+                Text("暂无通用场景")
                     .font(.system(size: 14 * model.fontScale, weight: .medium))
                     .foregroundStyle(RTTheme.textPrimary)
-                Text("选择场景，AI 即时生成对话")
+                Text("没有录音也能练：选一个场景，直接与 AI 对话")
                     .font(.system(size: 12 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -328,7 +327,7 @@ struct MainChatView: View {
         } else {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    Text("选择场景即可生成对话，无需录音")
+                    Text("没有录音也能练：选一个场景，直接进入对话练习")
                         .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary)
                         .padding(.horizontal, 16)
@@ -343,7 +342,7 @@ struct MainChatView: View {
     }
 
     @ViewBuilder
-    private func presetGroupCard(_ group: PresetScenarioGroup) -> some View {
+    private func presetGroupCard(_ group: PresetSceneGroup) -> some View {
         let isExpanded = expandedPresetGroupID == group.id
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -354,11 +353,11 @@ struct MainChatView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "square.grid.2x2")
                         .foregroundStyle(RTTheme.accent)
-                    Text(group.title)
+                    Text(group.group)
                         .font(.system(size: 16 * model.fontScale, weight: .semibold))
                         .foregroundStyle(RTTheme.textPrimary)
                     Spacer()
-                    Text("\(group.subs.count) 个")
+                    Text("\(group.scenes.count) 个")
                         .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -372,25 +371,27 @@ struct MainChatView: View {
 
             if isExpanded {
                 VStack(spacing: 0) {
-                    ForEach(group.subs) { sub in
+                    ForEach(group.scenes) { scene in
                         Divider().background(RTTheme.hairline).padding(.leading, 14)
                         Button {
-                            Task { await selectPresetSub(group: group, sub: sub) }
+                            roleDialogScenario = model.summary(for: scene)
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "play.circle")
                                     .foregroundStyle(RTTheme.textSecondary)
-                                Text(sub.title)
-                                    .font(.system(size: 14 * model.fontScale))
-                                    .foregroundStyle(RTTheme.textPrimary)
-                                Spacer()
-                                if model.isGeneratingPreset, generatingSubID == sub.id {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption2)
-                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(scene.title)
+                                        .font(.system(size: 14 * model.fontScale))
+                                        .foregroundStyle(RTTheme.textPrimary)
+                                    Text("\(scene.lineCount) 句")
+                                        .font(.system(size: 11 * model.fontScale))
+                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                                 }
+                                Spacer()
+                                lastScoreBadge(scene.lastScore)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
                             }
                             .padding(.vertical, 12)
                             .padding(.horizontal, 16)
@@ -408,13 +409,15 @@ struct MainChatView: View {
         .padding(.horizontal, 16)
     }
 
-    /// 选中子场景：生成对话 → 成功后弹出选角色对话框，复用今日场景的对练入口。
-    private func selectPresetSub(group: PresetScenarioGroup, sub: PresetSubScenario) async {
-        guard model.isGeneratingPreset == false else { return }
-        generatingSubID = sub.id
-        defer { generatingSubID = nil }
-        if let summary = await model.generatePresetScenario(groupId: group.id, subId: sub.id) {
-            roleDialogScenario = summary
+    /// 上一次对练得分小标签（场景卡用）。
+    @ViewBuilder
+    private func lastScoreBadge(_ score: Int?) -> some View {
+        if let score {
+            Text("上次 \(score)")
+                .font(.system(size: 11 * model.fontScale, weight: .semibold))
+                .foregroundStyle(score >= 80 ? RTTheme.success : RTTheme.accent)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background((score >= 80 ? RTTheme.success : RTTheme.accent).opacity(0.12), in: Capsule())
         }
     }
 
@@ -438,6 +441,7 @@ struct MainChatView: View {
                         .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                 }
+                lastScoreBadge(summary.lastScore)
                 Image(systemName: "chevron.right")
                     .font(.footnote)
                     .foregroundStyle(RTTheme.textSecondary.opacity(0.6))

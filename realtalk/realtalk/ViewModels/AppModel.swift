@@ -121,8 +121,7 @@ final class AppModel: ObservableObject {
     @Published var isUploadingAudio = false
     @Published var todayScenarios: [ScenarioSummary] = []
     @Published var isLoadingScenarios = false
-    @Published var presetCatalog: [PresetScenarioGroup] = []     // 通用场景目录（管理台可配置）
-    @Published var isGeneratingPreset = false
+    @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
     @Published var autoSpeakAI = true
@@ -155,7 +154,7 @@ final class AppModel: ObservableObject {
     }
 
     /// 处理中（等待后台）：用于全局禁用其它操作按钮，避免在生成/对练中误触发新请求。
-    var isBusy: Bool { isWorking || isGeneratingPreset }
+    var isBusy: Bool { isWorking }
 
     /// 弹出失败提示框，并同步到顶部状态文案。message 为空时给出兜底说明。
     func presentFailure(_ message: String, title: String = "操作未完成") {
@@ -335,34 +334,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 选中某个通用子场景：让后端调用 AI 即时生成约 40 句中英对话并落库，成功后返回可对练的场景摘要。
-    /// 返回 nil 表示失败（已写入 statusMessage）；成功后由界面弹出选角色对话框进入对练。
-    func generatePresetScenario(groupId: String, subId: String) async -> ScenarioSummary? {
-        guard let token = auth.token else {
-            statusMessage = "请先登录"
-            return nil
-        }
-        isGeneratingPreset = true
-        statusMessage = "正在生成场景对话…"
-        defer { isGeneratingPreset = false }
-        do {
-            let scenario = try await api.generatePresetScenario(groupId: groupId, subId: subId, token: token)
-            let now = Date()
-            statusMessage = ""
-            return ScenarioSummary(
-                sceneId: scenario.sceneId,
-                title: scenario.title,
-                summary: scenario.summary,
-                roles: scenario.roles,
-                lineCount: scenario.lines.count,
-                sourceStart: now,
-                sourceEnd: now,
-                createdAt: now
-            )
-        } catch {
-            presentFailure(error.localizedDescription, title: "场景生成失败")
-            return nil
-        }
+    /// 通用场景已含完整对话：直接把预置场景转成摘要，走与「自己场景」完全一样的「选角色 → 对练」流程。
+    func summary(for scene: PresetSceneItem) -> ScenarioSummary {
+        let now = Date()
+        return ScenarioSummary(
+            sceneId: scene.sceneId,
+            title: scene.title,
+            summary: "",
+            roles: scene.roles,
+            lineCount: scene.lineCount,
+            sourceStart: now,
+            sourceEnd: now,
+            createdAt: now,
+            lastScore: scene.lastScore,
+            lastPracticedAt: scene.lastPracticedAt
+        )
     }
 
     /// 从「今日场景」卡片直接进入练习：拉取场景详情 → 选角色 → 开始对练
