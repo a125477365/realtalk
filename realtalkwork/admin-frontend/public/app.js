@@ -1714,6 +1714,7 @@ function presetEditorHtml() {
     '    <button class="btn" id="pe-gen" onclick="presetGenerateDraft()">✨ 用 AI 生成草稿</button>',
     '    <span class="hint">按上面的主场景/子场景标题生成约 40 句中英对话，填入下表后可自由修改。内容须健康、无政治/敏感。</span>',
     "  </div>",
+    '  <div id="pe-gen-status" style="margin:4px 0 8px;font-size:13px;min-height:18px;white-space:pre-wrap"></div>',
     '  <div class="table-wrap"><table><thead><tr><th>#</th><th>角色</th><th>中文</th><th>English</th><th></th></tr></thead>',
     '  <tbody id="pe-lines">' + lineRows + "</tbody></table></div>",
     '  <button class="btn btn-sm" style="margin-top:6px" onclick="presetAddLine()">+ 添加一句</button>',
@@ -1743,15 +1744,33 @@ function presetDeleteLine(i) {
   renderPresetsRoot();
 }
 
+function presetSetGenStatus(msg, color) {
+  var el = getEl("pe-gen-status");
+  if (el) { el.textContent = msg || ""; el.style.color = color || "var(--text-2,#888)"; }
+}
+
+function presetResetGenBtn() {
+  var btn = getEl("pe-gen");
+  if (btn) { btn.disabled = false; btn.textContent = "✨ 用 AI 生成草稿"; }
+}
+
 function presetGenerateDraft() {
   var e = window._presetEditing; if (!e) return;
   var group = (e.group || "").trim(); var title = (e.title || "").trim();
-  if (!title) { toast("请先填写子场景标题", "error"); return; }
-  var btn = getEl("pe-gen"); if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+  if (!title) { toast("请先填写子场景标题", "error"); presetSetGenStatus("请先填写子场景标题", "#d33"); return; }
+  var btn = getEl("pe-gen"); if (btn) { btn.disabled = true; btn.textContent = "正在生成…（最长约 1 分钟）"; }
+  presetSetGenStatus("正在调用 AI 生成对话，请稍候…（大模型生成约 40 句可能需要数十秒）", "var(--text-2,#888)");
   apiPost("/admin/api/presets/generate", { group: group, title: title }).then(function(r) {
-    if (btn) { btn.disabled = false; btn.textContent = "✨ 用 AI 生成草稿"; }
-    if (!r) return;
-    if (!r.ok) { handleApiError(r); return; }
+    presetResetGenBtn();
+    if (!r) { presetSetGenStatus("请求未发出：请确认仍处于登录状态、网络正常。", "#d33"); return; }
+    if (!r.ok) {
+      r.json().catch(function() { return {}; }).then(function(d) {
+        var msg = (d && d.detail) ? d.detail : ("生成失败：HTTP " + r.status);
+        presetSetGenStatus("❌ " + msg, "#d33");
+        toast(msg, "error");
+      });
+      return;
+    }
     r.json().then(function(d) {
       e.roles = (d.roles && d.roles.length) ? d.roles : e.roles;
       e.lines = (d.lines || []).map(function(l) {
@@ -1761,6 +1780,9 @@ function presetGenerateDraft() {
       renderPresetsRoot();
       toast("已生成草稿，请检查/修改后保存", "success");
     });
+  }).catch(function(err) {
+    presetResetGenBtn();
+    presetSetGenStatus("❌ 网络错误：" + ((err && err.message) ? err.message : "请求失败，请重试"), "#d33");
   });
 }
 

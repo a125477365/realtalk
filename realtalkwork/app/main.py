@@ -697,6 +697,21 @@ async def admin_generate_preset_draft(
         return await generate_preset_scenario(request.group, request.title, user_id=None)
     except HTTPException:
         raise
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="AI 生成草稿超时：大模型生成约 40 句较慢，请重试；如反复超时，请在「系统设置 · 模型」调大超时时间(AI_TIMEOUT_SECONDS)。",
+        )
+    except httpx.HTTPStatusError as exc:
+        body = ""
+        try:
+            body = exc.response.text[:160]
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"AI 生成草稿失败：模型服务返回 {exc.response.status_code}。{body}",
+        )
     except Exception as exc:  # noqa: BLE001 — 把真实原因反馈给运维
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
