@@ -80,7 +80,7 @@ class Settings:
     last_seen_throttle_seconds: int = int(os.getenv("LAST_SEEN_THROTTLE_SECONDS", "120"))
     retention_days: int = int(os.getenv("RETENTION_DAYS", "3"))
     history_retention_days: int = int(os.getenv("HISTORY_RETENTION_DAYS", "90"))
-    roleplay_accept_score: float = float(os.getenv("ROLEPLAY_ACCEPT_SCORE", "0.72"))
+    roleplay_accept_score: float = float(os.getenv("ROLEPLAY_ACCEPT_SCORE", "0.6"))
     monthly_price_cents: int = int(os.getenv("MONTHLY_PRICE_CENTS", "3000"))
     online_window_minutes: int = int(os.getenv("ONLINE_WINDOW_MINUTES", "5"))
     admin_username: str = os.getenv("ADMIN_USERNAME", "admin")

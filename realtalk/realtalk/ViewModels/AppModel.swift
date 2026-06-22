@@ -1297,8 +1297,9 @@ final class AppModel: ObservableObject {
         // 手工触发式：不自动开麦，等用户长按说话
         guard conversationMode == .immersive else { return }
         guard continuousVoiceMode else { return }
-        guard roleplay?.completed == false, roleplay?.nextLine != nil else { return }
+        guard roleplay?.completed == false, let next = roleplay?.nextLine else { return }
         guard practiceSpeech.isListening == false, voice.isSpeaking == false else { return }
+        practiceSpeech.expectedPhrases = [next.english]   // 用目标台词偏置识别，提升转写准确度
         await practiceSpeech.start()
         scheduleAnswerTimeout()
     }
@@ -1311,6 +1312,7 @@ final class AppModel: ObservableObject {
         cancelAnswerTimeout()
         voice.stop()
         guard practiceSpeech.isListening == false else { return }
+        if let next = roleplay?.nextLine { practiceSpeech.expectedPhrases = [next.english] }
         await practiceSpeech.start(autoSubmit: false)
     }
 

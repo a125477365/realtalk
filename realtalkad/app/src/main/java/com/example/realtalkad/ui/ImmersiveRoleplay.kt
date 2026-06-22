@@ -90,15 +90,13 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
         ImmCaption(if (it.speaker == "user") "You" else "AI", it.content, it.translation.orEmpty(), Color.White)
     } ?: emptyList()
 
-    // 指导区：实时指导=每轮中文纠正；结束后指导=结束时整体评分/建议
+    // 指导区只显示「当前这句」的纠正建议：说错时给更自然的英文，说对/进入下一句即清空。
+    // 不累积历史每轮反馈，也不把「正确…」确认语当提示展示（避免被误当成要翻译的中文）。
     val guidanceTexts = buildList {
         if (guidanceMode == "realtime") {
-            state?.messages?.forEach { m ->
-                if (m.speaker == "user" && !m.feedback.isNullOrBlank()) add(m.feedback!!.trim())
-            }
+            val fb = state?.latestFeedback?.trim().orEmpty()
+            if (fb.isNotBlank() && !fb.startsWith("正确") && !fb.startsWith("回答正确")) add(fb)
         }
-        val fb = state?.latestFeedback?.trim().orEmpty()
-        if (fb.isNotBlank() && lastOrNull() != fb) add(fb)
     }
 
     // 下一句要说的中文提示（仅展示、不语音播报）

@@ -29,6 +29,8 @@ final class SpeechPracticeManager: ObservableObject {
     @Published private(set) var audioLevel: Double = 0
 
     var onUtterance: ((String) -> Void)?
+    /// 当前这句的目标英文（场景台词），作为识别上下文偏置，提升口语转写准确度。
+    var expectedPhrases: [String] = []
 
     private let audioEngine = AVAudioEngine()
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -134,6 +136,10 @@ final class SpeechPracticeManager: ObservableObject {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
+        // 用当前场景台词做上下文偏置，提升对目标句的转写准确度（不限制只能说这句）
+        if expectedPhrases.isEmpty == false {
+            request.contextualStrings = expectedPhrases
+        }
         recognitionRequest = request
 
         let inputNode = audioEngine.inputNode

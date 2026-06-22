@@ -86,6 +86,8 @@ class PracticeSpeech(private val context: Context) {
     var onUtterance: ((String) -> Unit)? = null
     var onStateChange: ((Boolean) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
+    /// 当前这句的目标英文（场景台词），作识别上下文偏置，提升口语转写准确度。
+    var expectedPhrases: List<String> = emptyList()
 
     private var recognizer: SpeechRecognizer? = null
     private var lastPartial = ""
@@ -159,6 +161,10 @@ class PracticeSpeech(private val context: Context) {
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
                 putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
+                // 用目标台词做上下文偏置（Android 13+ 支持，旧系统忽略），提升对目标句的转写准确度
+                if (android.os.Build.VERSION.SDK_INT >= 33 && expectedPhrases.isNotEmpty()) {
+                    putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(expectedPhrases))
+                }
             })
         }
     }

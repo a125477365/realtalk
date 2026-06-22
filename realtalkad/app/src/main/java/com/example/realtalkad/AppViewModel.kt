@@ -743,7 +743,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 手工触发式：不自动开麦，等用户长按说话
         if (conversationMode.value != "immersive") return
         if (!continuousVoice.value) return
-        if (roleplay?.completed != false || roleplay?.nextLine == null) return
+        val next = roleplay?.nextLine ?: return
+        if (roleplay?.completed != false) return
+        practice.expectedPhrases = listOf(next.english)   // 用目标台词偏置识别，提升转写准确度
         practice.start()
         scheduleAnswerTimeout()
     }
@@ -754,6 +756,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!isVoiceActive.value) return
         cancelAnswerTimeout()
         voice.stop()
+        roleplay?.nextLine?.let { practice.expectedPhrases = listOf(it.english) }
         practice.start(autoSubmit = false)
     }
 

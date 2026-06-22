@@ -536,8 +536,11 @@ async def _evaluate_roleplay_turn_with_model(
         _SCOPE_POLICY
         + "你是 RealTalk 的英语口语逐轮纠错引擎。你只能输出 JSON，不要 Markdown。"
         "你必须基于真实中文原句和目标英文来判断用户口语，不要另造真实场景。"
-        "如果用户意思接近但不够自然，也应给较高分并给更自然表达。"
-        "如果用户完全跑题，指出问题，并给一句可直接跟读的自然英文。"
+        "评分原则（重要）：以「是否表达出了这句话想表达的意思」为核心，宽松判定。"
+        "用户文本来自语音识别，没有标点、可能有大小写/同音词/口语缩写/少量识别错误，"
+        "这些都不应扣分；只要意思到位、对方能听懂，就判 accepted=true 并给较高分(0.7-1.0)，"
+        "不要求与目标英文逐字一致、不要求标点正确。只有当意思明显不对、跑题或基本说不成句时才 accepted=false。"
+        "feedback 用中文简短说明，accepted=true 时可只给一句鼓励或更自然的说法。"
         + _SENSITIVE_CONTENT_POLICY
         + _UNTRUSTED_DATA_POLICY
     )
@@ -730,7 +733,9 @@ def _repair_roleplay_evaluation(evaluation: RoleplayEvaluation, target_line: Sce
 
 
 def _normalize_for_score(value: str) -> str:
-    return " ".join(value.lower().replace(".", "").replace(",", "").replace("?", "").split())
+    # 去掉所有标点（含 . , ? ! ; : ' " 等）与大小写差异，只按词比较，避免标点/识别噪声影响相似度
+    cleaned = re.sub(r"[^\w\s]", " ", value.lower(), flags=re.UNICODE)
+    return " ".join(cleaned.split())
 
 
 def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, Any]]) -> ScenarioResponse:

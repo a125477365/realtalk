@@ -2017,7 +2017,9 @@ async def roleplay_message(
     )
     score = evaluation.score
     final_guidance = request.guidance_mode == "final"
-    accepted = True if final_guidance else evaluation.accepted and score >= settings.roleplay_accept_score
+    # 更宽松、更看重「意思是否表达到位」：模型判定通过(意思对)即通过；
+    # 或字符相似度达阈值(近乎原句)也通过。不再要求逐字/标点完全一致。
+    accepted = True if final_guidance else (evaluation.accepted or score >= settings.roleplay_accept_score)
     had_rejected_attempt = db.has_rejected_practice_attempt(
         user.id,
         session.session_id,
@@ -2039,7 +2041,8 @@ async def roleplay_message(
             session.session_id,
             speaker="user",
             role=session.selected_role,
-            content=request.message.strip(),
+            # 字幕显示场景里已有的正确、带标点的英文（而非用户语音识别原文），中文用场景原句
+            content=target_line.english,
             translation=target_line.source_text,
             feedback=(stored_feedback if final_guidance else feedback or None),
         )
@@ -2599,7 +2602,9 @@ def format_roleplay_feedback(
     feedback = feedback.strip()
     correction = correction.strip()
     if accepted:
-        return "正确，那我们继续下一句开始交流吧。" if had_rejected_attempt else ""
+        # 说对了不再返回啰嗦的确认语：进入下一句/给出评分本身就是反馈，
+        # 也避免它被当成「待翻译的中文提示」显示在指导区或混进最终评分的「优先改」。
+        return ""
     prefix = "先别急，我们把这一句说准。"
     feedback = prefix + feedback
     if correction and correction not in feedback:
@@ -2613,10 +2618,15 @@ def format_final_roleplay_review(
 ) -> str:
     score = round((session.score_total / session.turns) * 100) if session.turns else 0
     user_messages = [message for message in messages if getattr(message, "speaker", "") == "user"]
+
+    def _is_positive_ack(text: str) -> bool:
+        # 正向确认（说对了）不是「待改进点」，不应进入「优先改」清单
+        return text.lstrip().startswith(("正确", "回答正确")) or "已继续" in text
+
     weak_points = [
-        getattr(message, "feedback", "")
+        fb
         for message in user_messages
-        if getattr(message, "feedback", "") and "正确，已继续" not in getattr(message, "feedback", "")
+        if (fb := getattr(message, "feedback", "") or "") and not _is_positive_ack(fb)
     ][:3]
     if not weak_points:
         return f"最终评分 {score}/100。整体表达能完成交流，接下来重点练自然停顿和更口语的连接词。"

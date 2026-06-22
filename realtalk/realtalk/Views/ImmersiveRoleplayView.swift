@@ -420,20 +420,14 @@ struct ImmersiveRoleplayView: View {
     }
 
     /// 指导区：实时指导=每轮中文纠正；结束后指导=结束后的整体评分与建议。
+    /// 指导区只显示「当前这句」的纠正建议：说错时给出更自然的英文，说对/进入下一句即清空。
+    /// 不再累积历史每轮反馈，也不把「正确…」之类的确认语当成提示展示（避免被误当成要翻译的中文）。
     private var guidanceItems: [String] {
-        guard let rp = model.roleplay else { return [] }
-        var items: [String] = []
-        if model.guidanceMode == .realtime {
-            for msg in rp.messages where msg.speaker == "user" {
-                if let fb = msg.feedback?.trimmingCharacters(in: .whitespacesAndNewlines), fb.isEmpty == false {
-                    items.append(fb)
-                }
-            }
-        }
-        if let fb = rp.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
-           fb.isEmpty == false, items.last != fb {
-            items.append(fb)
-        }
-        return items
+        guard let rp = model.roleplay, model.guidanceMode == .realtime else { return [] }
+        let fb = (rp.latestFeedback ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard fb.isEmpty == false,
+              fb.hasPrefix("正确") == false,
+              fb.hasPrefix("回答正确") == false else { return [] }
+        return [fb]
     }
 }
