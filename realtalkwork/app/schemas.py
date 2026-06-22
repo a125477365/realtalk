@@ -356,30 +356,64 @@ class PlanCatalogResponse(BaseModel):
     trial_days: int
 
 
-class PresetSubScenario(BaseModel):
-    """通用场景里的子场景（只存标题，不存对话内容）。"""
+# ---- 通用场景（运维预置的全局场景，全体用户可见可练；内容/流程与用户自采集场景一致）----
 
-    id: str = Field(min_length=1, max_length=40)
-    title: str = Field(min_length=1, max_length=60)
+class PresetSceneItem(BaseModel):
+    """用户端：通用场景里的一个子场景（已含完整对话，可直接进入对练）。"""
+
+    scene_id: str
+    title: str
+    line_count: int
+    roles: list["ScenarioRole"] = Field(default_factory=list)
+    last_score: int | None = None
+    last_practiced_at: datetime | None = None
 
 
-class PresetScenarioGroup(BaseModel):
-    """通用场景的主场景（含若干子场景标题）。"""
-
-    id: str = Field(min_length=1, max_length=40)
-    title: str = Field(min_length=1, max_length=60)
-    subs: list[PresetSubScenario] = Field(default_factory=list)
+class PresetSceneGroup(BaseModel):
+    group: str
+    scenes: list[PresetSceneItem] = Field(default_factory=list)
 
 
 class PresetScenarioCatalogResponse(BaseModel):
-    items: list[PresetScenarioGroup] = Field(default_factory=list)
+    items: list[PresetSceneGroup] = Field(default_factory=list)
 
 
-class PresetScenarioGenerateRequest(BaseModel):
-    """用户选中某个子场景后，让 AI 即时生成约 40 句对话。"""
+class PresetSceneAdminItem(BaseModel):
+    """管理台：一条预置场景的完整内容（与 ScenarioResponse 同构 + 分组/排序）。"""
 
-    group_id: str = Field(min_length=1, max_length=40)
-    sub_id: str = Field(min_length=1, max_length=40)
+    scene_id: str
+    group: str = ""
+    title: str
+    summary: str = ""
+    roles: list["ScenarioRole"] = Field(default_factory=list)
+    lines: list["SceneLine"] = Field(default_factory=list)
+    expressions: list["ExpressionCard"] = Field(default_factory=list)
+    line_count: int = 0
+    sort: int = 0
+
+
+class PresetSceneListResponse(BaseModel):
+    items: list[PresetSceneAdminItem] = Field(default_factory=list)
+
+
+class PresetSceneSaveRequest(BaseModel):
+    """管理台新增/编辑预置场景。scene_id 为空=新增。"""
+
+    scene_id: str | None = None
+    group: str = Field(default="", max_length=60)
+    title: str = Field(min_length=1, max_length=60)
+    summary: str = Field(default="", max_length=400)
+    roles: list["ScenarioRole"] = Field(default_factory=list)
+    lines: list["SceneLine"] = Field(default_factory=list)
+    expressions: list["ExpressionCard"] = Field(default_factory=list)
+    sort: int = 0
+
+
+class PresetSceneGenerateRequest(BaseModel):
+    """管理台「用 AI 生成草稿」：按主题让 AI 生成内容，返回供运维编辑（不落库）。"""
+
+    group: str = Field(default="", max_length=60)
+    title: str = Field(min_length=1, max_length=60)
 
 
 class SubscribeRequest(BaseModel):
@@ -634,6 +668,8 @@ class ScenarioSummary(BaseModel):
     source_start: datetime
     source_end: datetime
     created_at: datetime
+    last_score: int | None = None              # 上一次对练得分(0-100)，没练过则空
+    last_practiced_at: datetime | None = None  # 上一次对练时间
 
 
 class ScenarioListResponse(BaseModel):

@@ -148,6 +148,11 @@ scenarios = Table(
     Column("source_hash", Text),  # 采集内容哈希，用于幂等去重，避免重复上传生成重复场景
     # 通用场景（AI 即时模拟）为临时场景：不计入用户「今天/历史」真实场景列表，仅供本次试练
     Column("ephemeral", Integer, nullable=False, server_default="0"),
+    # 通用场景（运维在管理台预置、全体用户可见可练）：is_preset=1，归属系统用户；
+    # preset_group=主场景名（分组），preset_sort=排序。普通用户的「今天/历史」不含这些。
+    Column("is_preset", Integer, nullable=False, server_default="0"),
+    Column("preset_group", Text),
+    Column("preset_sort", Integer, nullable=False, server_default="0"),
 )
 Index("idx_scenarios_user_created", scenarios.c.user_id, scenarios.c.created_at)
 Index("idx_scenarios_user_hash", scenarios.c.user_id, scenarios.c.source_hash)
@@ -390,6 +395,7 @@ class Database:
 
     def initialize(self) -> None:
         metadata.create_all(self.engine)
+        self._ensure_preset_owner()
         with self.engine.begin() as conn:
             self._ensure_column(conn, "users", "balance_cents", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "users", "wechat_openid", "TEXT")
@@ -405,6 +411,9 @@ class Database:
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
             self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
             self._ensure_column(conn, "scenarios", "ephemeral", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "scenarios", "is_preset", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "scenarios", "preset_group", "TEXT")
+            self._ensure_column(conn, "scenarios", "preset_sort", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "audio_jobs", "file_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
@@ -1708,6 +1717,157 @@ class Database:
             )
         return result.rowcount or 0
 
+    # ---- 通用场景（运维在管理台预置的全局场景，全体用户可见可练；与用户自己的场景同表、同对话流程）----
+
+    PRESET_OWNER_ID = "__preset_system__"
+
+    def _ensure_preset_owner(self) -> None:
+        """确保预置场景的归属系统用户存在（scenarios.user_id 外键需指向有效用户）。"""
+        with self.engine.begin() as conn:
+            exists = conn.execute(
+                select(users.c.id).where(users.c.id == self.PRESET_OWNER_ID)
+            ).fetchone()
+            if exists is None:
+                conn.execute(
+                    insert(users).values(
+                        id=self.PRESET_OWNER_ID,
+                        login_identifier=self.PRESET_OWNER_ID,
+                        password_salt="",
+                        password_hash="",
+                        plan="free",
+                        balance_cents=0,
+                        created_at=_iso(_now()),
+                        is_banned=1,  # 系统占位用户，禁止登录
+                    )
+                )
+
+    def create_preset_scenario(
+        self,
+        group: str,
+        title: str,
+        scenario: ScenarioResponse,
+        sort: int = 0,
+    ) -> ScenarioResponse:
+        """新建一条全局预置场景（运维管理台用）。内容格式与用户自采集场景完全一致。"""
+        scene_id = str(uuid.uuid4())
+        now = _now()
+        far_future = now + timedelta(days=3650)  # 预置场景不随用户场景过期
+        saved = scenario.model_copy(update={"scene_id": scene_id})
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(scenarios).values(
+                    scene_id=scene_id,
+                    user_id=self.PRESET_OWNER_ID,
+                    title=title or saved.title,
+                    summary=saved.summary,
+                    roles_json=json.dumps([item.model_dump() for item in saved.roles], ensure_ascii=False),
+                    lines_json=json.dumps([item.model_dump() for item in saved.lines], ensure_ascii=False),
+                    expressions_json=json.dumps([item.model_dump() for item in saved.expressions], ensure_ascii=False),
+                    source_start=_iso(now),
+                    source_end=_iso(now),
+                    created_at=_iso(now),
+                    expires_at=_iso(far_future),
+                    source_hash=None,
+                    ephemeral=0,
+                    is_preset=1,
+                    preset_group=group or "",
+                    preset_sort=sort,
+                )
+            )
+        return saved.model_copy(update={"title": title or saved.title})
+
+    def update_preset_scenario(
+        self,
+        scene_id: str,
+        group: str,
+        title: str,
+        scenario: ScenarioResponse,
+        sort: int = 0,
+    ) -> bool:
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                update(scenarios)
+                .where(scenarios.c.scene_id == scene_id, scenarios.c.is_preset == 1)
+                .values(
+                    title=title or scenario.title,
+                    summary=scenario.summary,
+                    roles_json=json.dumps([item.model_dump() for item in scenario.roles], ensure_ascii=False),
+                    lines_json=json.dumps([item.model_dump() for item in scenario.lines], ensure_ascii=False),
+                    expressions_json=json.dumps([item.model_dump() for item in scenario.expressions], ensure_ascii=False),
+                    preset_group=group or "",
+                    preset_sort=sort,
+                )
+            )
+        return (result.rowcount or 0) > 0
+
+    def delete_preset_scenario(self, scene_id: str) -> bool:
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(scenarios).where(scenarios.c.scene_id == scene_id, scenarios.c.is_preset == 1)
+            )
+        return (result.rowcount or 0) > 0
+
+    def list_preset_scenarios(self) -> list[dict[str, Any]]:
+        """全部预置场景（含完整内容），按分组与排序返回，供管理台编辑与用户端展示。"""
+        stmt = (
+            select(scenarios)
+            .where(scenarios.c.is_preset == 1)
+            .order_by(scenarios.c.preset_group, scenarios.c.preset_sort, scenarios.c.created_at)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            lines = json.loads(row["lines_json"])
+            items.append(
+                {
+                    "scene_id": row["scene_id"],
+                    "group": row["preset_group"] or "",
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "roles": json.loads(row["roles_json"]),
+                    "lines": lines,
+                    "expressions": json.loads(row["expressions_json"]),
+                    "line_count": len(lines),
+                    "sort": int(row["preset_sort"] or 0),
+                }
+            )
+        return items
+
+    def last_practice_scores(self, user_id: str, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """各场景该用户「最近一次对练」的得分(0-100)、是否完成、时间，用于场景卡展示上次成绩。"""
+        if not scene_ids:
+            return {}
+        stmt = (
+            select(
+                roleplay_sessions.c.scene_id,
+                roleplay_sessions.c.score_total,
+                roleplay_sessions.c.turns,
+                roleplay_sessions.c.status,
+                roleplay_sessions.c.updated_at,
+            )
+            .where(
+                roleplay_sessions.c.user_id == user_id,
+                roleplay_sessions.c.scene_id.in_(scene_ids),
+                roleplay_sessions.c.turns > 0,
+            )
+            .order_by(roleplay_sessions.c.updated_at.desc())
+        )
+        result: dict[str, dict[str, Any]] = {}
+        with self.engine.connect() as conn:
+            for row in conn.execute(stmt).mappings():
+                sid = row["scene_id"]
+                if sid in result:
+                    continue  # 已取到该场景最近一次（按 updated_at desc）
+                turns = int(row["turns"] or 0)
+                score = round((float(row["score_total"]) / turns) * 100) if turns else 0
+                result[sid] = {
+                    "score": score,
+                    "completed": row["status"] == "completed",
+                    "at": _parse_dt(row["updated_at"]),
+                }
+        return result
+
     def find_scenario_by_source_hash(self, user_id: str, source_hash: str) -> ScenarioResponse | None:
         """按采集内容哈希查已生成的未过期场景，用于幂等去重（重复上传不再重复生成）。"""
         if not source_hash:
@@ -1724,10 +1884,14 @@ class Database:
         return _scenario_from_row(row) if row else None
 
     def get_scenario(self, user_id: str, scene_id: str) -> ScenarioResponse | None:
+        # 既能取用户自己的场景，也能取全局预置场景（通用场景），二者对练流程完全一致
         with self.engine.connect() as conn:
             row = (
                 conn.execute(
-                    select(scenarios).where(scenarios.c.user_id == user_id, scenarios.c.scene_id == scene_id)
+                    select(scenarios).where(
+                        scenarios.c.scene_id == scene_id,
+                        or_(scenarios.c.user_id == user_id, scenarios.c.is_preset == 1),
+                    )
                 )
                 .mappings()
                 .fetchone()
@@ -1743,7 +1907,7 @@ class Database:
     ) -> list[dict[str, Any]]:
         stmt = (
             select(scenarios)
-            .where(scenarios.c.user_id == user_id, scenarios.c.ephemeral == 0)
+            .where(scenarios.c.user_id == user_id, scenarios.c.ephemeral == 0, scenarios.c.is_preset == 0)
             .order_by(scenarios.c.created_at.desc())
             .limit(limit)
         )

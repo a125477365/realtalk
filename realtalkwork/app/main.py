@@ -91,6 +91,7 @@ from .schemas import (
     ScenarioGenerateRequest,
     ScenarioListResponse,
     ScenarioResponse,
+    ScenarioRole,
     ScenarioSummary,
     SceneLine,
     TokenRefreshRequest,
@@ -114,8 +115,12 @@ from .schemas import (
     PlanCatalogResponse,
     PlanItem,
     PresetScenarioCatalogResponse,
-    PresetScenarioGenerateRequest,
-    PresetScenarioGroup,
+    PresetSceneItem,
+    PresetSceneGroup,
+    PresetSceneAdminItem,
+    PresetSceneListResponse,
+    PresetSceneSaveRequest,
+    PresetSceneGenerateRequest,
     NonmemberLimits,
     QuotaSettingsRequest,
     SubscribeRequest,
@@ -614,32 +619,78 @@ def admin_set_plans(
     return admin_get_plans(admin)
 
 
-@app.get("/admin/api/settings/presets", response_model=PresetScenarioCatalogResponse)
-def admin_get_presets(admin: dict = Depends(current_admin)) -> PresetScenarioCatalogResponse:
-    return PresetScenarioCatalogResponse(
-        items=[PresetScenarioGroup(**item) for item in db.get_preset_scenarios()]
+def _default_scene_roles() -> list[ScenarioRole]:
+    return [
+        ScenarioRole(id="self", name="我", description="用户可扮演的角色", is_user_candidate=True),
+        ScenarioRole(id="counterpart", name="对方", description="另一位对话角色", is_user_candidate=True),
+    ]
+
+
+def _reindex_lines(lines: list[SceneLine]) -> list[SceneLine]:
+    return [line.model_copy(update={"index": i}) for i, line in enumerate(lines)]
+
+
+@app.get("/admin/api/presets", response_model=PresetSceneListResponse)
+def admin_list_presets(admin: dict = Depends(current_admin)) -> PresetSceneListResponse:
+    return PresetSceneListResponse(items=[PresetSceneAdminItem(**item) for item in db.list_preset_scenarios()])
+
+
+@app.post("/admin/api/presets", response_model=PresetSceneAdminItem)
+def admin_save_preset(
+    request: PresetSceneSaveRequest,
+    admin: dict = Depends(current_admin),
+) -> PresetSceneAdminItem:
+    """新增或编辑一条预置场景（含完整对话内容）。运维可随时修改补充。"""
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    if not request.lines:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="对话内容不能为空")
+    scenario = ScenarioResponse(
+        scene_id=request.scene_id or "",
+        title=request.title,
+        summary=request.summary,
+        roles=request.roles or _default_scene_roles(),
+        lines=_reindex_lines(request.lines),
+        expressions=request.expressions,
+    )
+    if request.scene_id:
+        if not db.update_preset_scenario(request.scene_id, request.group, request.title, scenario, request.sort):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="预置场景不存在")
+        scene_id = request.scene_id
+    else:
+        saved = db.create_preset_scenario(request.group, request.title, scenario, request.sort)
+        scene_id = saved.scene_id
+    return PresetSceneAdminItem(
+        scene_id=scene_id,
+        group=request.group,
+        title=request.title,
+        summary=request.summary,
+        roles=scenario.roles,
+        lines=scenario.lines,
+        expressions=scenario.expressions,
+        line_count=len(scenario.lines),
+        sort=request.sort,
     )
 
 
-@app.post("/admin/api/settings/presets", response_model=PresetScenarioCatalogResponse)
-def admin_set_presets(
-    items: list[PresetScenarioGroup],
-    admin: dict = Depends(current_admin),
-) -> PresetScenarioCatalogResponse:
+@app.delete("/admin/api/presets/{scene_id}")
+def admin_delete_preset(scene_id: str, admin: dict = Depends(current_admin)) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    group_ids = [group.id for group in items]
-    if len(group_ids) != len(set(group_ids)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="主场景 ID 重复")
-    for group in items:
-        sub_ids = [sub.id for sub in group.subs]
-        if len(sub_ids) != len(set(sub_ids)):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"「{group.title}」下子场景 ID 重复",
-            )
-    db.set_preset_scenarios([group.model_dump() for group in items])
-    return admin_get_presets(admin)
+    if not db.delete_preset_scenario(scene_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="预置场景不存在")
+    return {"ok": True}
+
+
+@app.post("/admin/api/presets/generate", response_model=ScenarioResponse)
+async def admin_generate_preset_draft(
+    request: PresetSceneGenerateRequest,
+    admin: dict = Depends(current_admin),
+) -> ScenarioResponse:
+    """用 AI 按主题生成一份对话草稿，返回给运维编辑后再保存（不落库）。"""
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    return await generate_preset_scenario(request.group, request.title, user_id=None)
 
 
 @app.get("/admin/api/settings/quota")
@@ -1878,6 +1929,16 @@ async def scenario_generate(
     return db.create_scenario(user.id, request.start, request.end, scenario)
 
 
+def _summaries_with_last_score(user_id: str, items: list[dict]) -> list[ScenarioSummary]:
+    """给场景摘要补上「上一次对练得分」，供场景卡展示历史成绩。"""
+    last = db.last_practice_scores(user_id, [it["scene_id"] for it in items])
+    out: list[ScenarioSummary] = []
+    for it in items:
+        info = last.get(it["scene_id"]) or {}
+        out.append(ScenarioSummary(**it, last_score=info.get("score"), last_practiced_at=info.get("at")))
+    return out
+
+
 @app.get("/scenario/list", response_model=ScenarioListResponse)
 def scenario_list(
     start: datetime | None = Query(default=None),
@@ -1886,7 +1947,7 @@ def scenario_list(
     user: UserOut = Depends(current_user),
 ) -> ScenarioListResponse:
     items = db.list_scenarios(user.id, start, end, limit=limit)
-    return ScenarioListResponse(items=[ScenarioSummary(**item) for item in items])
+    return ScenarioListResponse(items=_summaries_with_last_score(user.id, items))
 
 
 @app.get("/scenario/today", response_model=ScenarioListResponse)
@@ -1903,7 +1964,7 @@ def scenario_today(
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     existing = db.list_scenarios(user.id, day_start, now + timedelta(minutes=1))
     return ScenarioListResponse(
-        items=[ScenarioSummary(**item) for item in existing],
+        items=_summaries_with_last_score(user.id, existing),
         generated=False,
     )
 
@@ -1912,39 +1973,31 @@ def scenario_today(
 def scenario_presets_catalog(
     user: UserOut = Depends(current_user),
 ) -> PresetScenarioCatalogResponse:
-    """通用场景目录（主场景 + 子场景标题），供没有录音时直接选场景练口语。"""
+    """通用场景目录：运维预置的全局场景，按主场景分组；每个子场景已含完整对话，可直接进入对练。
+    同时带上该用户上一次练这场景的得分。"""
+    presets = db.list_preset_scenarios()
+    last = db.last_practice_scores(user.id, [p["scene_id"] for p in presets])
+    grouped: dict[str, list[PresetSceneItem]] = {}
+    order: list[str] = []
+    for p in presets:
+        group = p["group"] or "通用场景"
+        if group not in grouped:
+            grouped[group] = []
+            order.append(group)
+        info = last.get(p["scene_id"]) or {}
+        grouped[group].append(
+            PresetSceneItem(
+                scene_id=p["scene_id"],
+                title=p["title"],
+                line_count=p["line_count"],
+                roles=[ScenarioRole(**r) for r in p["roles"]],
+                last_score=info.get("score"),
+                last_practiced_at=info.get("at"),
+            )
+        )
     return PresetScenarioCatalogResponse(
-        items=[PresetScenarioGroup(**item) for item in db.get_preset_scenarios()]
+        items=[PresetSceneGroup(group=g, scenes=grouped[g]) for g in order]
     )
-
-
-@app.post("/scenario/presets/generate", response_model=ScenarioResponse)
-async def scenario_presets_generate(
-    request: PresetScenarioGenerateRequest,
-    user: UserOut = Depends(current_user),
-) -> ScenarioResponse:
-    """用户选中某个通用子场景后，让 AI 即时模拟生成约 40 句中英双语对话供试练。
-
-    通用场景属于「即时模拟」：只作为本次对练的临时场景（ephemeral），
-    不会进入用户「今天/历史」真实场景列表（那里只放用户录音采集到的真实对话）。
-    生成前先清掉该用户上一次留下的临时场景，确保不累积。
-    """
-    require_ai_access(user)
-    catalog = db.get_preset_scenarios()
-    group = next((g for g in catalog if g.get("id") == request.group_id), None)
-    if group is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="主场景不存在")
-    sub = next((s for s in group.get("subs", []) if s.get("id") == request.sub_id), None)
-    if sub is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="子场景不存在")
-    scenario = await generate_preset_scenario(
-        str(group.get("title", "")),
-        str(sub.get("title", "")),
-        user_id=user.id,
-    )
-    db.purge_ephemeral_scenarios(user.id)
-    now = datetime.now(timezone.utc)
-    return db.create_scenario(user.id, now, now, scenario, ephemeral=True)
 
 
 @app.get("/scenario/{scene_id}", response_model=ScenarioResponse)
