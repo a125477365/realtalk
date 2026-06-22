@@ -826,7 +826,7 @@ async def _generate_preset_scenario_with_model(
     )
     user_prompt = f"""
 主题：{topic}
-请围绕该主题虚构大约 40 句（38-44 句之间）的自然口语对话，输出严格 JSON。
+请围绕该主题虚构大约 16 句（14-20 句之间）的自然口语对话，输出严格 JSON。（控制篇幅，便于快速生成；运维可在管理台继续增补。）
 index 从 0 起连续编号；roles 至少 2 个，且每句的 target_role 都必须是 roles 中存在的 id；
 roles 中至少要有 2 个 is_user_candidate=true 的角色，供用户自由选择扮演。
 source_text 为口语化中文，english 为对应的地道英文。
@@ -854,7 +854,7 @@ JSON schema:
     {{"phrase": "英文表达", "meaning": "中文含义", "example": "英文例句"}}
   ]
 }}
-要求：english 像英语母语国家真实口语；expressions 提取 4-8 个高频可迁移表达。
+要求：english 像英语母语国家真实口语；expressions 提取 3-5 个高频可迁移表达。
 """
     content = await _chat_completion(
         [
