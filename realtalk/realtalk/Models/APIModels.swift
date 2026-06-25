@@ -563,6 +563,7 @@ struct SupportTicketCreateRequest: Codable {
     let category: String
     let subject: String
     let body: String
+    let images: [String]   // base64 data URL 截图
 }
 
 struct SupportTicket: Identifiable, Codable, Equatable {
@@ -572,11 +573,12 @@ struct SupportTicket: Identifiable, Codable, Equatable {
     let body: String
     let status: String
     let adminReply: String?
+    let images: [String]
     let createdAt: Date
     let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case id, category, subject, body, status
+        case id, category, subject, body, status, images
         case adminReply = "admin_reply"
         case createdAt = "created_at"
         case updatedAt = "updated_at"

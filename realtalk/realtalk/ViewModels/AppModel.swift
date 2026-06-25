@@ -1100,10 +1100,10 @@ final class AppModel: ObservableObject {
 
     /// 提交客服工单（如基础升高级后申请原基础会员退款）。
     @discardableResult
-    func submitSupportTicket(category: String, subject: String, body: String) async -> Bool {
+    func submitSupportTicket(category: String, subject: String, body: String, images: [String] = []) async -> Bool {
         guard let token = auth.token else { statusMessage = "请先登录"; return false }
         do {
-            _ = try await api.createSupportTicket(category: category, subject: subject, body: body, token: token)
+            _ = try await api.createSupportTicket(category: category, subject: subject, body: body, images: images, token: token)
             await loadMyTickets()
             statusMessage = "工单已提交，我们会尽快处理"
             return true

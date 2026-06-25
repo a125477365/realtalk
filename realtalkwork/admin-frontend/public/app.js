@@ -802,18 +802,29 @@ function markOrderPaid(orderId) {
 // Token Usage Page
 // ============================================================
 function ticketCatLabel(c) { return { refund: "退款", feedback: "反馈", bug: "问题", other: "其他" }[c] || c; }
-function ticketStatusLabel(s) { return { open: "待处理", processing: "处理中", resolved: "已解决", closed: "已关闭" }[s] || s; }
+function ticketStatusLabel(s) { return { open: "待处理", processing: "处理中", resolved: "已解决", closed: "已关闭", rejected: "不采纳" }[s] || s; }
 
 function renderTicketsPage() {
   return [
-    '<div class="page-header"><h1>客服工单</h1><div class="actions">',
-    '  <select id="ticket-status-filter" onchange="loadTickets()">',
-    '    <option value="">全部状态</option>',
-    '    <option value="open">待处理</option>',
+    '<div class="page-header"><h1>客服工单</h1></div>',
+    '<div class="card" style="margin-bottom:12px"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">',
+    '  <div><label class="hint">状态</label><br><select id="ticket-status-filter" onchange="loadTickets()">',
+    '    <option value="open" selected>待处理</option>',
     '    <option value="processing">处理中</option>',
     '    <option value="resolved">已解决</option>',
     '    <option value="closed">已关闭</option>',
-    "  </select>",
+    '    <option value="rejected">不采纳</option>',
+    '    <option value="all">全部状态</option>',
+    "  </select></div>",
+    '  <div><label class="hint">问题类型</label><br><select id="ticket-cat-filter" onchange="loadTickets()">',
+    '    <option value="">全部类型</option>',
+    '    <option value="refund">退款</option>',
+    '    <option value="feedback">建议/反馈</option>',
+    '    <option value="bug">缺陷/报错</option>',
+    '    <option value="other">其他</option>',
+    "  </select></div>",
+    '  <div><label class="hint">起始日期</label><br><input type="date" id="ticket-start" onchange="loadTickets()" /></div>',
+    '  <div><label class="hint">结束日期</label><br><input type="date" id="ticket-end" onchange="loadTickets()" /></div>',
     '  <button class="btn btn-secondary" onclick="loadTickets()">刷新</button>',
     "</div></div>",
     '<div id="ticket-list-container">' + loadingHTML() + "</div>",
@@ -824,23 +835,35 @@ function loadTickets() {
   var container = getEl("ticket-list-container");
   if (!container) return;
   container.innerHTML = loadingHTML();
-  var st = (getEl("ticket-status-filter") || {}).value || "";
-  apiGet("/admin/api/support/tickets" + (st ? "?status=" + encodeURIComponent(st) : "")).then(function(r) {
+  var q = [];
+  var st = (getEl("ticket-status-filter") || {}).value || "open";
+  q.push("status=" + encodeURIComponent(st));
+  var cat = (getEl("ticket-cat-filter") || {}).value || "";
+  if (cat) q.push("category=" + encodeURIComponent(cat));
+  var start = (getEl("ticket-start") || {}).value || "";
+  if (start) q.push("start=" + encodeURIComponent(start + "T00:00:00"));
+  var end = (getEl("ticket-end") || {}).value || "";
+  if (end) q.push("end=" + encodeURIComponent(end + "T23:59:59"));
+  apiGet("/admin/api/support/tickets?" + q.join("&")).then(function(r) {
     if (!r || !r.ok) { container.innerHTML = '<div class="hint">加载失败</div>'; return; }
     r.json().then(function(d) {
       var items = d.items || [];
-      if (!items.length) { container.innerHTML = '<div class="hint" style="padding:16px">暂无工单</div>'; return; }
+      if (!items.length) { container.innerHTML = '<div class="hint" style="padding:16px">没有符合条件的工单</div>'; return; }
       container.innerHTML = items.map(function(t) {
-        var statusOpts = ["open", "processing", "resolved", "closed"].map(function(s) {
+        var statusOpts = ["open", "processing", "resolved", "closed", "rejected"].map(function(s) {
           return '<option value="' + s + '"' + (t.status === s ? " selected" : "") + ">" + ticketStatusLabel(s) + "</option>";
+        }).join("");
+        var imgs = (t.images || []).map(function(src) {
+          return '<img src="' + esc(src) + '" style="max-height:96px;border-radius:6px;cursor:zoom-in;border:1px solid var(--border,#ddd)" onclick="window.open(this.src)" />';
         }).join("");
         return [
           '<div class="card" style="margin-bottom:12px">',
           '  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">',
-          "    <div><b>" + esc(t.subject) + '</b> <span class="hint">[' + ticketCatLabel(t.category) + "]</span></div>",
+          "    <div><b>" + esc(t.subject) + '</b> <span class="hint">[' + ticketCatLabel(t.category) + "] · " + ticketStatusLabel(t.status) + "</span></div>",
           '    <div class="hint">' + esc(t.user_display_name || "") + " · " + fmtDT(t.created_at) + "</div>",
           "  </div>",
           '  <div style="margin:8px 0;white-space:pre-wrap">' + esc(t.body) + "</div>",
+          (imgs ? '  <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0">' + imgs + "</div>" : ""),
           '  <div class="form-grid">',
           '    <div class="form-group"><label>状态</label><select id="tk-st-' + t.id + '">' + statusOpts + "</select></div>",
           '    <div class="form-group" style="grid-column:1/-1"><label>回复用户（退款等处理结果）</label><textarea id="tk-rp-' + t.id + '" rows="2">' + esc(t.admin_reply || "") + "</textarea></div>",

@@ -695,6 +695,8 @@ class SupportTicketCreate(BaseModel):
     category: Literal["refund", "feedback", "bug", "other"] = "other"
     subject: str = Field(min_length=1, max_length=120)
     body: str = Field(min_length=1, max_length=4000)
+    # 截图：base64 data URL（如 data:image/png;base64,...），最多 4 张
+    images: list[str] = Field(default_factory=list, max_length=4)
 
 
 class SupportTicketOut(BaseModel):
@@ -704,6 +706,7 @@ class SupportTicketOut(BaseModel):
     body: str
     status: str
     admin_reply: str | None = None
+    images: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -713,5 +716,6 @@ class SupportTicketListResponse(BaseModel):
 
 
 class SupportTicketUpdateRequest(BaseModel):
-    status: Literal["open", "processing", "resolved", "closed"] | None = None
+    # rejected = 不采纳（smartOM 技能用）
+    status: Literal["open", "processing", "resolved", "closed", "rejected"] | None = None
     admin_reply: str | None = Field(default=None, max_length=4000)

@@ -293,8 +293,8 @@ final class APIClient {
         try await get("/billing/plans", token: nil, queryItems: [])
     }
 
-    func createSupportTicket(category: String, subject: String, body: String, token: String) async throws -> SupportTicket {
-        try await post("/support/tickets", body: SupportTicketCreateRequest(category: category, subject: subject, body: body), token: token)
+    func createSupportTicket(category: String, subject: String, body: String, images: [String], token: String) async throws -> SupportTicket {
+        try await post("/support/tickets", body: SupportTicketCreateRequest(category: category, subject: subject, body: body, images: images), token: token)
     }
 
     func mySupportTickets(token: String) async throws -> SupportTicketListResponse {

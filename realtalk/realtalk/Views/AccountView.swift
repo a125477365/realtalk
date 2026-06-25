@@ -1,5 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PhotosUI
+import UIKit
 
 struct AccountView: View {
     var body: some View {
@@ -443,6 +445,8 @@ struct SupportTicketsView: View {
     @State private var category = "feedback"
     @State private var subject = ""
     @State private var body_ = ""
+    @State private var pickedItems: [PhotosPickerItem] = []
+    @State private var imageDataURLs: [String] = []
 
     private let categories: [(String, String)] = [("feedback", "反馈"), ("refund", "退款"), ("bug", "问题"), ("other", "其他")]
 
@@ -455,14 +459,41 @@ struct SupportTicketsView: View {
                     }
                     TextField("标题", text: $subject)
                     TextEditor(text: $body_).frame(minHeight: 90)
+                    PhotosPicker(selection: $pickedItems, maxSelectionCount: 4, matching: .images) {
+                        Label(imageDataURLs.isEmpty ? "添加截图（最多 4 张）" : "已选 \(imageDataURLs.count) 张截图", systemImage: "photo.on.rectangle")
+                    }
+                    if imageDataURLs.isEmpty == false {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(Array(imageDataURLs.enumerated()), id: \.offset) { _, url in
+                                    if let img = Self.image(fromDataURL: url) {
+                                        Image(uiImage: img).resizable().scaledToFill()
+                                            .frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Button("提交工单") {
                         Task {
-                            if await model.submitSupportTicket(category: category, subject: subject, body: body_) {
-                                subject = ""; body_ = ""
+                            if await model.submitSupportTicket(category: category, subject: subject, body: body_, images: imageDataURLs) {
+                                subject = ""; body_ = ""; pickedItems = []; imageDataURLs = []
                             }
                         }
                     }
                     .disabled(subject.trimmingCharacters(in: .whitespaces).isEmpty || body_.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .onChange(of: pickedItems) { _, items in
+                    Task {
+                        var urls: [String] = []
+                        for item in items {
+                            if let data = try? await item.loadTransferable(type: Data.self),
+                               let url = Self.imageDataURL(from: data) {
+                                urls.append(url)
+                            }
+                        }
+                        imageDataURLs = urls
+                    }
                 }
 
                 if model.myTickets.isEmpty == false {
@@ -477,6 +508,18 @@ struct SupportTicketsView: View {
                                         .foregroundStyle(ticket.status == "resolved" ? .green : .orange)
                                 }
                                 Text(ticket.body).font(.system(size: 13 * model.fontScale)).foregroundStyle(.secondary)
+                                if ticket.images.isEmpty == false {
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 6) {
+                                            ForEach(Array(ticket.images.enumerated()), id: \.offset) { _, url in
+                                                if let img = Self.image(fromDataURL: url) {
+                                                    Image(uiImage: img).resizable().scaledToFill()
+                                                        .frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 6))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 if let reply = ticket.adminReply, reply.isEmpty == false {
                                     Text("客服回复：\(reply)")
                                         .font(.system(size: 13 * model.fontScale))
@@ -493,6 +536,24 @@ struct SupportTicketsView: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
             .task { await model.loadMyTickets() }
         }
+    }
+
+    /// 把图片压缩为不超过指定边长的 JPEG，再转成 base64 data URL（控制上传体积）。
+    static func imageDataURL(from data: Data, maxDimension: CGFloat = 1280, quality: CGFloat = 0.6) -> String? {
+        guard let image = UIImage(data: data) else { return nil }
+        let size = image.size
+        let scale = min(1, maxDimension / max(size.width, size.height, 1))
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resized = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: newSize)) }
+        guard let jpeg = resized.jpegData(compressionQuality: quality) else { return nil }
+        return "data:image/jpeg;base64," + jpeg.base64EncodedString()
+    }
+
+    static func image(fromDataURL url: String) -> UIImage? {
+        guard let comma = url.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(url[url.index(after: comma)...])) else { return nil }
+        return UIImage(data: data)
     }
 }
 

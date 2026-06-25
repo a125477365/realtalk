@@ -241,7 +241,10 @@ data class CaptureQuota(
 )
 
 @Serializable
-data class SupportTicketCreateRequest(val category: String, val subject: String, val body: String)
+data class SupportTicketCreateRequest(
+    val category: String, val subject: String, val body: String,
+    val images: List<String> = emptyList(),
+)
 
 @Serializable
 data class SupportTicket(
@@ -251,6 +254,7 @@ data class SupportTicket(
     val body: String,
     val status: String,
     @SerialName("admin_reply") val adminReply: String? = null,
+    val images: List<String> = emptyList(),
     @SerialName("created_at") val createdAt: String,
     @SerialName("updated_at") val updatedAt: String,
 ) {
@@ -260,6 +264,7 @@ data class SupportTicket(
             "processing" -> "处理中"
             "resolved" -> "已解决"
             "closed" -> "已关闭"
+            "rejected" -> "不采纳"
             else -> status
         }
 }

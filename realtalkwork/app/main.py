@@ -765,11 +765,16 @@ def create_support_ticket(
     request: SupportTicketCreate,
     user: UserOut = Depends(current_user),
 ) -> SupportTicketOut:
+    # 截图为 base64 data URL：限制数量与总大小，避免超大请求
+    images = [img for img in request.images if isinstance(img, str) and img.startswith("data:image")][:4]
+    if sum(len(img) for img in images) > 8 * 1024 * 1024:  # base64 总长约 8MB（≈6MB 原图）
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="截图过大，请压缩后再上传（最多 4 张、合计约 6MB）")
     ticket = db.create_support_ticket(
         user_id=user.id,
         category=request.category,
         subject=request.subject.strip(),
         body=request.body.strip(),
+        images=images,
     )
     return SupportTicketOut(**ticket)
 
@@ -783,9 +788,14 @@ def list_my_support_tickets(user: UserOut = Depends(current_user)) -> SupportTic
 @app.get("/admin/api/support/tickets")
 def admin_list_support_tickets(
     status_filter: str | None = Query(default=None, alias="status"),
+    category: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     admin: dict = Depends(current_admin),
 ) -> dict:
-    return {"items": db.list_support_tickets(status=status_filter)}
+    # 进工单界面默认只看待处理（open）；传 status=all 看全部
+    effective_status = None if status_filter in (None, "", "all") else status_filter
+    return {"items": db.list_support_tickets(status=effective_status, category=category, start=start, end=end)}
 
 
 @app.post("/admin/api/support/tickets/{ticket_id}", response_model=SupportTicketOut)

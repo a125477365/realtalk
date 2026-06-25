@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -42,6 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -418,6 +422,17 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     var category by remember { mutableStateOf("feedback") }
     var subject by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
+    var images by remember { mutableStateOf(listOf<String>()) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia(4)
+    ) { uris ->
+        if (uris.isNotEmpty()) scope.launch {
+            val urls = withContext(kotlinx.coroutines.Dispatchers.IO) { uris.mapNotNull { uriToDataUrl(ctx, it) } }
+            images = urls
+        }
+    }
 
     LaunchedEffect(Unit) { model.loadMyTickets() }
 
@@ -447,8 +462,30 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item { OutlinedTextField(value = subject, onValueChange = { subject = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         item { OutlinedTextField(value = body, onValueChange = { body = it }, label = { Text("详细描述") }, modifier = Modifier.fillMaxWidth().height(110.dp)) }
         item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = {
+                    picker.launch(androidx.activity.result.PickVisualMediaRequest(
+                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }) { Text(if (images.isEmpty()) "添加截图（最多 4 张）" else "已选 ${images.size} 张") }
+                Spacer(Modifier.width(10.dp))
+                images.forEach { url ->
+                    dataUrlToBitmap(url)?.let { bmp ->
+                        androidx.compose.foundation.Image(
+                            bitmap = bmp.asImageBitmap(), contentDescription = null,
+                            modifier = Modifier.size(44.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                }
+            }
+        }
+        item {
             Button(
-                onClick = { model.submitSupportTicket(category, subject.trim(), body.trim()); subject = ""; body = "" },
+                onClick = {
+                    model.submitSupportTicket(category, subject.trim(), body.trim(), images) {
+                        subject = ""; body = ""; images = emptyList()
+                    }
+                },
                 enabled = subject.isNotBlank() && body.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = RT.Accent),
@@ -466,6 +503,19 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                         Text(t.statusText, fontSize = (11 * fontScale).sp, color = if (t.status == "resolved") Color(0xFF16A34A) else Color(0xFFD97706))
                     }
                     Text(t.body, fontSize = (13 * fontScale).sp, color = RT.TextSecondary)
+                    if (t.images.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            t.images.forEach { url ->
+                                dataUrlToBitmap(url)?.let { bmp ->
+                                    androidx.compose.foundation.Image(
+                                        bitmap = bmp.asImageBitmap(), contentDescription = null,
+                                        modifier = Modifier.size(48.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (!t.adminReply.isNullOrBlank()) {
                         Text("客服回复：${t.adminReply}", fontSize = (13 * fontScale).sp, color = RT.Accent)
                     }
@@ -760,3 +810,24 @@ fun UploadSheetContent(model: AppViewModel, onBack: () -> Unit) {
         }
     }
 }
+
+/** 把图片 Uri 压缩为不超过 1280px 的 JPEG，再转成 base64 data URL（控制上传体积）。 */
+private fun uriToDataUrl(context: android.content.Context, uri: Uri, maxDim: Int = 1280, quality: Int = 60): String? = try {
+    val src = context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it) }
+    if (src == null) null else {
+        val scale = minOf(1f, maxDim.toFloat() / maxOf(src.width, src.height, 1))
+        val bmp = if (scale < 1f)
+            android.graphics.Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
+        else src
+        val baos = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, baos)
+        "data:image/jpeg;base64," + android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+    }
+} catch (e: Exception) { null }
+
+/** 把 base64 data URL 解回 Bitmap 用于展示。 */
+private fun dataUrlToBitmap(url: String): android.graphics.Bitmap? = try {
+    val b64 = url.substringAfter(",", "")
+    val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+} catch (e: Exception) { null }

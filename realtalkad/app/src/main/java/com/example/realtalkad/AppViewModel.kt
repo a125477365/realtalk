@@ -848,11 +848,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun submitSupportTicket(category: String, subject: String, body: String) {
+    fun submitSupportTicket(category: String, subject: String, body: String, images: List<String> = emptyList(), onDone: () -> Unit = {}) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
-            runCatching { api.createSupportTicket(category, subject, body, token) }
-                .onSuccess { statusMessage.value = "工单已提交，我们会尽快处理"; loadMyTickets() }
+            runCatching { api.createSupportTicket(category, subject, body, images, token) }
+                .onSuccess { statusMessage.value = "工单已提交，我们会尽快处理"; loadMyTickets(); onDone() }
                 .onFailure { presentFailure(it.message, title = "工单提交失败") }
         }
     }

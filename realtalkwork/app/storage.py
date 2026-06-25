@@ -322,8 +322,9 @@ support_tickets = Table(
     Column("category", Text, nullable=False, default="other"),  # refund/feedback/bug/other
     Column("subject", Text, nullable=False),
     Column("body", Text, nullable=False),
-    Column("status", Text, nullable=False, default="open"),  # open/processing/resolved/closed
+    Column("status", Text, nullable=False, default="open"),  # open/processing/resolved/closed/rejected
     Column("admin_reply", Text),
+    Column("images_json", Text),  # 截图：base64 data URL 列表的 JSON
     Column("created_at", Text, nullable=False),
     Column("updated_at", Text, nullable=False),
 )
@@ -414,6 +415,7 @@ class Database:
             self._ensure_column(conn, "scenarios", "is_preset", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "scenarios", "preset_group", "TEXT")
             self._ensure_column(conn, "scenarios", "preset_sort", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "support_tickets", "images_json", "TEXT")
             self._ensure_column(conn, "audio_jobs", "file_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
@@ -812,7 +814,19 @@ class Database:
 
     # ---- 客服工单 ----
 
-    def create_support_ticket(self, user_id: str, category: str, subject: str, body: str) -> dict[str, Any]:
+    @staticmethod
+    def _ticket_row_to_dict(row) -> dict[str, Any]:
+        item = dict(row)
+        raw = item.pop("images_json", None)
+        try:
+            item["images"] = json.loads(raw) if raw else []
+        except (json.JSONDecodeError, TypeError):
+            item["images"] = []
+        return item
+
+    def create_support_ticket(
+        self, user_id: str, category: str, subject: str, body: str, images: list[str] | None = None
+    ) -> dict[str, Any]:
         now = _now()
         ticket_id = str(uuid.uuid4())
         with self.engine.begin() as conn:
@@ -825,6 +839,7 @@ class Database:
                     body=body,
                     status="open",
                     admin_reply=None,
+                    images_json=json.dumps(images or [], ensure_ascii=False),
                     created_at=_iso(now),
                     updated_at=_iso(now),
                 )
@@ -836,7 +851,7 @@ class Database:
             row = conn.execute(
                 select(support_tickets).where(support_tickets.c.id == ticket_id)
             ).mappings().fetchone()
-        return dict(row) if row else None
+        return self._ticket_row_to_dict(row) if row else None
 
     def list_user_tickets(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
@@ -846,14 +861,27 @@ class Database:
                 .order_by(support_tickets.c.created_at.desc())
                 .limit(limit)
             ).mappings().fetchall()
-        return [dict(r) for r in rows]
+        return [self._ticket_row_to_dict(r) for r in rows]
 
-    def list_support_tickets(self, status: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
-        """管理台：列出工单并附用户展示信息。"""
+    def list_support_tickets(
+        self,
+        status: str | None = None,
+        category: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """管理台：按状态/类型/日期筛选工单并附用户展示信息。"""
         with self.engine.connect() as conn:
             stmt = select(support_tickets).order_by(support_tickets.c.created_at.desc()).limit(limit)
             if status:
                 stmt = stmt.where(support_tickets.c.status == status)
+            if category:
+                stmt = stmt.where(support_tickets.c.category == category)
+            if start is not None:
+                stmt = stmt.where(support_tickets.c.created_at >= _iso(start))
+            if end is not None:
+                stmt = stmt.where(support_tickets.c.created_at < _iso(end))
             rows = conn.execute(stmt).mappings().fetchall()
             user_ids = list({r["user_id"] for r in rows})
             user_map: dict[str, Any] = {}
@@ -863,7 +891,7 @@ class Database:
         items = []
         for r in rows:
             ur = user_map.get(r["user_id"])
-            item = dict(r)
+            item = self._ticket_row_to_dict(r)
             item["user_display_name"] = (ur["display_name"] if ur else None) or (ur["login_identifier"] if ur else r["user_id"][:8])
             item["user_login_identifier"] = ur["login_identifier"] if ur else None
             items.append(item)
