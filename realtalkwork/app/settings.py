@@ -114,6 +114,19 @@ class Settings:
     asr_local_model: str = os.getenv("ASR_LOCAL_MODEL", "small")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
 
+    # 语音合成（TTS）：cloud=OpenAI 兼容 /audio/speech，local=服务器本地命令行（Piper/Coqui 等）
+    tts_mode: str = os.getenv("TTS_MODE", "cloud")
+    tts_base_url: str | None = os.getenv("TTS_BASE_URL")
+    tts_api_key: str | None = os.getenv("TTS_API_KEY")
+    tts_model: str = os.getenv("TTS_MODEL", "tts-1")
+    # 可选音色列表（逗号分隔，供用户选择）与默认音色
+    tts_voices: str = os.getenv("TTS_VOICES", "alloy,echo,fable,onyx,nova,shimmer")
+    tts_default_voice: str = os.getenv("TTS_DEFAULT_VOICE", "alloy")
+    # 本地合成命令模板：{text}=待合成文本，{voice}=音色，{out}=输出音频路径；命令需在 {out} 生成音频
+    tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND")
+    tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
+    tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
+
     # 音频分布式：入口节点把上传文件转发给某个 worker 节点处理（共享同一数据库）
     # 逗号分隔的 worker 内部地址，如 "http://10.0.0.6:8000,http://10.0.0.7:8000"；留空=本机处理
     audio_worker_nodes: str | None = os.getenv("AUDIO_WORKER_NODES")

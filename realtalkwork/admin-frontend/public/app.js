@@ -991,6 +991,19 @@ function renderPlanQuotaCards() {
     '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
     "</div>",
     '<div class="card">',
+    "  <h2>语音合成（TTS）<span class=\"subtitle\">对练时朗读 AI 台词的声音；用户可选音色</span></h2>",
+    '  <div id="tts-mode-banner"></div>',
+    '  <div id="tts-cloud-fields" class="form-grid">',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="tts-base-url" placeholder="https://api.openai.com/v1" /></div>',
+    '    <div class="form-group"><label>模型</label><input type="text" id="tts-model" placeholder="tts-1" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="tts-key-status"></span></label>',
+    '      <input type="password" id="tts-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>可选音色（逗号分隔）</label><input type="text" id="tts-voices" placeholder="alloy,echo,fable,onyx,nova,shimmer" /></div>',
+    '    <div class="form-group"><label>默认音色</label><input type="text" id="tts-default-voice" placeholder="alloy" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" id="tts-save-btn" style="margin-top:10px" onclick="saveTts()">保存 TTS 配置</button>',
+    "</div>",
+    '<div class="card">',
     "  <h2>语音文件服务器<span class=\"subtitle\">指定哪些服务器可处理高级会员上传的录音文件</span></h2>",
     '  <div class="hint" style="margin-bottom:8px;line-height:1.6">',
     "    格式 <code>ip:port;ip:port</code>，多台用分号隔开，例如 <code>192.168.6.12:8000;192.168.6.3:8000;192.168.6.4:8000</code>。<br/>",
@@ -1070,6 +1083,32 @@ function loadPlanQuotaAsr() {
       }
     });
   });
+  apiGet("/admin/api/settings/tts").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      var local = d.mode === "local";
+      var banner = getEl("tts-mode-banner");
+      var cloud = getEl("tts-cloud-fields");
+      var saveBtn = getEl("tts-save-btn");
+      if (local) {
+        if (banner) banner.innerHTML =
+          '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
+          '当前为<b>服务器本地合成</b>模式（Piper/Coqui 等），由部署脚本配置 TTS_LOCAL_COMMAND，无需在此设置。</div>';
+        if (cloud) cloud.style.display = "none";
+        if (saveBtn) saveBtn.style.display = "none";
+      } else {
+        if (banner) banner.innerHTML = "";
+        if (cloud) cloud.style.display = "";
+        if (saveBtn) saveBtn.style.display = "";
+        if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
+        if (getEl("tts-model")) getEl("tts-model").value = d.model || "";
+        if (getEl("tts-voices")) getEl("tts-voices").value = d.voices || "";
+        if (getEl("tts-default-voice")) getEl("tts-default-voice").value = d.default_voice || "";
+        var tks = getEl("tts-key-status");
+        if (tks) tks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时返回静音占位）" : "（未配置）");
+      }
+    });
+  });
   apiGet("/admin/api/settings/voice-servers").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
@@ -1082,6 +1121,23 @@ function loadPlanQuotaAsr() {
           : '<span style="color:var(--danger,#e03131)">未配置 — 语音上传当前会直接报错</span>';
       }
     });
+  });
+}
+
+function saveTts() {
+  var body = {
+    base_url: (getEl("tts-base-url") || { value: "" }).value.trim(),
+    model: (getEl("tts-model") || { value: "" }).value.trim(),
+    voices: (getEl("tts-voices") || { value: "" }).value.trim(),
+    default_voice: (getEl("tts-default-voice") || { value: "" }).value.trim(),
+  };
+  var key = (getEl("tts-api-key") || { value: "" }).value.trim();
+  if (key) body.api_key = key;
+  apiPost("/admin/api/settings/tts", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("TTS 配置已保存", "success");
+    loadPlanQuotaAsr();
   });
 }
 
@@ -2061,6 +2117,7 @@ window.presetSaveScene = presetSaveScene;
 window.presetDeleteScene = presetDeleteScene;
 window.saveQuota = saveQuota;
 window.saveAsr = saveAsr;
+window.saveTts = saveTts;
 window.saveVoiceServers = saveVoiceServers;
 window.markOrderPaid = markOrderPaid;
 window.loadOverviewCharts = loadOverviewCharts;

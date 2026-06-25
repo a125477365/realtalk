@@ -101,6 +101,7 @@ users = Table(
     Column("token_version", Integer, nullable=False, default=1),  # 递增即吊销该用户全部令牌
     Column("plan_monthly_price_cents", Integer),  # 购买会员时锁定的档位标准月费（分），用于月度额度计算
     Column("plan_purchased_at", Text),  # 当前连续会员期的起始购买日，作为每月额度重置的锚点
+    Column("tts_voice", Text),  # 用户选择的 AI 朗读音色（练习时朗读 AI 台词用）
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -409,6 +410,7 @@ class Database:
             self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
             self._ensure_column(conn, "users", "active_device_id", "TEXT")
             self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "users", "tts_voice", "TEXT")
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
             self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
@@ -553,6 +555,17 @@ class Database:
     def get_user(self, user_id: str) -> UserOut | None:
         row = self.get_user_row(user_id)
         return _user_from_row(row) if row else None
+
+    def get_user_tts_voice(self, user_id: str) -> str | None:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(users.c.tts_voice).where(users.c.id == user_id)
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def set_user_tts_voice(self, user_id: str, voice: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(update(users).where(users.c.id == user_id).values(tts_voice=voice))
 
     def touch_user_seen(self, user_id: str) -> None:
         with self.engine.begin() as conn:

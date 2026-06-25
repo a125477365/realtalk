@@ -130,10 +130,14 @@ from .schemas import (
     SupportTicketOut,
     SupportTicketUpdateRequest,
     TokenUsageInfo,
+    TtsSettingsRequest,
+    TtsVoiceRequest,
+    TtsVoicesResponse,
     VoiceServersRequest,
 )
 from .capture_store import capture_store
 from . import voice_pipeline
+from . import voice_io
 from .realtime_voice import (
     build_session_instructions,
     proxy_session,
@@ -863,6 +867,72 @@ def admin_set_asr(
     if request.model is not None:
         db.set_app_setting("asr_model", request.model.strip())
     return admin_get_asr(admin)
+
+
+@app.get("/admin/api/settings/tts")
+def admin_get_tts(admin: dict = Depends(current_admin)) -> dict:
+    config = voice_io.resolve_tts_config()
+    return {
+        "mode": config["mode"],
+        "base_url": config["base_url"],
+        "model": config["model"],
+        "voices": config["voices"],
+        "default_voice": voice_io.default_voice(),
+        "api_key_masked": _masked_key(config["api_key"]),
+        "api_key_configured": bool(config["api_key"]),
+        "configured": voice_io.tts_configured(),
+        "dev_mode": config["dev_mode"],
+    }
+
+
+@app.post("/admin/api/settings/tts")
+def admin_set_tts(
+    request: TtsSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    # mode / 本地命令由部署控制；管理台只配置云端 base_url/api_key/model 与可选音色
+    if request.base_url is not None:
+        db.set_app_setting("tts_base_url", request.base_url.strip().rstrip("/"))
+    if request.api_key is not None:
+        db.set_app_setting("tts_api_key", request.api_key.strip())
+    if request.model is not None:
+        db.set_app_setting("tts_model", request.model.strip())
+    if request.voices is not None:
+        db.set_app_setting("tts_voices", request.voices.strip())
+    if request.default_voice is not None:
+        db.set_app_setting("tts_default_voice", request.default_voice.strip())
+    return admin_get_tts(admin)
+
+
+@app.get("/tts/voices", response_model=TtsVoicesResponse)
+def tts_voices(user: UserOut = Depends(current_user)) -> TtsVoicesResponse:
+    """可选 AI 音色 + 当前用户已选音色（用于练习时朗读 AI 台词）。"""
+    current = db.get_user_tts_voice(user.id) or voice_io.default_voice()
+    return TtsVoicesResponse(
+        voices=voice_io.available_voices(),
+        current=voice_io.normalize_voice(current),
+        configured=voice_io.tts_configured(),
+    )
+
+
+@app.post("/tts/voice", response_model=TtsVoicesResponse)
+def tts_set_voice(request: TtsVoiceRequest, user: UserOut = Depends(current_user)) -> TtsVoicesResponse:
+    voice = voice_io.normalize_voice(request.voice)
+    db.set_user_tts_voice(user.id, voice)
+    return TtsVoicesResponse(voices=voice_io.available_voices(), current=voice, configured=voice_io.tts_configured())
+
+
+@app.get("/tts/preview")
+async def tts_preview(
+    voice: str = Query(default=""),
+    text: str = Query(default="Hello, this is how I sound."),
+    user: UserOut = Depends(current_user),
+) -> Response:
+    """试听某个音色（音色选择界面用）。返回音频字节。"""
+    audio, content_type = await voice_io.synthesize(text[:200], voice or None)
+    return Response(content=audio, media_type=content_type)
 
 
 @app.get("/admin/api/settings/voice-servers")

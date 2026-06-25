@@ -462,6 +462,24 @@ class VoiceServersRequest(BaseModel):
     servers: str = Field(default="", max_length=4000)
 
 
+class TtsSettingsRequest(BaseModel):
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
+    voices: str | None = Field(default=None, max_length=500)         # 逗号分隔的可选音色
+    default_voice: str | None = Field(default=None, max_length=100)
+
+
+class TtsVoiceRequest(BaseModel):
+    voice: str = Field(min_length=1, max_length=100)
+
+
+class TtsVoicesResponse(BaseModel):
+    voices: list[str]
+    current: str
+    configured: bool
+
+
 class AudioUploadInitRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=1, le=2 * 1024 * 1024 * 1024)
