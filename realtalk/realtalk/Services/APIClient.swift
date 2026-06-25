@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum APIClientError: LocalizedError {
     case invalidResponse
@@ -309,71 +310,39 @@ final class APIClient {
         try await get("/audio/jobs", token: token, queryItems: [])
     }
 
-    /// 上传前去重预检：传文件哈希，命中则后端返回已有任务（客户端可跳过整段上传）。
-    func audioPrecheck(fileHash: String, token: String) async throws -> AudioPrecheckResponse {
-        try await get("/audio/precheck", token: token, queryItems: [URLQueryItem(name: "file_hash", value: fileHash)])
-    }
-
-    /// 大音频文件上传：multipart 先拼到临时文件再流式上传，避免 300MB 进内存
-    func uploadAudio(fileURL: URL, token: String) async throws -> AudioJob {
-        let boundary = "rt-\(UUID().uuidString)"
-        let filename = fileURL.lastPathComponent
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-
-        let prelude = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\nContent-Type: audio/mpeg\r\n\r\n"
-        let epilogue = "\r\n--\(boundary)--\r\n"
-        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: tempURL)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-        try handle.write(contentsOf: Data(prelude.utf8))
-        let input = try FileHandle(forReadingFrom: fileURL)
-        while let chunk = try input.read(upToCount: 4 * 1024 * 1024), chunk.isEmpty == false {
-            try handle.write(contentsOf: chunk)
-        }
-        try input.close()
-        try handle.write(contentsOf: Data(epilogue.utf8))
-        try handle.close()
-
-        var request = URLRequest(url: url(for: "/audio/upload"))
-        request.httpMethod = "POST"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 1800
-
-        let (data, response) = try await session.upload(for: request, fromFile: tempURL)
-        guard let httpResponse = response as? HTTPURLResponse else { throw APIClientError.invalidResponse }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            if let error = try? decoder.decode(ErrorResponse.self, from: data) {
-                throw APIClientError.server(error.detail)
-            }
-            throw APIClientError.server("上传失败：HTTP \(httpResponse.statusCode)")
-        }
-        return try decoder.decode(AudioJob.self, from: data)
-    }
-
     /// 断点续传上传：init → 分块 PUT（失败按服务端已收字节续传）→ complete。
-    /// progress 回调返回 0...1，便于 UI 显示进度。
+    /// 每个报文都带整文件 MD5，服务端据此把文件路由到对应语音服务器。
+    /// 返回值：true 表示服务端已有同文件（秒回成功，无需重传）。progress 回调返回 0...1。
     func uploadAudioResumable(
         fileURL: URL,
         token: String,
         progress: @escaping (Double) -> Void = { _ in }
-    ) async throws -> AudioJob {
+    ) async throws -> Bool {
         let filename = fileURL.lastPathComponent
         let total = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
         guard total > 0 else { throw APIClientError.server("文件为空") }
+        let md5 = try Self.fileMD5(fileURL)
 
-        // 1) init
-        struct InitReq: Encodable { let filename: String; let size_bytes: Int }
-        struct InitResp: Decodable { let upload_id: String; let received_bytes: Int }
+        // 1) init（带 md5）。done=true 说明服务端已有同文件，直接成功。
+        struct InitReq: Encodable { let filename: String; let size_bytes: Int; let md5: String }
+        struct InitResp: Decodable { let upload_id: String; let received_bytes: Int; let done: Bool }
         struct StatusResp: Decodable { let received_bytes: Int }
-        let initResp: InitResp = try await post("/audio/upload/init", body: InitReq(filename: filename, size_bytes: total), token: token)
-        let uploadId = initResp.upload_id
+        let initResp: InitResp = try await post(
+            "/audio/upload/init",
+            body: InitReq(filename: filename, size_bytes: total, md5: md5),
+            token: token
+        )
+        if initResp.done {
+            progress(1.0)
+            return true
+        }
 
-        // 2) 分块上传
+        // 2) 分块上传（从服务端已收字节处续传）
         let chunkSize = 4 * 1024 * 1024
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
-        var offset = 0
+        var offset = max(0, min(initResp.received_bytes, total))
+        progress(Double(offset) / Double(total))
         while offset < total {
             try handle.seek(toOffset: UInt64(offset))
             let chunk = try handle.read(upToCount: chunkSize) ?? Data()
@@ -382,7 +351,7 @@ final class APIClient {
             while true {
                 attempt += 1
                 do {
-                    try await putChunk(uploadId: uploadId, offset: offset, body: chunk, token: token)
+                    try await putChunk(md5: md5, offset: offset, body: chunk, token: token)
                     offset += chunk.count
                     progress(Double(offset) / Double(total))
                     break
@@ -393,7 +362,7 @@ final class APIClient {
                     if let st: StatusResp = try? await get(
                         "/audio/upload/status",
                         token: token,
-                        queryItems: [URLQueryItem(name: "upload_id", value: uploadId),
+                        queryItems: [URLQueryItem(name: "md5", value: md5),
                                      URLQueryItem(name: "size_bytes", value: String(total))]
                     ) {
                         offset = st.received_bytes
@@ -402,20 +371,22 @@ final class APIClient {
             }
         }
 
-        // 3) complete
+        // 3) complete（带 md5 + size_bytes 让服务端校验完整性并打 .ready 标记）
         var comps = URLComponents(url: url(for: "/audio/upload/complete"), resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "upload_id", value: uploadId),
-                             URLQueryItem(name: "filename", value: filename)]
+        comps?.queryItems = [URLQueryItem(name: "md5", value: md5),
+                             URLQueryItem(name: "filename", value: filename),
+                             URLQueryItem(name: "size_bytes", value: String(total))]
         guard let completeURL = comps?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: completeURL)
         request.httpMethod = "POST"
         addDefaultHeaders(to: &request, token: token)
-        return try await send(request)
+        let _: AudioUploadAck = try await send(request)
+        return false
     }
 
-    private func putChunk(uploadId: String, offset: Int, body: Data, token: String) async throws {
+    private func putChunk(md5: String, offset: Int, body: Data, token: String) async throws {
         var comps = URLComponents(url: url(for: "/audio/upload/chunk"), resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "upload_id", value: uploadId),
+        comps?.queryItems = [URLQueryItem(name: "md5", value: md5),
                              URLQueryItem(name: "offset", value: String(offset))]
         guard let u = comps?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: u)
@@ -427,6 +398,17 @@ final class APIClient {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw APIClientError.server("分块上传失败")
         }
+    }
+
+    /// 流式计算文件 MD5（与服务端命名/路由一致）。
+    private static func fileMD5(_ url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = Insecure.MD5()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), chunk.isEmpty == false {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func get<Response: Decodable>(

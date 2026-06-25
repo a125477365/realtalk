@@ -268,17 +268,12 @@ if $DEPLOY_BACKEND; then
   ask "worker 进程数（建议=CPU核数）" "4"
   ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
 
-  # ---- 音频转写处理节点（分布式可选）----
-  note "高级会员上传的录音由谁转写：默认本机；也可把文件转发到其他 worker 节点处理。"
-  ask "音频转写 worker 节点地址（逗号分隔，回车=本机处理）" ""
-  AUDIO_WORKERS="$REPLY_VALUE"
-  INTERNAL_TOKEN_VAL=""
-  if [ -n "$AUDIO_WORKERS" ]; then
-    note "示例：http://10.0.0.6:8000,http://10.0.0.7:8000（这些节点须连同一个数据库，且各自也用本脚本部署后端）。"
-    ask "节点间内部令牌（入口与所有 worker 必须一致，回车自动生成）" "$(rand 40)"
-    INTERNAL_TOKEN_VAL="$REPLY_VALUE"
-  fi
-  ENV_LINES+=("AUDIO_WORKER_NODES=$AUDIO_WORKERS" "INTERNAL_TOKEN=$INTERNAL_TOKEN_VAL")
+  # ---- 语音文件服务器（高级会员上传录音）----
+  note "高级会员上传的录音文件，会按【文件 MD5】路由到「可处理语音的服务器」，由其每小时定时任务转写并生成场景。"
+  note "可处理语音的【服务器列表】在【管理台 → 系统设置 → 语音文件服务器】中配置（格式 ip:port;ip:port），未配置则语音上传直接报错。"
+  note "若本机是语音文件服务器，请在此填【本机在该列表中的地址 ip:port】，服务据此判断某文件是否归本机处理。"
+  ask "本机作为语音文件服务器的地址 VOICE_NODE_ADDR（如 192.168.6.3:8000；回车=本机不处理语音文件）" ""
+  ENV_LINES+=("VOICE_NODE_ADDR=$REPLY_VALUE")
 
   # ---- 微信登录（高级，可选）----
   echo

@@ -120,6 +120,13 @@ class Settings:
     # 节点间内部调用令牌（入口与 worker 必须一致）
     internal_token: str | None = os.getenv("INTERNAL_TOKEN")
 
+    # 语音文件服务器（高级会员上传录音）：
+    # - 可处理语音文件的服务器列表「ip:port;ip:port」在【管理台】配置并存库，未配置则上传直接报错（不本地兜底）。
+    # - 本机地址：本服务器在上面列表中的 ip:port，用于判断「某文件是否归我处理」。语音服务器必须在 .env 设置。
+    voice_node_addr: str | None = os.getenv("VOICE_NODE_ADDR")
+    # 语音文件本地存放目录（已配则用之，否则放在 upload_dir/voice 下）
+    voice_dir: Path = Path(os.getenv("VOICE_DIR", str(Path(os.getenv("UPLOAD_DIR", "./uploads")) / "voice")))
+
     # 数据库连接池（PostgreSQL 生效）
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "10"))
     db_max_overflow: int = int(os.getenv("DB_MAX_OVERFLOW", "20"))

@@ -990,6 +990,19 @@ function renderPlanQuotaCards() {
     "  </div>",
     '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
     "</div>",
+    '<div class="card">',
+    "  <h2>语音文件服务器<span class=\"subtitle\">指定哪些服务器可处理高级会员上传的录音文件</span></h2>",
+    '  <div class="hint" style="margin-bottom:8px;line-height:1.6">',
+    "    格式 <code>ip:port;ip:port</code>，多台用分号隔开，例如 <code>192.168.6.12:8000;192.168.6.3:8000;192.168.6.4:8000</code>。<br/>",
+    "    · 列表内 IP 必须各服务器之间网络可达；<b>未配置则语音上传直接报错</b>，不会本地兜底保存。<br/>",
+    "    · 某文件由哪台处理 = 列表[ MD5后4位十六进制取模服务器数 ]，同一文件始终落同一台。<br/>",
+    "    · 每台语音服务器的 <code>.env</code> 必须设置本机地址 <code>VOICE_NODE_ADDR</code>（即它在此列表中的 ip:port）。",
+    "  </div>",
+    '  <div class="form-group"><label>语音服务器列表</label>',
+    '    <input type="text" id="voice-servers" placeholder="192.168.6.12:8000;192.168.6.3:8000;192.168.6.4:8000" /></div>',
+    '  <div class="hint" id="voice-servers-current" style="margin:6px 0"></div>',
+    '  <button class="btn btn-primary" style="margin-top:6px" onclick="saveVoiceServers()">保存语音服务器列表</button>',
+    "</div>",
   ].join("");
 }
 
@@ -1056,6 +1069,29 @@ function loadPlanQuotaAsr() {
         if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
       }
     });
+  });
+  apiGet("/admin/api/settings/voice-servers").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("voice-servers")) getEl("voice-servers").value = d.servers_text || "";
+      var cur = getEl("voice-servers-current");
+      if (cur) {
+        var list = d.servers || [];
+        cur.innerHTML = list.length
+          ? "当前生效 " + list.length + " 台：" + list.map(esc).join("、")
+          : '<span style="color:var(--danger,#e03131)">未配置 — 语音上传当前会直接报错</span>';
+      }
+    });
+  });
+}
+
+function saveVoiceServers() {
+  var body = { servers: (getEl("voice-servers") || { value: "" }).value.trim() };
+  apiPost("/admin/api/settings/voice-servers", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("语音服务器列表已保存", "success");
+    loadPlanQuotaAsr();
   });
 }
 
@@ -2025,6 +2061,7 @@ window.presetSaveScene = presetSaveScene;
 window.presetDeleteScene = presetDeleteScene;
 window.saveQuota = saveQuota;
 window.saveAsr = saveAsr;
+window.saveVoiceServers = saveVoiceServers;
 window.markOrderPaid = markOrderPaid;
 window.loadOverviewCharts = loadOverviewCharts;
 window.applyModelPreset = applyModelPreset;

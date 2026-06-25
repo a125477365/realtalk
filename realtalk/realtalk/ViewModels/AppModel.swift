@@ -1162,47 +1162,20 @@ final class AppModel: ObservableObject {
         isUploadingAudio = true
         defer { isUploadingAudio = false }
 
-        // App 计算文件哈希做上传前去重预检：同文件已生成过场景则直接复用，省去整段上传
-        if let hash = Self.fileSHA256(fileURL),
-           let pre = try? await api.audioPrecheck(fileHash: hash, token: token),
-           pre.duplicate {
-            statusMessage = "该录音此前已生成过场景，已直接复用，无需重复上传"
-            await loadAudioJobs()
-            await loadTodayScenarios()
-            return
-        }
-
         do {
-            // 断点续传上传，网络波动自动续传，适合大文件
-            _ = try await api.uploadAudioResumable(fileURL: fileURL, token: token) { [weak self] fraction in
+            // 断点续传上传（每个报文带文件 MD5，服务端按 MD5 路由到对应语音服务器）；
+            // 服务端已有同文件则秒回成功。处理改为服务器端定时任务转写+生成场景，App 不再等待。
+            let alreadyDone = try await api.uploadAudioResumable(fileURL: fileURL, token: token) { [weak self] fraction in
                 Task { @MainActor in
                     self?.statusMessage = "上传中 \(Int(fraction * 100))%"
                 }
             }
-            statusMessage = "上传成功，正在转写生成场景"
-            await loadAudioJobs()
-            // 处理是异步的，轮询直到完成
-            for _ in 0..<60 {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                await loadAudioJobs()
-                let active = audioJobs.contains { ["pending", "transcribing", "generating"].contains($0.status) }
-                if active == false { break }
-            }
-            await loadTodayScenarios()
+            statusMessage = alreadyDone
+                ? "该录音此前已上传，无需重复上传"
+                : "上传成功，场景生成中，稍后在列表查看"
         } catch {
             presentFailure(error.localizedDescription, title: "上传失败")
         }
-    }
-
-    /// 流式计算文件 SHA-256（与后端一致），用于上传前去重预检。
-    private static func fileSHA256(_ url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try? handle.read(upToCount: 1024 * 1024), chunk.isEmpty == false {
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     func createRecharge(amountCents: Int, method: String) async {

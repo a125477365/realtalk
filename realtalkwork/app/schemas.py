@@ -457,14 +457,21 @@ class AsrSettingsRequest(BaseModel):
     local_command: str | None = Field(default=None, max_length=1000)
 
 
+class VoiceServersRequest(BaseModel):
+    # 可处理语音文件的服务器列表，格式 ip:port;ip:port，例如 192.168.6.12:8000;192.168.6.3:8000
+    servers: str = Field(default="", max_length=4000)
+
+
 class AudioUploadInitRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     size_bytes: int = Field(ge=1, le=2 * 1024 * 1024 * 1024)
+    md5: str = Field(min_length=32, max_length=32, pattern=r"^[0-9a-fA-F]{32}$")  # 整文件 MD5：路由+命名+去重
 
 
 class AudioUploadInitResponse(BaseModel):
-    upload_id: str
+    upload_id: str  # = md5，后续 chunk/complete 都用它
     received_bytes: int = 0  # 已接收字节数，断点续传从此处继续
+    done: bool = False  # 服务器已有同文件（已传完/已转写）→ 直接视为上传成功，客户端无需再传
 
 
 class AudioUploadStatusResponse(BaseModel):
@@ -472,6 +479,11 @@ class AudioUploadStatusResponse(BaseModel):
     received_bytes: int
     size_bytes: int
     completed: bool = False
+
+
+class AudioUploadCompleteResponse(BaseModel):
+    upload_id: str
+    status: str = "uploaded"  # 已存盘待后台转写+生成场景；生成完出现在场景列表
 
 
 class RechargeCreateRequest(BaseModel):

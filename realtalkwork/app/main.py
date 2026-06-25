@@ -112,6 +112,7 @@ from .schemas import (
     AudioUploadInitRequest,
     AudioUploadInitResponse,
     AudioUploadStatusResponse,
+    AudioUploadCompleteResponse,
     PlanCatalogResponse,
     PlanItem,
     PresetScenarioCatalogResponse,
@@ -129,8 +130,10 @@ from .schemas import (
     SupportTicketOut,
     SupportTicketUpdateRequest,
     TokenUsageInfo,
+    VoiceServersRequest,
 )
 from .capture_store import capture_store
+from . import voice_pipeline
 from .realtime_voice import (
     build_session_instructions,
     proxy_session,
@@ -250,6 +253,7 @@ async def startup() -> None:
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
     asyncio.create_task(_capture_worker_loop())  # 采集场景生成消费者（多活：每节点一个）
+    asyncio.create_task(_voice_cron_loop())       # 语音文件转写/生成场景/清理（每台语音服务器处理本地文件）
     seed_default_admin()
     # 首装把「管理台可配置」参数从 env 落库（仅补缺）；以后以 DB 为准
     db.seed_app_settings_from_env()
@@ -858,6 +862,29 @@ def admin_set_asr(
     if request.model is not None:
         db.set_app_setting("asr_model", request.model.strip())
     return admin_get_asr(admin)
+
+
+@app.get("/admin/api/settings/voice-servers")
+def admin_get_voice_servers(admin: dict = Depends(current_admin)) -> dict:
+    """语音文件服务器列表（可处理语音上传的服务器 ip:port）。"""
+    return {
+        "servers_text": db.get_app_setting_str("voice_servers") or "",
+        "servers": voice_pipeline.voice_servers(),
+    }
+
+
+@app.post("/admin/api/settings/voice-servers")
+def admin_set_voice_servers(
+    request: VoiceServersRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    # 规范化后存库：统一成 `ip:port;ip:port`；非法项忽略
+    cleaned = [voice_pipeline.normalize_addr(p) for p in (request.servers or "").replace(",", ";").replace("\n", ";").split(";")]
+    cleaned = [a for a in cleaned if a]
+    db.set_app_setting("voice_servers", ";".join(cleaned))
+    return admin_get_voice_servers(admin)
 
 
 @app.get("/admin/api/usage/users")
@@ -1786,113 +1813,107 @@ def _audio_suffix(filename: str | None) -> str:
     return suffix
 
 
-def _file_sha256(path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1024 * 1024):
-            h.update(chunk)
-    return h.hexdigest()
+# ---- 语音文件上传：按 MD5 路由到指定语音服务器 + 断点续传 + 文件名去重 ----
+# 处理改为「接收存盘 → 每小时定时任务转写+生成场景」。上传端点只负责把文件可靠地落到
+# 「该 md5 应归属的那台语音服务器」；命中本机则本地存盘，否则把整请求转发给目标服务器。
 
-
-async def _start_audio_job(user_id: str, filename: str, dest, size: int, file_hash: str | None = None) -> dict:
-    from .audio_pipeline import dispatch_or_process
-
-    job = db.create_audio_job(user_id, filename, size, file_hash=file_hash)
-    asyncio.create_task(dispatch_or_process(job["id"], user_id, dest))
-    return job
-
-
-@app.post("/audio/upload", response_model=AudioJobOut)
-async def audio_upload(
-    file: UploadFile = File(...),
-    user: UserOut = Depends(current_user),
-) -> AudioJobOut:
-    """一次性上传（适合较小文件或不需要断点续传的客户端）。"""
-    _require_audio_ready(user)
-    suffix = _audio_suffix(file.filename)
-
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
-    size = 0
+async def _route_or_forward(request: Request, md5: str) -> Response | None:
+    """按 md5 选语音服务器：命中本机返回 None（本地处理）；否则把整请求转发到目标 ip:port 并返回其响应。"""
+    if not voice_pipeline.valid_md5(md5):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="缺少或非法的文件 MD5")
+    servers = voice_pipeline.voice_servers()
+    if not servers:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="未配置语音文件服务器，请联系管理员在管理台「系统设置」中配置可处理语音的服务器列表",
+        )
+    if request.headers.get("x-voice-routed") == "1":
+        return None  # 已是被转发来的请求 → 本机直接处理，避免二次转发
+    target = voice_pipeline.route_target(md5, servers)
+    if voice_pipeline.is_self(target):
+        return None
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+    headers["x-voice-routed"] = "1"
+    url = f"http://{target}{request.url.path}"
     try:
-        with dest.open("wb") as out:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
-                if size > settings.audio_max_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
-                    )
-                out.write(chunk)
-    except HTTPException:
-        dest.unlink(missing_ok=True)
-        raise
-    if size == 0:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件为空")
-
-    job = await _start_audio_job(user.id, file.filename or dest.name, dest, size)
-    return AudioJobOut(**job)
-
-
-# ---- 断点续传：init → chunk(可重试/续传) → complete ----
-
-def _upload_session_path(user_id: str, upload_id: str):
-    safe = "".join(c for c in upload_id if c.isalnum() or c in "-_")
-    return settings.upload_dir / "incomplete" / f"{user_id}__{safe}.part"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(1800, connect=15)) as client:
+            resp = await client.request(
+                request.method, url, params=dict(request.query_params), content=body, headers=headers
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"转发到语音服务器 {target} 失败：{str(exc)[:160]}",
+        ) from exc
+    return Response(content=resp.content, status_code=resp.status_code, media_type=resp.headers.get("content-type"))
 
 
 @app.post("/audio/upload/init", response_model=AudioUploadInitResponse)
-def audio_upload_init(
-    request: AudioUploadInitRequest,
+async def audio_upload_init(
+    request: Request,
+    body: AudioUploadInitRequest,
     user: UserOut = Depends(current_user),
 ) -> AudioUploadInitResponse:
     _require_audio_ready(user)
-    _audio_suffix(request.filename)
-    if request.size_bytes > settings.audio_max_bytes:
+    fwd = await _route_or_forward(request, body.md5)
+    if fwd is not None:
+        return fwd
+    ext = _audio_suffix(body.filename)
+    if body.size_bytes > settings.audio_max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
         )
-    upload_id = f"{uuid.uuid4().hex}{os.path.splitext(request.filename)[1].lower()}"
-    part = _upload_session_path(user.id, upload_id)
-    part.parent.mkdir(parents=True, exist_ok=True)
-    part.touch()
-    return AudioUploadInitResponse(upload_id=upload_id, received_bytes=0)
+    # 去重：已转写(.txt)或已传完(.ready) → 直接视为成功；半截文件 → 返回已收字节支持续传
+    if voice_pipeline.txt_path(user.id, body.md5).exists():
+        return AudioUploadInitResponse(upload_id=body.md5, received_bytes=body.size_bytes, done=True)
+    existing = voice_pipeline.find_audio(user.id, body.md5)
+    if existing is not None:
+        done = voice_pipeline.ready_marker(existing).exists()
+        return AudioUploadInitResponse(upload_id=body.md5, received_bytes=existing.stat().st_size, done=done)
+    dest = voice_pipeline.audio_path(user.id, body.md5, ext)
+    dest.touch()
+    return AudioUploadInitResponse(upload_id=body.md5, received_bytes=0, done=False)
 
 
 @app.get("/audio/upload/status", response_model=AudioUploadStatusResponse)
-def audio_upload_status(
-    upload_id: str = Query(...),
+async def audio_upload_status(
+    request: Request,
+    md5: str = Query(...),
     size_bytes: int = Query(default=0, ge=0),
     user: UserOut = Depends(current_user),
 ) -> AudioUploadStatusResponse:
-    part = _upload_session_path(user.id, upload_id)
-    received = part.stat().st_size if part.exists() else 0
-    return AudioUploadStatusResponse(
-        upload_id=upload_id,
-        received_bytes=received,
-        size_bytes=size_bytes,
-        completed=size_bytes > 0 and received >= size_bytes,
+    fwd = await _route_or_forward(request, md5)
+    if fwd is not None:
+        return fwd
+    existing = voice_pipeline.find_audio(user.id, md5)
+    txt_done = voice_pipeline.txt_path(user.id, md5).exists()
+    received = existing.stat().st_size if existing else (size_bytes if txt_done else 0)
+    completed = txt_done or (existing is not None and voice_pipeline.ready_marker(existing).exists()) or (
+        size_bytes > 0 and received >= size_bytes
     )
+    return AudioUploadStatusResponse(upload_id=md5, received_bytes=received, size_bytes=size_bytes, completed=completed)
 
 
 @app.put("/audio/upload/chunk")
 async def audio_upload_chunk(
     request: Request,
-    upload_id: str = Query(...),
+    md5: str = Query(...),
     offset: int = Query(..., ge=0),
     user: UserOut = Depends(current_user),
 ) -> dict:
     """从 offset 写入一段数据；客户端断线后用 /status 查到 received_bytes 再续传。"""
     _require_audio_ready(user)
-    part = _upload_session_path(user.id, upload_id)
-    if not part.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新发起")
+    fwd = await _route_or_forward(request, md5)
+    if fwd is not None:
+        return fwd
+    part = voice_pipeline.find_audio(user.id, md5)
+    if part is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在，请先 init")
     current = part.stat().st_size
     if offset > current:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"偏移不连续，当前已接收 {current} 字节")
-
     # 用 r+b 定位到 offset 覆盖写（幂等：重发同一段不会损坏文件）
     with part.open("r+b") as fh:
         fh.seek(offset)
@@ -1908,64 +1929,82 @@ async def audio_upload_chunk(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"文件超过 {settings.audio_max_bytes // (1024 * 1024)}MB 上限",
                 )
-    return {"upload_id": upload_id, "received_bytes": part.stat().st_size}
+    return {"upload_id": md5, "received_bytes": part.stat().st_size}
 
 
-@app.get("/audio/precheck")
-def audio_precheck(file_hash: str = Query(...), user: UserOut = Depends(current_user)) -> dict:
-    """上传前去重预检：客户端先算文件哈希，若同用户同文件已成功生成过场景则直接复用，省去整段上传。"""
-    _require_audio_ready(user)
-    existing = db.find_audio_job_by_hash(user.id, file_hash)
-    return {"duplicate": existing is not None, "job": AudioJobOut(**existing).model_dump() if existing else None}
-
-
-@app.post("/audio/upload/complete", response_model=AudioJobOut)
+@app.post("/audio/upload/complete", response_model=AudioUploadCompleteResponse)
 async def audio_upload_complete(
-    upload_id: str = Query(...),
-    filename: str = Query(default=""),
-    user: UserOut = Depends(current_user),
-) -> AudioJobOut:
-    _require_audio_ready(user)
-    part = _upload_session_path(user.id, upload_id)
-    if not part.exists() or part.stat().st_size == 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传未完成或文件为空")
-    suffix = os.path.splitext(upload_id)[1].lower() or ".mp3"
-    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
-    part.rename(dest)
-    size = dest.stat().st_size
-    # 文件内容哈希幂等：同一用户同一文件已成功生成过场景，直接复用，不重复转写/重复生成
-    file_hash = await asyncio.to_thread(_file_sha256, dest)
-    existing = db.find_audio_job_by_hash(user.id, file_hash)
-    if existing is not None:
-        dest.unlink(missing_ok=True)
-        return AudioJobOut(**existing)
-    job = await _start_audio_job(user.id, filename or dest.name, dest, size, file_hash=file_hash)
-    return AudioJobOut(**job)
-
-
-# ---- 节点间内部接口：入口转发来的文件由本 worker 处理 ----
-
-@app.post("/audio/internal/ingest")
-async def audio_internal_ingest(
     request: Request,
-    job_id: str = Query(...),
-    user_id: str = Query(...),
-    file: UploadFile = File(...),
-) -> dict:
-    expected = settings.internal_token or ""
-    if not expected or request.headers.get("x-internal-token") != expected:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="内部令牌无效")
+    md5: str = Query(...),
+    filename: str = Query(default=""),
+    size_bytes: int = Query(default=0, ge=0),
+    user: UserOut = Depends(current_user),
+) -> AudioUploadCompleteResponse:
+    _require_audio_ready(user)
+    fwd = await _route_or_forward(request, md5)
+    if fwd is not None:
+        return fwd
+    if voice_pipeline.txt_path(user.id, md5).exists():
+        return AudioUploadCompleteResponse(upload_id=md5, status="done")
+    part = voice_pipeline.find_audio(user.id, md5)
+    if part is None or part.stat().st_size == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传未完成或文件为空")
+    if size_bytes > 0 and part.stat().st_size < size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"文件不完整（已收 {part.stat().st_size}/{size_bytes} 字节），请继续上传",
+        )
+    # 打 .ready 标记：定时任务据此识别「已传完，可转写」
+    voice_pipeline.ready_marker(part).touch()
+    return AudioUploadCompleteResponse(upload_id=md5, status="uploaded")
 
-    from .audio_pipeline import process_audio_job
 
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    suffix = os.path.splitext(file.filename or "")[1].lower() or ".mp3"
-    dest = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
-    with dest.open("wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            out.write(chunk)
-    asyncio.create_task(process_audio_job(job_id, user_id, dest))
-    return {"accepted": True, "job_id": job_id}
+# ---- 语音服务器定时任务：转写 → 生成场景 → 清理（每台只处理本地文件）----
+
+async def _voice_transcribe_pending() -> None:
+    """任务1：把「已传完」音频转写为 {user_id}_{md5}.txt，并删除音频。"""
+    from .audio_pipeline import transcribe_file
+
+    for audio in await asyncio.to_thread(voice_pipeline.list_ready_audio):
+        user_id, md5, _ = voice_pipeline.parse_audio_name(audio)
+        try:
+            text = await transcribe_file(audio)
+            await asyncio.to_thread(voice_pipeline.txt_path(user_id, md5).write_text, text or "", "utf-8")
+            voice_pipeline.ready_marker(audio).unlink(missing_ok=True)
+            audio.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001 — 单条失败不影响其它
+            print(f"[voice] 转写失败 {audio.name}: {str(exc)[:160]}", flush=True)
+
+
+async def _voice_generate_pending() -> None:
+    """任务2：把 {user_id}_{md5}.txt 内容走与采集相同的大模型流程生成场景，完成后打 .done 标记。"""
+    from .audio_pipeline import _text_to_items
+
+    now = datetime.now(timezone.utc)
+    for txt in await asyncio.to_thread(voice_pipeline.list_pending_txt):
+        user_id, md5, _ = voice_pipeline.parse_audio_name(txt)
+        try:
+            text = await asyncio.to_thread(txt.read_text, "utf-8")
+            items = clean_transcript_items(_text_to_items(text, now))
+            if items:
+                await _generate_and_save_capture_scenarios(user_id, items)
+            voice_pipeline.done_marker(user_id, md5).touch()  # 已生成，待 3 天后清理
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] 场景生成失败 {txt.name}: {str(exc)[:160]}", flush=True)
+
+
+async def _voice_cron_loop() -> None:
+    """语音服务器三件定时任务（每台只处理本地 voice_dir）：每小时一轮——转写、生成场景、清理 3 天前文件。"""
+    while True:
+        try:
+            await _voice_transcribe_pending()                       # 任务1：转写
+            await _voice_generate_pending()                         # 任务2：生成场景
+            await asyncio.to_thread(voice_pipeline.cleanup_old, 3)  # 任务3：清理 3 天前文件
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 循环必须不死
+            print(f"[voice] 定时任务异常：{str(exc)[:160]}", flush=True)
+        await asyncio.sleep(3600)
 
 
 @app.get("/audio/jobs", response_model=AudioJobListResponse)

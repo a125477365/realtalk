@@ -985,51 +985,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (durationSec > 6 * 3600) { presentFailure("音频过长，最长 6 小时。", title = "无法上传"); return@launch }
 
             isUploadingAudio.value = true
-            // App 计算文件哈希做上传前去重预检：同文件已生成过场景则直接复用，省去整段上传
-            val hash = fileSha256(file)
-            if (hash != null) {
-                val pre = runCatching { api.audioPrecheck(hash, token) }.getOrNull()
-                if (pre?.duplicate == true) {
-                    statusMessage.value = "该录音此前已生成过场景，已直接复用，无需重复上传"
-                    loadAudioJobs(); loadTodayScenarios()
-                    isUploadingAudio.value = false
-                    return@launch
-                }
-            }
+            // 断点续传上传（每个报文带文件 MD5，服务端按 MD5 路由到对应语音服务器）；
+            // 服务端已有同文件则秒回成功。处理改为服务器端定时任务转写+生成场景，App 不再等待。
             runCatching {
                 api.uploadAudioResumable(file, token) { fraction ->
                     statusMessage.value = "上传中 ${(fraction * 100).toInt()}%"
                 }
             }
-                .onSuccess {
-                    statusMessage.value = "上传成功，正在转写生成场景"
-                    for (attempt in 0 until 60) {
-                        loadAudioJobs()
-                        delay(4_000)
-                        val active = audioJobs.value.any { it.status in listOf("pending", "transcribing", "generating") }
-                        if (!active) break
-                    }
-                    loadTodayScenarios()
+                .onSuccess { alreadyDone ->
+                    statusMessage.value = if (alreadyDone)
+                        "该录音此前已上传，无需重复上传"
+                    else
+                        "上传成功，场景生成中，稍后在列表查看"
                 }
                 .onFailure { presentFailure(it.message, title = "上传失败") }
             isUploadingAudio.value = false
         }
-    }
-
-    /** 流式计算文件 SHA-256（与后端一致），用于上传前去重预检。 */
-    private suspend fun fileSha256(file: File): String? = withContext(kotlinx.coroutines.Dispatchers.IO) {
-        runCatching {
-            val md = java.security.MessageDigest.getInstance("SHA-256")
-            file.inputStream().use { input ->
-                val buf = ByteArray(1024 * 1024)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n <= 0) break
-                    md.update(buf, 0, n)
-                }
-            }
-            md.digest().joinToString("") { "%02x".format(it) }
-        }.getOrNull()
     }
 
     /** 本地读取音频时长（秒）；读不到返回 0（按通过处理，交由后端兜底）。 */

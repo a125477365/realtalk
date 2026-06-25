@@ -169,6 +169,11 @@ struct AudioPrecheckResponse: Codable, Equatable {
     let job: AudioJob?
 }
 
+/// 语音上传 complete 的应答（已存盘待后台转写+生成场景）。
+struct AudioUploadAck: Codable, Equatable {
+    let status: String?
+}
+
 struct AuthResponse: Codable {
     let token: String
     let refreshToken: String?

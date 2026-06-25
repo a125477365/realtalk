@@ -179,43 +179,32 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     // ---- 高级会员音频上传 ----
     suspend fun audioJobs(token: String): AudioJobList = get("/audio/jobs", token)
 
-    /** 上传前去重预检：传文件哈希，命中则后端返回已有任务，可跳过整段上传。 */
-    suspend fun audioPrecheck(fileHash: String, token: String): AudioPrecheck =
-        get("/audio/precheck?file_hash=$fileHash", token)
-
-    suspend fun uploadAudio(file: File, token: String): AudioJob {
-        val mediaType = "audio/mpeg".toMediaType()
-        val body: RequestBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("file", file.name, file.asRequestBody(mediaType))
-            .build()
-        val request = Request.Builder()
-            .url(url("/audio/upload"))
-            .header("Authorization", "Bearer $token")
-            .post(body)
-            .build()
-        return json.decodeFromString(execute(request))
-    }
-
-    /** 断点续传：init → 分块 PUT（失败按服务端已收字节续传）→ complete。progress 回调 0f..1f。 */
+    /** 断点续传：init → 分块 PUT（每个报文带文件 MD5，失败按服务端已收字节续传）→ complete。
+     *  服务端按 MD5 把文件路由到对应语音服务器。返回 true=服务端已有同文件（秒回成功，无需重传）。 */
     suspend fun uploadAudioResumable(
         file: File,
         token: String,
         onProgress: (Float) -> Unit = {},
-    ): AudioJob = withContext(Dispatchers.IO) {
+    ): Boolean = withContext(Dispatchers.IO) {
         val total = file.length()
         require(total > 0) { "文件为空" }
         val octet = "application/octet-stream".toMediaType()
+        val md5 = fileMd5(file)
 
-        // 1) init
-        val initBody = json.encodeToString(AudioUploadInitRequest(file.name, total)).toRequestBody(jsonMedia)
+        // 1) init（带 md5）。done=true → 服务端已有同文件，直接成功。
+        val initBody = json.encodeToString(AudioUploadInitRequest(file.name, total, md5)).toRequestBody(jsonMedia)
         val initReq = Request.Builder().url(url("/audio/upload/init"))
             .header("Authorization", "Bearer $token").post(initBody).build()
-        val uploadId = json.decodeFromString<AudioUploadInitResponse>(execute(initReq)).uploadId
+        val init = json.decodeFromString<AudioUploadInitResponse>(execute(initReq))
+        if (init.done) {
+            onProgress(1f)
+            return@withContext true
+        }
 
-        // 2) 分块上传
+        // 2) 分块上传（从服务端已收字节处续传）
         val chunk = ByteArray(4 * 1024 * 1024)
-        var offset = 0L
+        var offset = init.receivedBytes.coerceIn(0, total)
+        onProgress(offset.toFloat() / total)
         file.inputStream().use { input ->
             while (offset < total) {
                 input.channel.position(offset)
@@ -227,13 +216,13 @@ class ApiClient(private val baseUrlProvider: () -> String) {
                     attempt++
                     try {
                         val put = Request.Builder()
-                            .url(url("/audio/upload/chunk?upload_id=$uploadId&offset=$offset"))
+                            .url(url("/audio/upload/chunk?md5=$md5&offset=$offset"))
                             .header("Authorization", "Bearer $token")
                             .put(slice.toRequestBody(octet))
                             .build()
                         client.newCall(put).execute().use { resp ->
                             if (resp.code == 409) {
-                                offset = queryUploadOffset(uploadId, total, token)
+                                offset = queryUploadOffset(md5, total, token)
                                 throw ResumeSignal()
                             }
                             if (!resp.isSuccessful) throw ApiException("分块上传失败 HTTP ${resp.code}")
@@ -246,28 +235,43 @@ class ApiClient(private val baseUrlProvider: () -> String) {
                     } catch (e: Exception) {
                         if (attempt >= 5) throw e
                         kotlinx.coroutines.delay(1000L * attempt)
-                        offset = runCatching { queryUploadOffset(uploadId, total, token) }.getOrDefault(offset)
+                        offset = runCatching { queryUploadOffset(md5, total, token) }.getOrDefault(offset)
                     }
                 }
             }
         }
 
-        // 3) complete
+        // 3) complete（带 md5 + size_bytes，服务端校验完整性并打 .ready 标记）
         val name = java.net.URLEncoder.encode(file.name, "UTF-8")
         val completeReq = Request.Builder()
-            .url(url("/audio/upload/complete?upload_id=$uploadId&filename=$name"))
+            .url(url("/audio/upload/complete?md5=$md5&filename=$name&size_bytes=$total"))
             .header("Authorization", "Bearer $token")
             .post(ByteArray(0).toRequestBody(null))
             .build()
-        json.decodeFromString(execute(completeReq))
+        execute(completeReq) // 应答只需 2xx
+        false
     }
 
     private class ResumeSignal : Exception()
 
-    private suspend fun queryUploadOffset(uploadId: String, total: Long, token: String): Long {
+    private suspend fun queryUploadOffset(md5: String, total: Long, token: String): Long {
         val req = Request.Builder()
-            .url(url("/audio/upload/status?upload_id=$uploadId&size_bytes=$total"))
+            .url(url("/audio/upload/status?md5=$md5&size_bytes=$total"))
             .header("Authorization", "Bearer $token").get().build()
         return json.decodeFromString<AudioUploadStatusResponse>(execute(req)).receivedBytes
+    }
+
+    /** 流式计算文件 MD5（与服务端命名/路由一致）。 */
+    private fun fileMd5(file: File): String {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buf = ByteArray(1024 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }

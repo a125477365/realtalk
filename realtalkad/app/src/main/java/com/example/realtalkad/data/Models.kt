@@ -382,10 +382,18 @@ data class AudioJobList(val items: List<AudioJob>)
 data class AudioPrecheck(val duplicate: Boolean, val job: AudioJob? = null)
 
 @Serializable
-data class AudioUploadInitRequest(val filename: String, @SerialName("size_bytes") val sizeBytes: Long)
+data class AudioUploadInitRequest(
+    val filename: String,
+    @SerialName("size_bytes") val sizeBytes: Long,
+    val md5: String,  // 整文件 MD5：路由+命名+去重
+)
 
 @Serializable
-data class AudioUploadInitResponse(@SerialName("upload_id") val uploadId: String, @SerialName("received_bytes") val receivedBytes: Long = 0)
+data class AudioUploadInitResponse(
+    @SerialName("upload_id") val uploadId: String,
+    @SerialName("received_bytes") val receivedBytes: Long = 0,
+    val done: Boolean = false,  // 服务端已有同文件 → 直接视为上传成功
+)
 
 @Serializable
 data class AudioUploadStatusResponse(
