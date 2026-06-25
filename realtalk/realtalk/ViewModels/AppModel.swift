@@ -178,6 +178,8 @@ final class AppModel: ObservableObject {
     private var shortcutObserver: NSObjectProtocol?
     private var spokenMessageIDs: Set<String> = []
     private var chattedRoleplayMessageIDs: Set<String> = []
+    /// 用户是否已主动退出对话界面：退出后即使后台回包也不再播报 AI 语音/续听。
+    private var conversationExited = false
     private let defaults = UserDefaults.standard
     /// 轮到用户说话后，超过该秒数仍未开口则由 AI 主动给提示（要求 12）
     private let answerTimeoutSeconds: UInt64 = 20
@@ -306,6 +308,18 @@ final class AppModel: ObservableObject {
             if statusMessage.isEmpty {
                 statusMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// 删除用户自己的场景（长按菜单触发）。
+    func deleteScenario(_ sceneId: String) async {
+        guard let token = auth.token else { statusMessage = "请先登录"; return }
+        do {
+            try await api.deleteScenario(sceneId: sceneId, token: token)
+            todayScenarios.removeAll { $0.sceneId == sceneId }
+            statusMessage = "场景已删除"
+        } catch {
+            presentFailure(error.localizedDescription, title: "删除失败")
         }
     }
 
@@ -863,6 +877,7 @@ final class AppModel: ObservableObject {
         }
         practiceSpeech.stop(emit: false)
         voice.stop()
+        conversationExited = false
         isVoiceConversationActive = true
         autoSpeakAI = true
         lastSpokenAnswer = ""
@@ -924,6 +939,12 @@ final class AppModel: ObservableObject {
         practiceSpeech.stop(emit: false)
         voice.stop()
         statusMessage = "语音对话已暂停"
+    }
+
+    /// 用户主动退出对话界面：彻底停止并标记已退出，使「后台仍在处理的那一轮回包」回来后不再播报/续听。
+    func exitConversation() {
+        conversationExited = true
+        pauseVoiceConversation()
     }
 
     func switchRole() {
@@ -1254,6 +1275,9 @@ final class AppModel: ObservableObject {
         if let next = state.nextLine, newAIMessages.isEmpty {
             appendChat(.system, "轮到你：\(next.sourceText)")
         }
+
+        // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听（避免退到主界面后又冒出对话/语音）
+        guard conversationExited == false else { return }
 
         guard autoSpeakAI, newAIMessages.isEmpty == false else {
             if let spokenPreface {

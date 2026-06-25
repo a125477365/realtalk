@@ -2,23 +2,17 @@ from __future__ import annotations
 
 """对话采集分块暂存（ephemeral chunk staging）。
 
-设计取舍（Part 3 分析）：
+设计取舍：
 采集上传是「先分块攒齐、生成场景后即删」的一次性临时数据，绝不应长期落到主库。
-- 用 PostgreSQL 表（chunks_json TEXT）存：每条 chunk 都是 INSERT/UPDATE + 完成后 DELETE，
-  造成写放大、表膨胀、VACUUM/WAL 压力，且大文本挤占主库连接与缓存；
-- 用本地文件存：单机可行，但多 worker 节点时 chunk 可能落在不同机器上无法汇总；
-- 用 Redis 存（成熟 AI 后台处理大上下文上传的常用做法）：天然 TTL 自动回收被放弃的会话、
-  读写快、跨节点共享、不污染主库，最契合这种「短命、高频、用完即弃」的数据。
+用 Redis 存（成熟 AI 后台处理大上下文上传的常用做法）：天然 TTL 自动回收被放弃的会话、
+读写快、跨节点共享、不污染主库，最契合这种「短命、高频、用完即弃」的数据。
 
-因此：配置了 REDIS_URL 就用 Redis（每会话一个带 TTL 的 hash）；否则回退本地文件（单机够用）。
+重要：REDIS_URL 必须配置且能连通，否则服务启动直接报错（多活部署下本地文件方案会导致
+chunk 落在不同机器上无法汇总，因此本地文件兜底已被移除）。
 """
 
 import json
-import os
 import re
-import shutil
-import time
-from pathlib import Path
 
 from .schemas import TranscriptItem
 from .settings import settings
@@ -36,83 +30,6 @@ def _clean_sort(raw_items: list[dict]) -> list[TranscriptItem]:
 
     items = [TranscriptItem.model_validate(it) for it in raw_items]
     return sorted(clean_transcript_items(items), key=lambda item: item.timestamp)
-
-
-class _FileBackend:
-    backend = "filesystem"
-
-    def _root(self) -> Path:
-        root = settings.upload_dir / "capture_text"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    def _dir(self, user_id: str, upload_id: str) -> Path:
-        return self._root() / user_id / upload_id
-
-    def _cleanup_stale(self) -> None:
-        cutoff = time.time() - _TTL_SECONDS
-        root = self._root()
-        if not root.exists():
-            return
-        for user_dir in root.iterdir():
-            if not user_dir.is_dir():
-                continue
-            for sess in user_dir.iterdir():
-                try:
-                    marker = sess / "meta.json"
-                    mtime = marker.stat().st_mtime if marker.exists() else sess.stat().st_mtime
-                    if sess.is_dir() and mtime < cutoff:
-                        shutil.rmtree(sess, ignore_errors=True)
-                except OSError:
-                    continue
-
-    def init_session(self, upload_id: str, user_id: str, meta: dict) -> None:
-        self._cleanup_stale()
-        session_dir = self._dir(user_id, upload_id)
-        (session_dir / "chunks").mkdir(parents=True, exist_ok=True)
-        (session_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-
-    def append_chunk(self, upload_id: str, user_id: str, chunk_index: int, items: list[dict]) -> int:
-        session_dir = self._dir(user_id, upload_id)
-        if not session_dir.exists():
-            return -1
-        chunks = session_dir / "chunks"
-        chunks.mkdir(parents=True, exist_ok=True)
-        (chunks / f"{chunk_index:06d}.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
-        # 续期：刷新 meta.json 的 mtime，避免长时间上传被回收
-        try:
-            os.utime(session_dir / "meta.json", None)
-        except OSError:
-            pass
-        return len(list(chunks.glob("*.json")))
-
-    def received_chunks(self, upload_id: str, user_id: str) -> list[int]:
-        chunks = self._dir(user_id, upload_id) / "chunks"
-        out: list[int] = []
-        if chunks.exists():
-            for path in chunks.glob("*.json"):
-                try:
-                    out.append(int(path.stem))
-                except ValueError:
-                    continue
-        return sorted(out)
-
-    def load_items(self, upload_id: str, user_id: str) -> list[TranscriptItem] | None:
-        session_dir = self._dir(user_id, upload_id)
-        if not session_dir.exists():
-            return None
-        chunks = session_dir / "chunks"
-        raw: list[dict] = []
-        if chunks.exists():
-            for path in sorted(chunks.glob("*.json")):
-                try:
-                    raw.extend(json.loads(path.read_text(encoding="utf-8")))
-                except (OSError, json.JSONDecodeError):
-                    continue
-        return _clean_sort(raw)
-
-    def delete_session(self, upload_id: str, user_id: str) -> None:
-        shutil.rmtree(self._dir(user_id, upload_id), ignore_errors=True)
 
 
 class _RedisBackend:
@@ -165,33 +82,42 @@ class _RedisBackend:
         self.r.delete(self._key(user_id, upload_id))
 
 
-def _build_store():
+def _build_store() -> _RedisBackend:
+    """构建采集暂存实例。REDIS_URL 必须配置且能连通，否则直接报错终止（不再回退本地文件）。"""
+    import time as _time
+
     url = settings.redis_url
     if not url:
-        return _FileBackend()
+        raise RuntimeError(
+            "[capture] REDIS_URL 未配置！对话采集必须使用 Redis 作为分块暂存（多活部署下本地文件会导致 "
+            "chunk 落在不同机器上无法汇总）。请在 .env 中设置 REDIS_URL，例如：redis://redis:6379/0"
+        )
+
     try:
         import redis  # type: ignore
-    except ImportError:
-        print("[capture] 未安装 redis 库，回退本地文件暂存", flush=True)
-        return _FileBackend()
+    except ImportError as exc:
+        raise RuntimeError(
+            "[capture] 未安装 redis 库（pip install redis），对话采集必须依赖 Redis，无法回退本地文件。"
+        ) from exc
 
     client = redis.Redis.from_url(
         url, decode_responses=True, socket_timeout=5, socket_connect_timeout=5, retry_on_timeout=True
     )
-    # 容器编排下 api 可能先于 redis 就绪：短暂重试，避免误判为不可用而回退
-    import time as _time
-
-    for attempt in range(5):
+    # 容器编排下 api 可能先于 redis 就绪：重试最多 10 秒，超时则报错终止（不再静默回退）
+    for attempt in range(10):
         try:
             client.ping()
-            print("[capture] 采集分块暂存使用 Redis", flush=True)
+            print(f"[capture] 采集分块暂存已连接 Redis：{url}", flush=True)
             return _RedisBackend(client)
         except Exception as exc:  # noqa: BLE001
-            if attempt == 4:
-                print(f"[capture] Redis 暂不可用，回退本地文件暂存：{str(exc)[:120]}", flush=True)
-                return _FileBackend()
+            if attempt == 9:
+                raise RuntimeError(
+                    f"[capture] Redis 连接失败（{url}）：{str(exc)[:120]}。"
+                    "对话采集必须依赖 Redis，请检查 REDIS_URL 配置及 Redis 服务是否正常运行。"
+                ) from exc
             _time.sleep(1)
-    return _FileBackend()
+    # 理论上不会到这里
+    raise RuntimeError("[capture] Redis 初始化异常终止")
 
 
 capture_store = _build_store()

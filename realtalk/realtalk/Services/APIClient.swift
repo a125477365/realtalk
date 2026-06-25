@@ -196,6 +196,15 @@ final class APIClient {
         try await get("/scenario/\(sceneId)", token: token, queryItems: [])
     }
 
+    /// 删除用户自己的场景（预置通用场景不可删）。
+    func deleteScenario(sceneId: String, token: String) async throws {
+        var request = URLRequest(url: url(for: "/scenario/\(sceneId)"))
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 60
+        addDefaultHeaders(to: &request, token: token)
+        let _: OKResponse = try await send(request)
+    }
+
     /// 通用场景目录：运维预置的全局场景（按主场景分组，含完整对话，可直接对练）。
     func presetScenarioCatalog(token: String) async throws -> PresetScenarioCatalogResponse {
         try await get("/scenario/presets/catalog", token: token, queryItems: [])

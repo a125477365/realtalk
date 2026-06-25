@@ -3,6 +3,7 @@ package com.example.realtalkad.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +77,20 @@ object RT {
     val BrandBrush: Brush = Brush.linearGradient(Brand)
 }
 
+/// 把 ISO 时间按本地时区折算成日期字符串（与 iOS 本地日期分组一致；解析失败回退 UTC 日期前缀）。
+private fun sceneLocalDate(iso: String): String = try {
+    java.time.OffsetDateTime.parse(iso).atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+} catch (e: Exception) {
+    iso.take(10)
+}
+
+/// 不同会员可见历史窗口说明。
+private fun historyWindowHint(tier: String?): String = when (tier) {
+    "premium" -> "高级会员可查看近 1 个月的历史场景"
+    "basic" -> "基础会员可查看近 2 周的历史场景；升级高级会员可看近 1 个月"
+    else -> "非会员仅显示近 2 天的场景；开通会员可保存更久（基础 2 周 / 高级 1 个月）"
+}
+
 /// 品牌渐变底色的分段选择器（替代灰底）：整条为「开始采集」同款渐变，选中项白色胶囊。
 @androidx.compose.runtime.Composable
 fun BrandSegmented(
@@ -126,19 +141,21 @@ private fun LastScoreBadge(score: Int?, fontScale: Float) {
     )
 }
 
-/// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。
+/// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。单击进入对练，长按弹菜单。
+@kotlin.OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @androidx.compose.runtime.Composable
 private fun ScenarioCard(
     summary: com.example.realtalkad.data.ScenarioSummary,
     fontScale: Float,
     showDate: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
 ) {
     Row(
         Modifier.fillMaxWidth()
             .background(RT.Surface, androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
             .border(1.dp, RT.Hairline, androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
-            .clickable { onClick() }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(14.dp),
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
     ) {
@@ -320,6 +337,9 @@ fun MainChatScreen(model: AppViewModel) {
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
     var scenarioScope by remember { mutableStateOf("today") }
     var expandedPresetGroup by remember { mutableStateOf<String?>(null) }
+    var expandedDate by remember { mutableStateOf<String?>(null) }
+    var menuScene by remember { mutableStateOf<ScenarioSummary?>(null) }   // 长按弹「开始对话/删除」
+    var deleteScene by remember { mutableStateOf<ScenarioSummary?>(null) }
 
     val statusText = when {
         status.isNotEmpty() -> status
@@ -383,10 +403,10 @@ fun MainChatScreen(model: AppViewModel) {
                 fontScale = fontScale,
             ) { key ->
                 scenarioScope = key
+                // 今天/全部都用同一份列表（按本地日期解读），避免「全部有今天的场景、今天标签却没有」的不一致
                 when (key) {
-                    "today" -> model.loadTodayScenarios()
-                    "all" -> model.loadScenarioList()
                     "preset" -> model.loadPresetCatalog()
+                    else -> model.loadScenarioList()
                 }
             }
         }
@@ -407,64 +427,76 @@ fun MainChatScreen(model: AppViewModel) {
                 onPickScene = { scene -> if (!busy) roleDialogFor = model.presetSummary(scene) },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
-        } else if (scenarios.isEmpty()) {
-            // 空态：引导先采集真实对话生成场景
-            Column(
-                Modifier.fillMaxWidth().padding(16.dp, 8.dp)
-                    .background(RT.Surface, RoundedCornerShape(14.dp))
-                    .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
-                    .clickable(enabled = !busy) { model.toggleRecording() }
-                    .padding(12.dp),
-            ) {
-                Text(
-                    "今天还没有场景",
-                    fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
-                    fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
-            }
-            Spacer(Modifier.weight(1f))
         } else {
-            // 竖排列表，方便逐条选择
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                if (scenarioScope == "all") {
-                    // 「今天 / 历史」两段；历史内再按日期分组
-                    val today = java.time.LocalDate.now().toString()
-                    val todayItems = scenarios.filter { it.createdAt.take(10) == today }
-                    val historyGroups = scenarios.filter { it.createdAt.take(10) != today }
-                        .groupBy { it.createdAt.take(10) }.entries.sortedByDescending { it.key }
-                    if (todayItems.isNotEmpty()) {
-                        item(key = "sec-today") {
-                            Text("今天", fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp,
-                                color = RT.TextPrimary, modifier = Modifier.padding(top = 4.dp))
-                        }
-                        items(todayItems, key = { it.sceneId }) { summary ->
-                            ScenarioCard(summary, fontScale, showDate = false) { if (!busy) roleDialogFor = summary }
+            val today = java.time.LocalDate.now().toString()
+            val todayItems = scenarios.filter { sceneLocalDate(it.createdAt) == today }
+            val isEmpty = if (scenarioScope == "all") scenarios.isEmpty() else todayItems.isEmpty()
+            if (isEmpty) {
+                // 空态：引导先采集真实对话生成场景
+                Column(
+                    Modifier.fillMaxWidth().padding(16.dp, 8.dp)
+                        .background(RT.Surface, RoundedCornerShape(14.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
+                        .clickable(enabled = !busy) { model.toggleRecording() }
+                        .padding(12.dp),
+                ) {
+                    Text("今天还没有场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
+                    Spacer(Modifier.height(2.dp))
+                    Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
+                        fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Spacer(Modifier.weight(1f))
+            } else if (scenarioScope == "all") {
+                // 全部：先按日期折叠，点某天才展开当天场景；并提示不同会员可见历史窗口
+                val groups = scenarios.groupBy { sceneLocalDate(it.createdAt) }.entries.sortedByDescending { it.key }
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    item(key = "hint") {
+                        Text(historyWindowHint(user?.planTier), fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
+                    }
+                    items(groups.toList(), key = { it.key }) { (day, items) ->
+                        val expanded = expandedDate == day
+                        Column(
+                            Modifier.fillMaxWidth().background(RT.Surface, RoundedCornerShape(14.dp))
+                                .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp)),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable { expandedDate = if (expanded) null else day }.padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(if (day == today) "今天" else day, fontWeight = FontWeight.SemiBold,
+                                    fontSize = (16 * fontScale).sp, color = RT.TextPrimary, modifier = Modifier.weight(1f))
+                                Text("${items.size} 个", fontSize = (11 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (expanded) "⌄" else "›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (18 * fontScale).sp)
+                            }
+                            if (expanded) {
+                                items.forEach { summary ->
+                                    Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp)) {
+                                        ScenarioCard(summary, fontScale, showDate = false,
+                                            onClick = { if (!busy) roleDialogFor = summary },
+                                            onLongClick = { menuScene = summary })
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
                         }
                     }
-                    if (historyGroups.isNotEmpty()) {
-                        item(key = "sec-history") {
-                            Text("历史", fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp,
-                                color = RT.TextPrimary, modifier = Modifier.padding(top = 8.dp))
-                        }
-                        historyGroups.forEach { (day, group) ->
-                            item(key = "d-$day") {
-                                Text(day, fontWeight = FontWeight.Medium, fontSize = (11 * fontScale).sp,
-                                    color = RT.TextSecondary.copy(alpha = 0.8f), modifier = Modifier.padding(start = 4.dp, top = 2.dp))
-                            }
-                            items(group, key = { it.sceneId }) { summary ->
-                                ScenarioCard(summary, fontScale, showDate = true) { if (!busy) roleDialogFor = summary }
-                            }
-                        }
-                    }
-                } else {
-                    items(scenarios, key = { it.sceneId }) { summary ->
-                        ScenarioCard(summary, fontScale, showDate = false) { if (!busy) roleDialogFor = summary }
+                }
+            } else {
+                // 今天：从同一份列表里按本地日期筛出今天的场景，平铺展示
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    items(todayItems, key = { it.sceneId }) { summary ->
+                        ScenarioCard(summary, fontScale, showDate = false,
+                            onClick = { if (!busy) roleDialogFor = summary },
+                            onLongClick = { menuScene = summary })
                     }
                 }
             }
@@ -514,6 +546,44 @@ fun MainChatScreen(model: AppViewModel) {
         )
     }
 
+    // 长按场景卡：开始对话 / 删除
+    menuScene?.let { summary ->
+        AlertDialog(
+            onDismissRequest = { menuScene = null },
+            title = { Text(summary.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column {
+                    OutlinedButton(
+                        onClick = { menuScene = null; roleDialogFor = summary },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("开始对话") }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { val s = summary; menuScene = null; deleteScene = s },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("删除场景", color = Color(0xFFE03131)) }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { menuScene = null }) { Text("取消") } },
+        )
+    }
+
+    // 删除确认
+    deleteScene?.let { summary ->
+        AlertDialog(
+            onDismissRequest = { deleteScene = null },
+            title = { Text("删除场景") },
+            text = { Text("删除「${summary.title}」？删除后将无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = { val id = summary.sceneId; deleteScene = null; model.deleteScenario(id) }) {
+                    Text("删除", color = Color(0xFFE03131))
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleteScene = null }) { Text("取消") } },
+        )
+    }
+
     // 对话前询问（指导/对话方式设为 ask 时）
     PrePracticeDialog(model)
 
@@ -538,7 +608,7 @@ private fun PrePracticeDialog(model: AppViewModel) {
     val user by model.user.collectAsState()
     if (pending == null) return
 
-    var conversation by remember { mutableStateOf("immersive") }
+    var conversation by remember { mutableStateOf("manual") }   // 默认手工触发式
     var guidance by remember { mutableStateOf("realtime") }
     var rememberConv by remember { mutableStateOf(false) }
     var rememberGuid by remember { mutableStateOf(false) }

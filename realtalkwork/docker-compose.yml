@@ -35,6 +35,9 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--save", ""]
     volumes:
       - ${REDIS_DATA_DIR:-./data/redis}:/data
+    ports:
+      # 对外映射不使用默认 6379，避免与宿主机已有 Redis 冲突；setup.sh 会写入 REDIS_PORT
+      - "${REDIS_PORT:-6380}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

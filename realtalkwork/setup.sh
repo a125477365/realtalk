@@ -147,26 +147,31 @@ if $DEPLOY_BACKEND; then
     ENV_LINES+=("DATABASE_URL=$REPLY_VALUE")
   fi
 
-  # ---- 采集分块暂存 Redis（与数据库同样的安装要求：内置容器 / 远程地址 / 不用）----
+  # ---- 采集分块暂存 Redis（强制配置：内置容器 / 远程地址）----
   echo
-  note "对话采集分块暂存用 Redis（带 TTL 自动回收、跨节点共享、用完即删、不写主库；多节点强烈建议）。"
+  note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
   echo "    1) 内置 Redis 容器（与内置数据库一样在本机起一个）"
   echo "    2) 远程 / 已有 Redis（填写连接串）"
-  echo "    3) 不用 Redis（回退本地文件，仅单机够用）"
-  ask "选择采集暂存方式" "1"
+  ask "选择 Redis 部署方式" "1"
   REDIS_CHOICE="$REPLY_VALUE"
+  if [ "$REDIS_CHOICE" != "1" ] && [ "$REDIS_CHOICE" != "2" ]; then
+    say "Redis 是必选项，只能选择 1 或 2。"; exit 1
+  fi
+  REDIS_PORT_VAL=""
   if [ "$REDIS_CHOICE" = "1" ]; then
     PROFILES+=("backend-redis")
     ask "Redis 数据目录" "./data/redis"
     ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
+    note "内置 Redis 容器对外端口，默认不使用 6379（避免与宿主机已有 Redis 冲突）。"
+    ask "Redis 对外端口" "6380"
+    REDIS_PORT_VAL="$REPLY_VALUE"
+    ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
     ENV_LINES+=("REDIS_URL=redis://redis:6379/0")
-  elif [ "$REDIS_CHOICE" = "2" ]; then
+  else
     note "示例：redis://:你的密码@redis.example.com:6379/0（走 TLS 用 rediss://）"
     ask "Redis 连接串 REDIS_URL" ""
-    [ -n "$REPLY_VALUE" ] || { say "选择远程 Redis 必须填写连接串"; exit 1; }
+    [ -n "$REPLY_VALUE" ] || { say "Redis 是必选项，必须填写连接串"; exit 1; }
     ENV_LINES+=("REDIS_URL=$REPLY_VALUE")
-  else
-    ENV_LINES+=("REDIS_URL=")
   fi
 
   ask "JWT 密钥（回车自动生成强随机密钥）" "$(rand 48)"
@@ -412,6 +417,7 @@ say "=============================================="
 say " 部署完成，本机入口："
 say "=============================================="
 $DEPLOY_BACKEND && echo "  后端 API：    http://<本机IP>:${API_PORT:-8000}  （App 服务地址指向这里）"
+$DEPLOY_BACKEND && [ -n "$REDIS_PORT_VAL" ] && echo "  Redis 对外：  <本机IP>:${REDIS_PORT_VAL}  （内置 Redis，不建议暴露公网）"
 $DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
 $DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"
 

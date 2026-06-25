@@ -95,6 +95,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var scenario: Scenario? = null
     private var roleplay: RoleplayState? = null
     private var selectedRole = ""
+    // 用户是否已退出对话界面：退出后即使后台回包也不再播报 AI 语音/续听
+    private var conversationExited = false
     private val spokenMessageIds = mutableSetOf<String>()
     private var answerTimeoutJob: Job? = null
     private var captureScheduleJob: Job? = null
@@ -411,6 +413,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 删除用户自己的场景（长按菜单触发）。 */
+    fun deleteScenario(sceneId: String) {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.deleteScenario(sceneId, token) }
+                .onSuccess {
+                    todayScenarios.value = todayScenarios.value.filterNot { it.sceneId == sceneId }
+                    statusMessage.value = "场景已删除"
+                }
+                .onFailure { presentFailure(it.message, title = "删除失败") }
+        }
+    }
+
     /** 加载通用场景目录（主场景 → 子场景标题），供没有录音时直接选场景练口语。 */
     fun loadPresetCatalog() {
         viewModelScope.launch {
@@ -493,6 +508,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     realtime.start(auth.baseUrl, token, state.sessionId, scenario?.title ?: summary.title)
                 } else {
                     val state = api.startRoleplay(summary.sceneId, roleId, token)
+                    conversationExited = false
                     isVoiceActive.value = true
                     showImmersive.value = true   // 进入对话字幕全屏
                     handleRoleplayState(state)
@@ -552,6 +568,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             spokenMessageIds.clear()
             runCatching {
                 val state = api.startRoleplay(sceneId, role, token)
+                conversationExited = false
                 isVoiceActive.value = true
                 showImmersive.value = true
                 handleRoleplayState(state)
@@ -702,6 +719,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // 轮到用户：先显示中文提示
             appendChat(ChatMessage.Sender.SYSTEM, "轮到你：${next.sourceText}")
         }
+
+        // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听
+        if (conversationExited) return
 
         // 「自动朗读 AI 台词」关闭时不朗读，直接进入聆听
         val toSpeak = if (autoSpeakAI.value) {
@@ -886,7 +906,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 关闭沉浸式：先暂停语音对话，再退出全屏。 */
     fun closeImmersive() {
-        if (isVoiceActive.value) toggleVoiceConversation()
+        // 用户主动退出：标记已退出 + 彻底停止，使后台仍在处理的那一轮回包回来后不再播报/续听
+        conversationExited = true
+        cancelAnswerTimeout()
+        practice.stop()
+        voice.stop()
+        isVoiceActive.value = false
         showImmersive.value = false
     }
 

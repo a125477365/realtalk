@@ -1807,6 +1807,18 @@ class Database:
             )
         return (result.rowcount or 0) > 0
 
+    def delete_scenario(self, user_id: str, scene_id: str) -> bool:
+        """删除用户自己的场景（不可删全局预置场景）；连带级联删除其对练会话/消息/结果。"""
+        with self.engine.begin() as conn:
+            result = conn.execute(
+                delete(scenarios).where(
+                    scenarios.c.scene_id == scene_id,
+                    scenarios.c.user_id == user_id,
+                    scenarios.c.is_preset == 0,
+                )
+            )
+        return (result.rowcount or 0) > 0
+
     def list_preset_scenarios(self) -> list[dict[str, Any]]:
         """全部预置场景（含完整内容），按分组与排序返回，供管理台编辑与用户端展示。"""
         stmt = (

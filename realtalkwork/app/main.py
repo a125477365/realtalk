@@ -1965,15 +1965,35 @@ def _summaries_with_last_score(user_id: str, items: list[dict]) -> list[Scenario
     return out
 
 
+# 各档位「全部场景」可见的历史天数：非会员 2 天、基础会员 2 周、高级会员 1 个月
+HISTORY_WINDOW_DAYS = {"free": 2, "basic": 14, "premium": 30}
+
+
+def history_window_days(tier: str) -> int:
+    return HISTORY_WINDOW_DAYS.get(tier, 2)
+
+
 @app.get("/scenario/list", response_model=ScenarioListResponse)
 def scenario_list(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=100, ge=1, le=200),
     user: UserOut = Depends(current_user),
 ) -> ScenarioListResponse:
+    # 按会员档位限制可见历史窗口（非会员2天/基础2周/高级1月）
+    window_start = datetime.now(timezone.utc) - timedelta(days=history_window_days(user.plan_tier))
+    if start is None or start < window_start:
+        start = window_start
     items = db.list_scenarios(user.id, start, end, limit=limit)
     return ScenarioListResponse(items=_summaries_with_last_score(user.id, items))
+
+
+@app.delete("/scenario/{scene_id}")
+def scenario_delete(scene_id: str, user: UserOut = Depends(current_user)) -> dict:
+    """删除用户自己的场景（预置通用场景不可删）。"""
+    if not db.delete_scenario(user.id, scene_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景不存在或不可删除")
+    return {"ok": True}
 
 
 @app.get("/scenario/today", response_model=ScenarioListResponse)

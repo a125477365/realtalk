@@ -51,6 +51,8 @@ struct MainChatView: View {
     @State private var showImmersive = false
     @State private var scenarioScope = "today"
     @State private var expandedPresetGroupID: String?
+    @State private var expandedDate: Date?
+    @State private var deleteCandidate: ScenarioSummary?
 
     var body: some View {
         NavigationStack {
@@ -89,7 +91,7 @@ struct MainChatView: View {
             .task {
                 // 登录后进入主界面时加载数据（bootstrap 在登录前已跑过、那时无 token 被跳过）
                 await model.loadBillingAccount()
-                await model.loadTodayScenarios()
+                await model.loadScenarioList()
                 await model.loadPracticeHistory()
             }
             .sheet(isPresented: $showingAccount) {
@@ -112,6 +114,22 @@ struct MainChatView: View {
                         }
                     }
                     Button("取消", role: .cancel) { roleDialogScenario = nil }
+                }
+            }
+            .confirmationDialog(
+                deleteCandidate.map { "删除场景「\($0.title)」？删除后将无法恢复。" } ?? "删除场景",
+                isPresented: Binding(
+                    get: { deleteCandidate != nil },
+                    set: { if $0 == false { deleteCandidate = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let summary = deleteCandidate {
+                    Button("删除", role: .destructive) {
+                        deleteCandidate = nil
+                        Task { await model.deleteScenario(summary.sceneId) }
+                    }
+                    Button("取消", role: .cancel) { deleteCandidate = nil }
                 }
             }
         }
@@ -175,10 +193,9 @@ struct MainChatView: View {
             Task {
                 if scope == "preset" {
                     await model.loadPresetCatalog()
-                } else if scope == "all" {
-                    await model.loadScenarioList()
                 } else {
-                    await model.loadTodayScenarios()
+                    // 今天/全部都用同一份列表（按本地日期解读），避免「全部有今天的场景、今天标签却没有」的不一致
+                    await model.loadScenarioList()
                 }
             }
         }
@@ -196,8 +213,7 @@ struct MainChatView: View {
                 Button {
                     Task {
                         if scenarioScope == "preset" { await model.loadPresetCatalog() }
-                        else if scenarioScope == "all" { await model.loadScenarioList() }
-                        else { await model.loadTodayScenarios() }
+                        else { await model.loadScenarioList() }
                     }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -211,7 +227,7 @@ struct MainChatView: View {
 
             if scenarioScope == "preset" {
                 presetCatalogView
-            } else if model.todayScenarios.isEmpty {
+            } else if (scenarioScope == "all" ? model.todayScenarios.isEmpty : todayScenarioItems.isEmpty) {
                 // 空态：引导用户先采集真实对话或上传录音（场景只能来自真实对话）
                 Button {
                     Task { await model.toggleRecording() }
@@ -236,31 +252,26 @@ struct MainChatView: View {
                     .padding(.horizontal, 16)
                 }
                 .buttonStyle(.plain)
-            } else {
-                // 竖排列表；「全部」按日期分组展示
+            } else if scenarioScope == "all" {
+                // 全部：先按日期折叠展示，点某天才展开当天的场景（与通用场景「主→子」一致）
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        if scenarioScope == "all" {
-                            let today = todayScenarioItems
-                            let history = historyGroups
-                            if today.isEmpty == false {
-                                sectionHeader("今天")
-                                ForEach(today) { scenarioCard($0) }
-                            }
-                            if history.isEmpty == false {
-                                sectionHeader("历史")
-                                ForEach(history, id: \.day) { group in
-                                    Text(group.day.formatted(.dateTime.year().month().day()))
-                                        .font(.system(size: 11 * model.fontScale, weight: .medium))
-                                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
-                                        .padding(.horizontal, 20)
-                                        .padding(.top, 2)
-                                    ForEach(group.items) { scenarioCard($0) }
-                                }
-                            }
-                        } else {
-                            ForEach(model.todayScenarios) { scenarioCard($0) }
+                        Text(historyWindowHint)
+                            .font(.system(size: 12 * model.fontScale))
+                            .foregroundStyle(RTTheme.textSecondary)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 2)
+                        ForEach(allDateGroups, id: \.day) { group in
+                            dateGroupCard(group)
                         }
+                    }
+                    .padding(.top, 4)
+                }
+            } else {
+                // 今天：从同一份列表里按本地日期筛出今天的场景，平铺展示
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(todayScenarioItems) { scenarioCard($0) }
                     }
                     .padding(.top, 4)
                 }
@@ -278,14 +289,63 @@ struct MainChatView: View {
             .sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// 历史场景：非今天，按自然日分组（日期降序，组内时间降序）。
-    private var historyGroups: [(day: Date, items: [ScenarioSummary])] {
+    /// 全部场景：按自然日分组（日期降序，组内时间降序），含今天。
+    private var allDateGroups: [(day: Date, items: [ScenarioSummary])] {
         let cal = Calendar.current
-        let past = model.todayScenarios.filter { cal.isDateInToday($0.createdAt) == false }
-        let groups = Dictionary(grouping: past) { cal.startOfDay(for: $0.createdAt) }
+        let groups = Dictionary(grouping: model.todayScenarios) { cal.startOfDay(for: $0.createdAt) }
         return groups
             .map { (day: $0.key, items: $0.value.sorted { $0.createdAt > $1.createdAt }) }
             .sorted { $0.day > $1.day }
+    }
+
+    /// 不同会员可见历史窗口的说明。
+    private var historyWindowHint: String {
+        switch auth.user?.effectiveTier {
+        case "premium": return "高级会员可查看近 1 个月的历史场景"
+        case "basic": return "基础会员可查看近 2 周的历史场景；升级高级会员可看近 1 个月"
+        default: return "非会员仅显示近 2 天的场景；开通会员可保存更久（基础 2 周 / 高级 1 个月）"
+        }
+    }
+
+    @ViewBuilder
+    private func dateGroupCard(_ group: (day: Date, items: [ScenarioSummary])) -> some View {
+        let isExpanded = expandedDate == group.day
+        let isToday = Calendar.current.isDateInToday(group.day)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedDate = isExpanded ? nil : group.day
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "calendar")
+                        .foregroundStyle(RTTheme.accent)
+                    Text(isToday ? "今天" : group.day.formatted(.dateTime.year().month().day()))
+                        .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                    Spacer()
+                    Text("\(group.items.count) 个")
+                        .font(.system(size: 11 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.footnote)
+                        .foregroundStyle(RTTheme.textSecondary.opacity(0.6))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(spacing: 10) {
+                    ForEach(group.items) { scenarioCard($0) }
+                }
+                .padding(.bottom, 10)
+            }
+        }
+        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
+        .padding(.horizontal, 16)
     }
 
     private func sectionHeader(_ text: String) -> some View {
@@ -454,6 +514,15 @@ struct MainChatView: View {
         }
         .buttonStyle(.plain)
         .disabled(model.isBusy)
+        // 长按弹「开始对话 / 删除场景」；单击仍是直接进入对练（不变）
+        .contextMenu {
+            Button {
+                roleDialogScenario = summary
+            } label: { Label("开始对话", systemImage: "bubble.left.and.bubble.right") }
+            Button(role: .destructive) {
+                deleteCandidate = summary
+            } label: { Label("删除场景", systemImage: "trash") }
+        }
     }
 
     private var captureButton: some View {
@@ -505,7 +574,7 @@ struct MainChatView: View {
 /// 「对话前询问」：指导/对话方式设为每次询问时，开练前选择本次方式（可勾选以后不再询问）。
 private struct PrePracticeSheet: View {
     @EnvironmentObject private var model: AppModel
-    @State private var conversation: AppModel.ConversationMode = .immersive
+    @State private var conversation: AppModel.ConversationMode = .manual   // 默认手工触发式
     @State private var guidance: AppModel.GuidanceMode = .realtime
     @State private var rememberConversation = false
     @State private var rememberGuidance = false

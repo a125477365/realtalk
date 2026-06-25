@@ -381,7 +381,7 @@ private fun PromptCircle(
         }
         Text(label, color = Color.White.copy(alpha = 0.62f), fontSize = (13f * fontScale).sp, fontWeight = FontWeight.Medium)
 
-        // 完成后可一键重玩；「结束后指导」模式可随时取最终评分（中途退出也有评价）
+        // 完成后可一键重玩（不再显示「查看评分与建议」按钮：完成后会自动展示评分卡）
         if (completed) {
             OutlinedButton(
                 onClick = onReplay,
@@ -395,13 +395,6 @@ private fun PromptCircle(
                 )
                 Spacer(Modifier.size(8.dp))
                 Text("重新对话", color = Color.White, fontSize = (14f * fontScale).sp)
-            }
-        } else if (guidanceMode == "final") {
-            OutlinedButton(
-                onClick = onEvaluate,
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f)),
-            ) {
-                Text("查看评分与建议", color = Color.White.copy(alpha = 0.85f), fontSize = (14f * fontScale).sp)
             }
         }
     }

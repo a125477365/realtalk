@@ -66,7 +66,7 @@ struct ImmersiveRoleplayView: View {
                 }
                 Spacer()
                 Button {
-                    model.pauseVoiceConversation()
+                    model.exitConversation()
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
@@ -251,20 +251,8 @@ struct ImmersiveRoleplayView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.bottom, 20)
-            } else if model.guidanceMode == .final {
-                Button {
-                    Task { await model.requestFinalEvaluation() }
-                } label: {
-                    Text("查看评分与建议")
-                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 18).padding(.vertical, 10)
-                        .overlay(Capsule().stroke(.white.opacity(0.4)))
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isWorking)
-                .padding(.bottom, 20)
             } else {
+                // 不再显示「查看评分与建议」按钮：完成对话后会自动展示评分卡
                 Color.clear.frame(height: 20)
             }
         }

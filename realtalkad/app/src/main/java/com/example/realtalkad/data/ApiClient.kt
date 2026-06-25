@@ -132,6 +132,13 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)
     suspend fun scenarioDetail(sceneId: String, token: String): Scenario = get("/scenario/$sceneId", token)
 
+    /** 删除用户自己的场景（预置通用场景不可删）。 */
+    suspend fun deleteScenario(sceneId: String, token: String) {
+        val req = Request.Builder().url(url("/scenario/$sceneId")).delete()
+            .header("Authorization", "Bearer $token").build()
+        execute(req)
+    }
+
     // ---- 通用场景（运维预置的全局场景，已含完整对话，可直接对练）----
     suspend fun presetCatalog(token: String): PresetScenarioCatalog = get("/scenario/presets/catalog", token)
 
