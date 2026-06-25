@@ -28,8 +28,12 @@ description: >
    - `DATABASE_URL`：本项目数据库连接串（与后端 `realtalkwork` 相同，例如 `postgresql+psycopg://user:pwd@host:5432/realtalk?sslmode=disable`；本地可用 sqlite 路径 `sqlite:////abs/path/realtalk.sqlite3`）。
    - `REPO_URL`：代码仓库（默认 `https://github.com/a125477365/realtalk.git`）。如克隆失败（私有库/无凭据），**向运维索取只读账号或带 token 的 URL**，填到这里或 `REPO_TOKEN`。
    - 渠道（任选其一）：`FEISHU_WEBHOOK` 或 `WECHAT_WEBHOOK`（企业微信机器人 Webhook）。
-2. 设定每天 17:00 定时触发本技能（用安装方所在环境的定时机制，如 cron / 计划任务 / 调度 agent）。
-   - 触发时给 agent 的指令固定为：「运行 smartom-ticket-triage 技能，处理今天的待处理工单」。
+2. **安装方 agent 自行注册每天 17:00 的定时触发**（不依赖外部帮你接）：
+   - 参考 `schedule.example.crontab`，把其中 `<你的-agent-运行器>` 换成你实际唤起 agent 的命令，
+     用 `crontab -e` 或写入 `/etc/cron.d/` 完成注册；没有 cron 的环境就用你自己的调度服务/计划任务。
+   - cron 只负责「按时唤起你的 agent」，触发时给 agent 的指令固定为：
+     「运行 smartom-ticket-triage 技能，处理今天的待处理工单」。真正的类型判定与缺陷核验由 agent 跑本技能完成。
+   - 注册后建议手动触发一次做联调（确认能连库、能发渠道）。
 
 ## 每日工作流（17:00 触发）
 

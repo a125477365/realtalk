@@ -11,7 +11,9 @@
    - 渠道：`FEISHU_WEBHOOK` 或 `WECHAT_WEBHOOK`（企业微信群机器人）。
    - `REPO_URL`（默认公开仓库即可）；私有库或克隆失败时填 `REPO_TOKEN` 或向运维索取只读凭据。
 3. 依赖：Python 3.9+；连 PostgreSQL 需 `pip install 'psycopg[binary]'`（SQLite 用标准库即可）；`git` 命令可用。
-4. 配置每天 17:00 触发该 agent 运行本技能（cron / 系统计划任务 / 调度 agent 均可），触发指令示例：
+4. **由安装方 agent 自行注册每天 17:00 的定时触发**：参考 `schedule.example.crontab`，把
+   `<你的-agent-运行器>` 换成你唤起 agent 的命令后 `crontab -e` 加入（或用你自己的调度服务）。
+   cron 只按时唤起 agent，触发指令固定为：
    > 运行 smartom-ticket-triage 技能，处理今天的待处理工单。
 
 ## 它会做什么

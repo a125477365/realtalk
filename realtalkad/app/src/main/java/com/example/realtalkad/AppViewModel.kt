@@ -348,11 +348,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 statusMessage.value = "没采到声音"
                 return@launch
             }
-            statusMessage.value = "已发布给后台，正在生成场景…（${items.size} 句）"
+            statusMessage.value = "正在上传…（${items.size} 句）"
             runCatching { api.uploadCaptureItems(items, token) }
                 .onSuccess {
                     transcriptStore.remove(items.map { item -> item.id }.toSet())
-                    statusMessage.value = "已生成 ${it.generated} 个场景，可在列表中选择练习"
+                    // 异步生成：上传成功即可，无需等待场景；生成完成后会出现在场景列表
+                    statusMessage.value = "上传成功，场景生成中，稍后在列表查看"
                     loadTodayScenarios()
                 }
                 .onFailure {
@@ -383,7 +384,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             runCatching { api.uploadCaptureItems(items, token) }
                 .onSuccess {
-                    statusMessage.value = "已录入 ${it.acceptedItems} 句，生成 ${it.generated} 个场景"
+                    statusMessage.value = "已录入 ${it.acceptedItems} 句，场景生成中，稍后在列表查看"
                     loadTodayScenarios()
                 }
                 .onFailure { appendChat(ChatMessage.Sender.ASSISTANT, "录入失败：${it.message ?: ""}") }

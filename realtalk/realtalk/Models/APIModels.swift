@@ -360,12 +360,14 @@ struct CaptureUploadCompleteResponse: Codable {
     let generated: Int
     let scenarioIds: [String]
     let scenarios: [ScenarioResponse]
+    let status: String?  // "processing" = 已接收，场景后台异步生成
 
     enum CodingKeys: String, CodingKey {
         case acceptedItems = "accepted_items"
         case generated
         case scenarioIds = "scenario_ids"
         case scenarios
+        case status
     }
 }
 

@@ -249,14 +249,22 @@ async def startup() -> None:
     _warn_insecure_config()
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
+    asyncio.create_task(_capture_worker_loop())  # 采集场景生成消费者（多活：每节点一个）
     seed_default_admin()
     # 首装把「管理台可配置」参数从 env 落库（仅补缺）；以后以 DB 为准
     db.seed_app_settings_from_env()
 
 
+def _idle_ttl_seconds(surface: str | None) -> int:
+    """按登录端返回会话闲置超时秒数：web 较短、app 较长。"""
+    if surface == "web":
+        return settings.idle_timeout_web_minutes * 60
+    return settings.idle_timeout_app_minutes * 60
+
+
 def _authenticate_token(token: str) -> UserOut:
-    """校验 access token（存在性/封禁/单设备/令牌版本），返回用户。供 HTTP 与 WebSocket 共用。"""
-    user_id, device_id, token_version = verify_token(token)
+    """校验 access token（存在性/封禁/单设备/令牌版本/闲置超时），返回用户。供 HTTP 与 WebSocket 共用。"""
+    user_id, device_id, token_version, surface = verify_token(token)
     session = db.get_user_session(user_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
@@ -270,6 +278,9 @@ def _authenticate_token(token: str) -> UserOut:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录状态已失效，请重新登录")
     last_seen = session["last_seen_at"]
     now = datetime.now(timezone.utc)
+    # 闲置超时：太久没有任何请求即需重新登录（活跃使用会在下方滑动续期 last_seen）
+    if last_seen is not None and (now - last_seen).total_seconds() > _idle_ttl_seconds(surface):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已超时，请重新登录")
     if last_seen is None or (now - last_seen).total_seconds() > settings.last_seen_throttle_seconds:
         db.touch_user_seen(user.id)
     return user
@@ -1016,10 +1027,10 @@ def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict
     return {"dev_mode": False, "auth_url": auth_url}
 
 
-def _issue_token_pair(user_id: str, device_id: str | None) -> tuple[str, str]:
-    """按用户当前令牌版本签发 access + refresh 令牌对。"""
+def _issue_token_pair(user_id: str, device_id: str | None, surface: str = "app") -> tuple[str, str]:
+    """按用户当前令牌版本签发 access + refresh 令牌对；surface 决定该会话的闲置超时时长。"""
     tv = db.get_token_version(user_id)
-    return create_token(user_id, device_id, tv), create_refresh_token(user_id, device_id, tv)
+    return create_token(user_id, device_id, tv, surface), create_refresh_token(user_id, device_id, tv, surface)
 
 
 @app.post("/auth/wechat/login", response_model=AuthResponse)
@@ -1041,7 +1052,8 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
     # 单设备登录：把本次登录的设备编号设为该账号唯一有效设备（顶掉其它设备）
     device_id = (request.device_id or uuid.uuid4().hex)[:128]
     db.set_active_device(user.id, device_id)
-    access_token, refresh = _issue_token_pair(user.id, device_id)
+    # request.client 区分 app / 用户 web：用户 web 闲置 30 分钟、app 闲置 7 天需重新登录
+    access_token, refresh = _issue_token_pair(user.id, device_id, request.client)
     return AuthResponse(token=access_token, refresh_token=refresh, user=user)
 
 
@@ -1171,7 +1183,7 @@ def confirm_password_reset(
 def refresh_token(
     request: TokenRefreshRequest,
 ) -> AuthTokenResponse:
-    user_id, device_id, token_version = verify_refresh_token(request.refresh_token)
+    user_id, device_id, token_version, surface = verify_refresh_token(request.refresh_token)
     session = db.get_user_session(user_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
@@ -1190,9 +1202,14 @@ def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="登录状态已失效，请重新登录",
         )
+    # 闲置超时：太久没活动则刷新也不能续命，需重新登录（与 _authenticate_token 一致）
+    last_seen = session["last_seen_at"]
+    now = datetime.now(timezone.utc)
+    if last_seen is not None and (now - last_seen).total_seconds() > _idle_ttl_seconds(surface):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="登录已超时，请重新登录")
     db.touch_user_seen(user.id)
-    # 轮换：每次刷新都发新的 access + refresh
-    access_token, refresh = _issue_token_pair(user.id, device_id)
+    # 轮换：每次刷新都发新的 access + refresh，并保持原登录端的超时策略
+    access_token, refresh = _issue_token_pair(user.id, device_id, surface)
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
@@ -1673,6 +1690,8 @@ async def capture_upload_complete(
     request: CaptureUploadCompleteRequest,
     user: UserOut = Depends(current_user),
 ) -> CaptureUploadCompleteResponse:
+    """采集分块上传收尾。改为异步：快速校验+配额后把生成任务推入 Redis 队列即返回，
+    App 收到「上传成功」即可删除本地文件，不必等待大模型生成；场景生成完会出现在场景列表。"""
     require_ai_access(user)
     items = await asyncio.to_thread(capture_store.load_items, request.upload_id, user.id)
     if items is None:
@@ -1680,15 +1699,48 @@ async def capture_upload_complete(
     if not items:
         await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="本次采集没有可生成场景的对话")
-    enforce_capture_quota(user, items)  # 非会员每日采集上限
-    scenarios = await _generate_and_save_capture_scenarios(user.id, items)
-    await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
+    enforce_capture_quota(user, items)  # 非会员每日采集上限（快速校验，仍同步）
+    # 入队由「任意 API 节点的消费者」领取生成（多活）；会话数据已在共享 Redis，处理完由消费者清理。
+    await asyncio.to_thread(capture_store.enqueue_generation, user.id, request.upload_id)
     return CaptureUploadCompleteResponse(
         accepted_items=len(items),
-        generated=len(scenarios),
-        scenario_ids=[scenario.scene_id for scenario in scenarios],
-        scenarios=scenarios,
+        generated=0,
+        scenario_ids=[],
+        scenarios=[],
+        status="processing",
     )
+
+
+async def _process_capture_job(user_id: str, upload_id: str) -> None:
+    """后台消费一个采集生成任务：从 Redis 读取 → 生成场景落库 → 清理会话与锁。失败不重试（按需求）。"""
+    try:
+        items = await asyncio.to_thread(capture_store.load_items, upload_id, user_id)
+        if not items:
+            return
+        await _generate_and_save_capture_scenarios(user_id, items)
+    except Exception as exc:  # noqa: BLE001 — 生成失败按需求不再处理，仅记录日志
+        print(f"[capture] 场景生成失败 user={user_id} upload={upload_id}: {str(exc)[:200]}", flush=True)
+    finally:
+        await asyncio.to_thread(capture_store.delete_session, upload_id, user_id)
+        await asyncio.to_thread(capture_store.clear_generation_lock, user_id, upload_id)
+
+
+async def _capture_worker_loop() -> None:
+    """采集场景生成消费者：每个 API 节点常驻一个，Redis 队列把任务分发给某个节点处理（多活、无状态）。"""
+    while True:
+        try:
+            job = await asyncio.to_thread(capture_store.dequeue_generation, 2)
+            if not job:
+                continue
+            user_id = job.get("user_id")
+            upload_id = job.get("upload_id")
+            if user_id and upload_id:
+                await _process_capture_job(user_id, upload_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 消费循环必须不死
+            print(f"[capture] 采集生成消费循环异常：{str(exc)[:200]}", flush=True)
+            await asyncio.sleep(1)
 
 
 @app.post("/transcript/upload", response_model=TranscriptUploadResponse)

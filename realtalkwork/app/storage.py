@@ -310,6 +310,7 @@ admin_sessions = Table(
     Column("user_agent", Text),
     Column("created_at", Text, nullable=False),
     Column("expires_at", Text, nullable=False),
+    Column("last_seen_at", Text),  # 最近一次带该会话的请求时间，用于闲置超时
 )
 Index("idx_admin_sessions_admin", admin_sessions.c.admin_id)
 Index("idx_admin_sessions_expires", admin_sessions.c.expires_at)
@@ -416,6 +417,7 @@ class Database:
             self._ensure_column(conn, "scenarios", "preset_group", "TEXT")
             self._ensure_column(conn, "scenarios", "preset_sort", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "support_tickets", "images_json", "TEXT")
+            self._ensure_column(conn, "admin_sessions", "last_seen_at", "TEXT")
             self._ensure_column(conn, "audio_jobs", "file_hash", "TEXT")
             self._ensure_column(conn, "payment_orders", "plan_id", "TEXT")
             self._ensure_index(
@@ -2708,6 +2710,7 @@ class Database:
                     user_agent=user_agent,
                     created_at=_iso(now),
                     expires_at=_iso(expires_at),
+                    last_seen_at=_iso(now),
                 )
             )
         return token
@@ -2720,11 +2723,24 @@ class Database:
             ).mappings().fetchone()
         if row is None:
             return None
-        if _parse_dt(row["expires_at"]) < _now():
+        now = _now()
+        if _parse_dt(row["expires_at"]) < now:  # 绝对过期（最长会话寿命）
+            return None
+        # 闲置超时：超过 admin_idle_timeout_minutes 无操作即失效，需重新登录
+        last_seen = _parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None
+        if last_seen is not None and (now - last_seen).total_seconds() > settings.admin_idle_timeout_minutes * 60:
             return None
         admin = self.admin_get(row["admin_id"])
         if admin is None or not admin.get("is_active"):
             return None
+        # 活跃滑动续期 last_seen（节流，避免每请求写库）
+        if last_seen is None or (now - last_seen).total_seconds() > 30:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    update(admin_sessions)
+                    .where(admin_sessions.c.token_hash == token_hash)
+                    .values(last_seen_at=_iso(now))
+                )
         return admin
 
     def admin_session_destroy(self, token: str) -> None:

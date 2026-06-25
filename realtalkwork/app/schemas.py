@@ -211,6 +211,7 @@ class CaptureUploadCompleteResponse(BaseModel):
     generated: int
     scenario_ids: list[str]
     scenarios: list[ScenarioResponse] = Field(default_factory=list)
+    status: str = "done"  # "processing" = 已接收，场景由后台异步生成；生成完出现在场景列表
 
 
 class RoleplayStartRequest(BaseModel):

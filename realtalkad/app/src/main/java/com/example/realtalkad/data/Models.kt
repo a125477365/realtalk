@@ -107,6 +107,7 @@ data class CaptureUploadCompleteResponse(
     val generated: Int,
     @SerialName("scenario_ids") val scenarioIds: List<String> = emptyList(),
     val scenarios: List<Scenario> = emptyList(),
+    val status: String = "done",  // "processing" = 已接收，场景后台异步生成
 )
 
 @Serializable

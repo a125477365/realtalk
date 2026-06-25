@@ -686,10 +686,11 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            statusMessage = "已发布给后台，正在生成场景…（\(pending.count) 句）"
+            statusMessage = "正在上传…（\(pending.count) 句）"
             let response = try await api.uploadCaptureSegments(pending, token: token)
             transcripts.markUploaded(ids: pending.map(\.id))
-            statusMessage = "已生成 \(response.generated) 个场景，可在列表中选择练习"
+            // 异步生成：上传成功即可，无需等待场景；生成完成后会出现在场景列表
+            statusMessage = "上传成功，场景生成中，稍后在列表查看"
             return response.acceptedItems
         } catch {
             if notifyFailure {

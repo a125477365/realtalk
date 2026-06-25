@@ -1,0 +1,15 @@
+# smartOM 每天 17:00 触发模板（安装方 agent 自行注册到所在环境）
+#
+# 用法：把下面这行按你的环境改好后，用 `crontab -e` 加入，或写入 /etc/cron.d/。
+# 关键点：cron 只负责「按时唤起你的 agent」，真正的分析判断由 agent 跑本技能完成
+# （类型判定、缺陷核验需要 agent 的推理，纯脚本做不了）。所以这里要调用你自己的
+# agent 运行器（CLI / API / 调度服务），把固定指令传给它。
+#
+# 字段：分 时 日 月 周   命令
+# 17:00 每天：
+0 17 * * *  cd /opt/realtalk/realtalkskills/smartOM && <你的-agent-运行器> "运行 smartom-ticket-triage 技能，处理今天的待处理工单" >> /var/log/smartom.log 2>&1
+
+# 说明：
+# - <你的-agent-运行器> 替换成你实际唤起 agent 的命令（例如某 agent CLI、curl 调你的调度 API 等）。
+# - cd 到本技能目录，保证脚本能读到同目录的 config.env。
+# - 仅唤起 + 传指令；技能内部的安全红线（只读、仅置不采纳）由 SKILL.md 约束，cron 不放开任何额外权限。

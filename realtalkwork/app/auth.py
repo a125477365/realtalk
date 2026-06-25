@@ -93,12 +93,13 @@ def verify_admin_password(admin: dict, password: str) -> bool:
     return verify_password(password, admin["password_salt"], admin["password_hash"])
 
 
-def create_token(user_id: str, device_id: str | None = None, token_version: int = 1) -> str:
+def create_token(user_id: str, device_id: str | None = None, token_version: int = 1, surface: str = "app") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "did": device_id,            # 绑定登录设备唯一编号，实现「同账号单设备登录」
         "tv": int(token_version),    # 令牌版本，递增即可服务端批量吊销该用户全部令牌
+        "sur": surface,              # 登录端（app/web）：用于按端区分会话闲置超时时长
         "jti": os.urandom(6).hex(),  # 每次签发唯一，保证轮换出的令牌互不相同
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_ttl_minutes)).timestamp()),
@@ -109,26 +110,29 @@ def create_token(user_id: str, device_id: str | None = None, token_version: int 
     return f"{payload_b64}.{signature}"
 
 
-def verify_token(token: str) -> tuple[str, str | None, int]:
-    """返回 (user_id, device_id, token_version)。device_id/tv 用于单设备与吊销校验。"""
+def verify_token(token: str) -> tuple[str, str | None, int, str]:
+    """返回 (user_id, device_id, token_version, surface)。device_id/tv 用于单设备与吊销校验，surface 用于按端区分会话闲置超时。"""
     payload = _decode_token(token, expected_type="access", expired_detail="登录已过期")
     user_id = payload.get("sub")
     if not isinstance(user_id, str) or not user_id:
         raise _unauthorized()
     device_id = payload.get("did")
+    surface = payload.get("sur")
     return (
         user_id,
         (device_id if isinstance(device_id, str) and device_id else None),
         int(payload.get("tv", 1) or 1),
+        (surface if surface in ("app", "web") else "app"),
     )
 
 
-def create_refresh_token(user_id: str, device_id: str | None = None, token_version: int = 1) -> str:
+def create_refresh_token(user_id: str, device_id: str | None = None, token_version: int = 1, surface: str = "app") -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
         "did": device_id,
         "tv": int(token_version),
+        "sur": surface,
         "jti": os.urandom(6).hex(),
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(days=settings.refresh_token_ttl_days)).timestamp()),
@@ -139,16 +143,18 @@ def create_refresh_token(user_id: str, device_id: str | None = None, token_versi
     return f"{payload_b64}.{signature}"
 
 
-def verify_refresh_token(token: str) -> tuple[str, str | None, int]:
+def verify_refresh_token(token: str) -> tuple[str, str | None, int, str]:
     payload = _decode_token(token, expected_type="refresh", expired_detail="刷新令牌已过期")
     user_id = payload.get("sub")
     if not isinstance(user_id, str) or not user_id:
         raise _unauthorized()
     device_id = payload.get("did")
+    surface = payload.get("sur")
     return (
         user_id,
         (device_id if isinstance(device_id, str) and device_id else None),
         int(payload.get("tv", 1) or 1),
+        (surface if surface in ("app", "web") else "app"),
     )
 
 

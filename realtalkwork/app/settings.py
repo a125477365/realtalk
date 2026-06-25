@@ -78,6 +78,10 @@ class Settings:
     refresh_token_ttl_days: int = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
     # 会话「最近活跃」节流写入：超过该秒数才更新 last_seen，避免每请求一次写库
     last_seen_throttle_seconds: int = int(os.getenv("LAST_SEEN_THROTTLE_SECONDS", "120"))
+    # 会话闲置超时（按端区分）：超过该时长无任何请求即需重新登录；活跃使用会自动滑动续期。
+    idle_timeout_app_minutes: int = int(os.getenv("IDLE_TIMEOUT_APP_MINUTES", str(7 * 24 * 60)))  # App：闲置 7 天
+    idle_timeout_web_minutes: int = int(os.getenv("IDLE_TIMEOUT_WEB_MINUTES", "30"))              # 用户 web：闲置 30 分钟
+    admin_idle_timeout_minutes: int = int(os.getenv("ADMIN_IDLE_TIMEOUT_MINUTES", "10"))          # 管理端 web：闲置 10 分钟
     retention_days: int = int(os.getenv("RETENTION_DAYS", "3"))
     history_retention_days: int = int(os.getenv("HISTORY_RETENTION_DAYS", "90"))
     roleplay_accept_score: float = float(os.getenv("ROLEPLAY_ACCEPT_SCORE", "0.6"))

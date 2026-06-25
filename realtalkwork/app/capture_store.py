@@ -81,6 +81,37 @@ class _RedisBackend:
     def delete_session(self, upload_id: str, user_id: str) -> None:
         self.r.delete(self._key(user_id, upload_id))
 
+    # ---- 异步场景生成队列（多活：任务推入共享队列，任意节点的消费者领取处理）----
+
+    _JOBS_KEY = "rt:capture:jobs"
+
+    def _lock_key(self, user_id: str, upload_id: str) -> str:
+        return f"rt:capture:gen:{user_id}:{upload_id}"
+
+    def enqueue_generation(self, user_id: str, upload_id: str) -> bool:
+        """把生成任务推入队列。用 SETNX 锁去重，避免重复 complete 造成重复生成。返回是否新入队。"""
+        # 锁 TTL 给足生成时间，过期后允许重试；处理完成会主动清锁
+        if not self.r.set(self._lock_key(user_id, upload_id), "1", nx=True, ex=2 * 3600):
+            return False
+        self.r.lpush(
+            self._JOBS_KEY,
+            json.dumps({"user_id": user_id, "upload_id": upload_id}, ensure_ascii=False),
+        )
+        return True
+
+    def dequeue_generation(self, timeout: int = 2) -> dict | None:
+        """阻塞等待一个生成任务；多活下由 Redis 把每个任务只分发给一个节点。无任务返回 None。"""
+        res = self.r.brpop(self._JOBS_KEY, timeout=timeout)
+        if not res:
+            return None
+        try:
+            return json.loads(res[1])
+        except (json.JSONDecodeError, IndexError, TypeError):
+            return None
+
+    def clear_generation_lock(self, user_id: str, upload_id: str) -> None:
+        self.r.delete(self._lock_key(user_id, upload_id))
+
 
 def _build_store() -> _RedisBackend:
     """构建采集暂存实例。REDIS_URL 必须配置且能连通，否则直接报错终止（不再回退本地文件）。"""
