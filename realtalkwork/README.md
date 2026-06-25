@@ -88,7 +88,9 @@ server {
 VOICE_NODE_ADDR=192.168.6.3:8000   # 本机在「语音服务器列表」中的 ip:port
 # 可选：VOICE_DIR=./uploads/voice   # 语音文件本地存放目录，默认 uploads/voice
 ```
-`setup.sh` 部署后端时会询问并写入 `VOICE_NODE_ADDR`（回车=本机不处理语音文件）。
+`setup.sh` 部署后端时会先问「本机是否作为语音文件服务器」，选是则要求填 `VOICE_NODE_ADDR`。
+**配了 `VOICE_NODE_ADDR` 的服务器首次启动时会自动把本机地址加入「语音文件服务器」列表**，省去手工添加；
+之后运维可在管理台删除该地址（删除后重启不会再自动加回）。
 
 ### 本地命名、去重与断点续传
 文件按 `{user_id}_{md5}{原后缀}` 保存到本机 `VOICE_DIR`：

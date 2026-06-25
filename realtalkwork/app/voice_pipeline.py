@@ -30,9 +30,11 @@ def voice_servers() -> list[str]:
 
     raw = db.get_app_setting_str("voice_servers") or ""
     out: list[str] = []
+    seen: set[str] = set()
     for part in raw.replace(",", ";").replace("\n", ";").split(";"):
         addr = normalize_addr(part)
-        if addr:
+        if addr and addr not in seen:  # 去重，避免重复项打乱 MD5 取模分布
+            seen.add(addr)
             out.append(addr)
     return out
 

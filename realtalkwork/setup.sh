@@ -271,9 +271,16 @@ if $DEPLOY_BACKEND; then
   # ---- 语音文件服务器（高级会员上传录音）----
   note "高级会员上传的录音文件，会按【文件 MD5】路由到「可处理语音的服务器」，由其每小时定时任务转写并生成场景。"
   note "可处理语音的【服务器列表】在【管理台 → 系统设置 → 语音文件服务器】中配置（格式 ip:port;ip:port），未配置则语音上传直接报错。"
-  note "若本机是语音文件服务器，请在此填【本机在该列表中的地址 ip:port】，服务据此判断某文件是否归本机处理。"
-  ask "本机作为语音文件服务器的地址 VOICE_NODE_ADDR（如 192.168.6.3:8000；回车=本机不处理语音文件）" ""
-  ENV_LINES+=("VOICE_NODE_ADDR=$REPLY_VALUE")
+  ask "本机是否作为语音文件服务器（处理上传的录音文件）？(yes/no)" "no"
+  VOICE_NODE_ADDR_VAL=""
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    note "请填【本机在语音服务器列表中的地址 ip:port】，其它服务器须能通过它访问本机；服务据此判断某文件是否归本机处理。"
+    note "首次启动时本机地址会自动加入【管理台 → 系统设置 → 语音文件服务器】列表，之后可在管理台删除（删除后重启不会再自动加回）。"
+    ask "本机语音服务地址 VOICE_NODE_ADDR（如 192.168.6.3:8000；必填）" ""
+    VOICE_NODE_ADDR_VAL="$REPLY_VALUE"
+    [ -z "$VOICE_NODE_ADDR_VAL" ] && note "未填本机地址 → 本机不会注册为语音服务器，也不会自动加入列表。"
+  fi
+  ENV_LINES+=("VOICE_NODE_ADDR=$VOICE_NODE_ADDR_VAL")
 
   # ---- 微信登录（高级，可选）----
   echo

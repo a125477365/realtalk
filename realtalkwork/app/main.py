@@ -257,6 +257,7 @@ async def startup() -> None:
     seed_default_admin()
     # 首装把「管理台可配置」参数从 env 落库（仅补缺）；以后以 DB 为准
     db.seed_app_settings_from_env()
+    _register_self_as_voice_node()  # 语音服务器首次启动自动把本机加入列表（之后可在管理台删除）
 
 
 def _idle_ttl_seconds(surface: str | None) -> int:
@@ -1991,6 +1992,23 @@ async def _voice_generate_pending() -> None:
             voice_pipeline.done_marker(user_id, md5).touch()  # 已生成，待 3 天后清理
         except Exception as exc:  # noqa: BLE001
             print(f"[voice] 场景生成失败 {txt.name}: {str(exc)[:160]}", flush=True)
+
+
+def _register_self_as_voice_node() -> None:
+    """首次启动：若本机配置了 VOICE_NODE_ADDR，自动把本机地址加入管理台「语音文件服务器」列表。
+    仅第一次加（用 marker 记录），之后运维可在管理台删除该 ip，重启也不会再自动加回。"""
+    addr = voice_pipeline.normalize_addr(settings.voice_node_addr)
+    if not addr:
+        return
+    marker = f"voice_node_registered:{addr}"
+    if db.get_app_setting_str(marker):
+        return  # 已自动注册过一次 → 尊重运维之后的删除，不再加回
+    servers = voice_pipeline.voice_servers()
+    if addr not in servers:
+        servers.append(addr)
+        db.set_app_setting("voice_servers", ";".join(servers))
+    db.set_app_setting(marker, "1")
+    print(f"[voice] 首次启动：已把本机 {addr} 加入语音文件服务器列表（之后可在管理台删除）", flush=True)
 
 
 async def _voice_cron_loop() -> None:
