@@ -286,6 +286,11 @@ final class APIClient {
         return data
     }
 
+    /// 解码 WebSocket 推来的整轮对练状态（用与 HTTP 同一套解码器，保证日期/字段一致）。
+    func decodeRoleplayState(_ data: Data) -> RoleplayStateResponse? {
+        try? decoder.decode(RoleplayStateResponse.self, from: data)
+    }
+
     func ttsVoices(token: String) async throws -> TtsVoices {
         try await get("/tts/voices", token: token, queryItems: [])
     }
@@ -299,6 +304,17 @@ final class APIClient {
         var comps = URLComponents(url: url(for: "/tts/preview"), resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "voice", value: voice)]
         return comps?.url
+    }
+
+    /// 沉浸式后端语音流的 WebSocket 地址（http→ws / https→wss）。token 经 URLQueryItem 自动转义。
+    func roleplayStreamURL(sessionId: String, token: String) -> URL? {
+        var comps = URLComponents(url: url(for: "/roleplay/stream"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "token", value: token),
+                             URLQueryItem(name: "session_id", value: sessionId)]
+        guard let s = comps?.url?.absoluteString else { return nil }
+        if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
+        if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
+        return URL(string: s)
     }
 
     func evaluateRoleplay(sessionId: String, token: String) async throws -> RoleplayStateResponse {

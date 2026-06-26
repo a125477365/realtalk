@@ -8,6 +8,7 @@ struct ImmersiveRoleplayView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var practiceSpeech: SpeechPracticeManager
     @EnvironmentObject private var voice: VoicePromptPlayer
+    @EnvironmentObject private var stream: RoleplayStreamManager
     @Environment(\.dismiss) private var dismiss
 
     // 手工触发式：长按说话的手势状态
@@ -382,6 +383,9 @@ struct ImmersiveRoleplayView: View {
     }
 
     private func circleScale(at date: Date) -> CGFloat {
+        // 沉浸式后端语音流：跳动跟随流的电平
+        if stream.isAISpeaking { return 1 + CGFloat(stream.aiAudioLevel) * 0.28 }
+        if stream.audioLevel > 0.02 { return 1 + CGFloat(stream.audioLevel) * 0.28 }
         if practiceSpeech.isListening { return 1 + CGFloat(practiceSpeech.audioLevel) * 0.28 }
         if voice.isSpeaking { return 1 + CGFloat(voice.audioLevel) * 0.28 }
         return 1

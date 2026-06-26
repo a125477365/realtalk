@@ -2632,19 +2632,14 @@ async def roleplay_stream(
                 RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
                 user,
             )
-            pron = voice_io.pronunciation_diff(recognized, reference) if reference else []
-            await _sj({
-                "type": "result",
-                "accepted": bool(resp.latest_accepted),
-                "recognized_text": recognized,
-                "feedback": resp.latest_feedback,
-                "pronunciation": pron,
-                "next_line": resp.next_line.english if resp.next_line else None,
-                "completed": resp.completed,
-            })
+            resp.recognized_text = recognized
+            if reference:
+                resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
+            # 整轮完整状态回客户端：客户端据此直接刷新字幕/进度/评分（与 HTTP 回合同构）
+            await _sj({"type": "result", "state": resp.model_dump(mode="json")})
             tts_task = asyncio.create_task(_speak_new(resp.messages))
             if resp.completed:
-                await _sj({"type": "completed", "review": resp.latest_feedback})
+                await _sj({"type": "completed"})
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # noqa: BLE001 — 任一异常结束会话

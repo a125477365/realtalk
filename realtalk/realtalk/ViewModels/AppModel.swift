@@ -96,6 +96,7 @@ final class AppModel: ObservableObject {
     let subscription: SubscriptionManager
     let practiceSpeech: SpeechPracticeManager
     let voice: VoicePromptPlayer
+    let stream = RoleplayStreamManager()
     let realtime: RealtimeVoiceManager
 
     @Published var filter: TranscriptStore.TimeFilter = .lastHour
@@ -239,6 +240,24 @@ final class AppModel: ObservableObject {
         voice.audioProvider = { [weak self] text in
             guard let self else { return nil }
             return await self.fetchTTSAudio(text)
+        }
+        // 沉浸式后端语音流（WS）：整段对话由流驱动，结果回来直接刷新对练状态
+        stream.onResultState = { [weak self] data in
+            Task { @MainActor in self?.applyStreamState(data) }
+        }
+        stream.onResultMessage = { [weak self] msg in
+            Task { @MainActor in self?.statusMessage = msg }
+        }
+        stream.onCompleted = { [weak self] in
+            Task { @MainActor in self?.isVoiceConversationActive = false }
+        }
+        stream.onError = { [weak self] msg in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isVoiceConversationActive = false
+                self.stream.stop()
+                self.presentFailure(msg, title: "对话中断")
+            }
         }
         shortcutObserver = NotificationCenter.default.addObserver(
             forName: RealTalkShortcutAction.notification,
@@ -887,6 +906,7 @@ final class AppModel: ObservableObject {
         }
         practiceSpeech.stop(emit: false)
         voice.stop()
+        stream.stop()
         conversationExited = false
         isVoiceConversationActive = true
         autoSpeakAI = true
@@ -909,7 +929,14 @@ final class AppModel: ObservableObject {
                 token: token
             )
             scenario = state.scenario
-            handleRoleplayState(state)
+            if usesStreamImmersive {
+                // 沉浸式：WS 流驱动整段对话（识别/朗读/抢话都在流里）。先上屏开场状态再连流。
+                roleplay = state
+                selectedRoleID = state.selectedRole
+                startImmersiveStream()
+            } else {
+                handleRoleplayState(state)
+            }
             statusMessage = "语音对话已开始"
             await loadPracticeHistory()
         } catch {
@@ -939,7 +966,11 @@ final class AppModel: ObservableObject {
         } else {
             isVoiceConversationActive = true
             statusMessage = "语音对话已继续"
-            await listenForNextRoleplayTurn()
+            if usesStreamImmersive {
+                startImmersiveStream()
+            } else {
+                await listenForNextRoleplayTurn()
+            }
         }
     }
 
@@ -948,6 +979,7 @@ final class AppModel: ObservableObject {
         cancelAnswerTimeout()
         practiceSpeech.stop(emit: false)
         voice.stop()
+        stream.stop()
         statusMessage = "语音对话已暂停"
     }
 
@@ -1072,6 +1104,33 @@ final class AppModel: ObservableObject {
     func fetchTTSAudio(_ text: String) async -> Data? {
         guard let token = auth.token else { return nil }
         return try? await api.ttsSpeak(text: text, token: token)
+    }
+
+    /// 沉浸式是否走后端语音流（WebSocket：流式 + 抢话打断）。
+    var usesStreamImmersive: Bool { conversationMode == .immersive }
+
+    private func startImmersiveStream() {
+        guard let token = auth.token, let sessionId = roleplay?.sessionId,
+              let url = api.roleplayStreamURL(sessionId: sessionId, token: token) else { return }
+        stream.start(streamURL: url, guidanceMode: guidanceMode.rawValue)
+    }
+
+    /// WebSocket 推来的整轮状态：直接刷新对练状态（字幕来自 roleplay.messages）。
+    private func applyStreamState(_ data: Data) {
+        guard let state = api.decodeRoleplayState(data) else { return }
+        roleplay = state
+        scenario = state.scenario
+        selectedRoleID = state.selectedRole
+        let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
+        if let recognized = state.recognizedText, recognized.isEmpty == false, missed.isEmpty == false {
+            practiceHintText = "发音再注意：\(missed.joined(separator: "、"))"
+        }
+        if state.completed {
+            isVoiceConversationActive = false
+            if let review = state.latestFeedback, review.isEmpty == false { statusMessage = review }
+        } else if let fb = state.latestFeedback, fb.isEmpty == false {
+            statusMessage = fb
+        }
     }
 
     func loadTtsVoices() async {
