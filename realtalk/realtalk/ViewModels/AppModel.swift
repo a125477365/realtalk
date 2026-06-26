@@ -248,6 +248,9 @@ final class AppModel: ObservableObject {
         stream.onResultMessage = { [weak self] msg in
             Task { @MainActor in self?.statusMessage = msg }
         }
+        stream.onStatus = { [weak self] msg in
+            Task { @MainActor in self?.statusMessage = msg }
+        }
         stream.onCompleted = { [weak self] in
             Task { @MainActor in self?.isVoiceConversationActive = false }
         }

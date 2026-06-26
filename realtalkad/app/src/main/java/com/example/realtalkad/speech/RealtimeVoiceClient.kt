@@ -64,6 +64,13 @@ class RealtimeVoiceClient(private val context: Context) {
     @Volatile private var capturing = false
     private var endTimeoutJob: Job? = null
     private var scenarioTitle = ""
+    // 断线重连：连接可恢复、字幕(transcript)保留；但实时模型 provider 侧有状态，重连后模型上下文会重置（实时语义固有）
+    private var rtBaseUrl = ""
+    private var rtToken = ""
+    private var rtSessionId = ""
+    private var reconnectAttempts = 0
+    private val maxReconnect = 3
+    private var reconnectJob: Job? = null
 
     // ---- 生命周期 ----
 
@@ -71,6 +78,8 @@ class RealtimeVoiceClient(private val context: Context) {
         if (phase.value !in listOf(Phase.IDLE, Phase.ENDED, Phase.ERROR)) return
         reset()
         scenarioTitle = title
+        rtBaseUrl = baseUrl; rtToken = token; rtSessionId = sessionId
+        reconnectAttempts = 0
         phase.value = Phase.CONNECTING
         statusText.value = "正在连接语音模型…"
 
@@ -82,6 +91,7 @@ class RealtimeVoiceClient(private val context: Context) {
     /** 结束并评分：停麦、通知后端结束，等待 realtalk.review 回传。 */
     fun end() {
         if (phase.value != Phase.ACTIVE && phase.value != Phase.CONNECTING) return
+        reconnectJob?.cancel(); reconnectJob = null
         phase.value = Phase.ENDING
         statusText.value = "正在生成评分与建议…"
         stopCapture()
@@ -91,6 +101,7 @@ class RealtimeVoiceClient(private val context: Context) {
 
     /** 直接退出（不等待评分）。 */
     fun cancel() {
+        reconnectJob?.cancel(); reconnectJob = null
         endTimeoutJob?.cancel(); endTimeoutJob = null
         teardownAudio()
         runCatching { webSocket?.close(1000, null) }
@@ -124,9 +135,10 @@ class RealtimeVoiceClient(private val context: Context) {
                     phase.value = Phase.ACTIVE
                     statusText.value = scenarioTitle
                 }
-                startPlayback()
-                startCapture()
-                send("{\"type\":\"response.create\"}")   // 让 AI 按场景台词先开口
+                if (!capturing) { startPlayback(); startCapture() }   // 首次起音频；重连时音频已在跑，避免重复 AudioTrack
+                if (reconnectAttempts > 0) statusText.value = scenarioTitle
+                reconnectAttempts = 0
+                send("{\"type\":\"response.create\"}")   // 让 AI 按场景台词先开口/续话
             }
         }
 
@@ -209,10 +221,30 @@ class RealtimeVoiceClient(private val context: Context) {
     private fun handleSocketClosed(reason: String?) {
         if (isEnded()) return
         if (phase.value == Phase.ENDING) { finishWithReview(); return }
+        // 对练中网络抖动：自动重连（保留音频与字幕），重试用尽才报错
+        if (phase.value == Phase.ACTIVE && reconnectAttempts < maxReconnect) {
+            scheduleReconnect(); return
+        }
         teardownAudio()
         webSocket = null
         phase.value = Phase.ERROR
         statusText.value = reason?.takeIf { it.isNotBlank() } ?: "语音连接已断开"
+    }
+
+    private fun scheduleReconnect() {
+        runCatching { webSocket?.cancel() }
+        webSocket = null
+        reconnectAttempts++
+        statusText.value = "网络不稳，正在重连…"
+        val delayMs = minOf(6000L, (1000L shl (reconnectAttempts - 1)))
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (phase.value != Phase.ACTIVE) return@launch
+            val wsUrl = buildWsUrl(rtBaseUrl, rtToken, rtSessionId)
+            if (wsUrl == null) { fail("重连失败，请重试"); return@launch }
+            webSocket = wsClient.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
+        }
     }
 
     private fun buildWsUrl(baseUrl: String, token: String, sessionId: String): String? {

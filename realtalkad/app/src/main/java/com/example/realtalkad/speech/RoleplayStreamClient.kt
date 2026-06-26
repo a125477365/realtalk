@@ -30,6 +30,7 @@ class RoleplayStreamClient(private val context: Context) {
     var onResultMessage: ((String) -> Unit)? = null  // 没听清等提示
     var onCompleted: (() -> Unit)? = null
     var onError: ((String) -> Unit)? = null
+    var onStatus: ((String) -> Unit)? = null   // 「重连中/已重连」等提示
     var onUserLevel: ((Float) -> Unit)? = null
     var onAiLevel: ((Float) -> Unit)? = null
     var onAiSpeaking: ((Boolean) -> Unit)? = null
@@ -42,6 +43,12 @@ class RoleplayStreamClient(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main)
     private var guidanceMode = "realtime"
     private var active = false
+    // 断线重连
+    private var wsUrl: String = ""
+    private var connected = false
+    private var reconnectAttempts = 0
+    private val maxReconnect = 5
+    private var reconnectJob: Job? = null
 
     private var recorder: MediaRecorder? = null
     private var file: File? = null
@@ -63,14 +70,35 @@ class RoleplayStreamClient(private val context: Context) {
 
     fun start(wsUrl: String, guidanceMode: String) {
         stop()
+        this.wsUrl = wsUrl
         this.guidanceMode = guidanceMode
         active = true
+        reconnectAttempts = 0
+        connectWS()   // 录音在收到 state 事件后开始（首连/重连都走这条路径）
+    }
+
+    private fun connectWS() {
+        if (!active || wsUrl.isBlank()) return
         webSocket = wsClient.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
-        startRecording()
+    }
+
+    private fun scheduleReconnect() {
+        if (!active) return
+        runCatching { webSocket?.cancel() }
+        webSocket = null
+        connected = false
+        reconnectAttempts++
+        if (reconnectAttempts > maxReconnect) { onError?.invoke("网络已断开，请重试"); stop(); return }
+        onStatus?.invoke("网络不稳，正在重连…")
+        val delayMs = minOf(8000L, (1000L shl (reconnectAttempts - 1)))   // 1,2,4,8,8s
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch { delay(delayMs); if (active) connectWS() }
     }
 
     fun stop() {
         active = false
+        connected = false
+        reconnectJob?.cancel(); reconnectJob = null
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "bye")).toString()) }
         runCatching { webSocket?.close(1000, null) }
         webSocket = null
@@ -117,6 +145,7 @@ class RoleplayStreamClient(private val context: Context) {
         val amp = runCatching { r.maxAmplitude }.getOrDefault(0)
         val level = (amp / 12000f).coerceIn(0f, 1f)
         onUserLevel?.invoke(level)
+        if (!connected) return   // 断线/重连期间只显示电平，不提交
         if (aiSpeaking) {
             if (level >= bargeLevel) {
                 bargeTicks++
@@ -190,16 +219,27 @@ class RoleplayStreamClient(private val context: Context) {
             scope.launch { if (active && receivingAudio) incoming.write(bytes.toByteArray()) }
         }
         override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-            scope.launch { if (active) { onError?.invoke("连接已断开"); stop() } }
+            scope.launch { if (active) scheduleReconnect() }   // 网络抖动自动重连，不直接报错停掉
         }
         override fun onClosing(ws: WebSocket, code: Int, reason: String) {
-            scope.launch { if (active && code != 1000) onError?.invoke(reason.ifBlank { "连接关闭" }) }
+            scope.launch { if (active && code != 1000) scheduleReconnect() }
         }
     }
 
     private fun handleEvent(text: String) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
+            "state" -> {
+                // 首连/重连：标记已连、复位重试，按后端完整状态恢复字幕/进度，丢弃断线残留音频，干净重录
+                connected = true
+                if (reconnectAttempts > 0) onStatus?.invoke("已重连")
+                reconnectAttempts = 0
+                runCatching { player?.stop() }; runCatching { player?.release() }; player = null
+                aiQueue.clear(); receivingAudio = false; incoming = java.io.ByteArrayOutputStream()
+                aiSpeaking = false; onAiSpeaking?.invoke(false)
+                obj.optJSONObject("state")?.let { onResultState?.invoke(it.toString()) }
+                startRecording()
+            }
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {
                 receivingAudio = false

@@ -2573,12 +2573,18 @@ async def roleplay_stream(
             tts_task.cancel()
         tts_task = None
 
-    # 开场：发当前状态并朗读已有 AI 台词
+    # 开场/重连：回完整状态（客户端据此恢复字幕/进度/评分），并只朗读「当前待回应的那段 AI 台词」。
+    # 把已朗读游标设到「最后一条用户消息之后」：首次进入=朗读开场 AI 台词；断线重连=只补当前待回应这句，
+    # 既不会把整段历史重念一遍，又能把断线时漏掉的那句语音补给客户端。
     state0 = roleplay_state_response(user.id, session, scenario)
+    for _i, _m in enumerate(state0.messages):
+        if getattr(_m, "speaker", "") == "user":
+            spoken_count = _i + 1
     await _sj({
         "type": "state",
         "next_line": state0.next_line.english if state0.next_line else None,
         "completed": state0.completed,
+        "state": state0.model_dump(mode="json"),
     })
     tts_task = asyncio.create_task(_speak_new(state0.messages))
 

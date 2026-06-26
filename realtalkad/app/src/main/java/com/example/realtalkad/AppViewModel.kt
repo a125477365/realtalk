@@ -140,6 +140,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         stream.onAiSpeaking = { isSpeaking.value = it }
         stream.onResultState = { jsonStr -> applyStreamState(jsonStr) }
         stream.onResultMessage = { msg -> statusMessage.value = msg }
+        stream.onStatus = { msg -> statusMessage.value = msg }
         stream.onCompleted = { isVoiceActive.value = false }
         stream.onError = { msg ->
             isVoiceActive.value = false

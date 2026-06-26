@@ -51,6 +51,13 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     private var wsTask: URLSessionWebSocketTask?
     private var endTimeout: Task<Void, Never>?
     private var didStartPlaybackGraph = false
+    // 方式3 断线重连：连接可恢复、客户端字幕保留；但实时模型是 provider 侧有状态，重连后模型上下文会重置（实时语义固有）
+    private var rtToken = ""
+    private var rtSessionId = ""
+    private var rtTitle = ""
+    private var reconnectAttempts = 0
+    private let maxReconnect = 3
+    private var reconnectTask: Task<Void, Never>?
 
     private lazy var urlSession: URLSession = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
 
@@ -62,6 +69,8 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     func start(token: String, sessionId: String, scenarioTitle: String) async {
         guard phase == .idle || isEnded else { return }
         resetState()
+        rtToken = token; rtSessionId = sessionId; rtTitle = scenarioTitle
+        reconnectAttempts = 0
         phase = .connecting
         statusText = "正在连接语音模型…"
 
@@ -98,6 +107,7 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     /// 结束并评分：停麦、通知后端结束，等待 `realtalk.review` 回传。
     func end() {
         guard phase == .active || phase == .connecting else { return }
+        reconnectTask?.cancel(); reconnectTask = nil
         phase = .ending
         statusText = "正在生成评分与建议…"
         stopMicrophone()
@@ -107,6 +117,7 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
 
     /// 直接退出（不等待评分），用于异常或用户放弃。
     func cancel() {
+        reconnectTask?.cancel(); reconnectTask = nil
         endTimeout?.cancel(); endTimeout = nil
         teardownAudio()
         wsTask?.cancel(with: .goingAway, reason: nil)
@@ -163,20 +174,7 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
         let inputFormat = input.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0 else { throw AudioError.noInput }
         inputConverter = AVAudioConverter(from: inputFormat, to: pcm16Target)
-
-        let task = wsTask
-        let converter = inputConverter
-        let target = pcm16Target
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            if let converter,
-               let data = RealtimeVoiceManager.pcm16Data(from: buffer, using: converter, target: target) {
-                let payload = "{\"type\":\"input_audio_buffer.append\",\"audio\":\"\(data.base64EncodedString())\"}"
-                task?.send(.string(payload)) { _ in }
-            }
-            let level = RealtimeVoiceManager.level(from: buffer)
-            Task { @MainActor in self?.inputLevel = level }
-        }
+        installMicTap()
 
         engine.prepare()
         try engine.start()
@@ -211,6 +209,56 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     private func flushPlayback() {
         playerNode.stop()
         aiSpeaking = false
+    }
+
+    /// 安装麦克风 tap，把音频上行到「当前」WS（重连后重装即可改指新连接）。
+    private func installMicTap() {
+        let input = engine.inputNode
+        let inputFormat = input.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else { return }
+        let task = wsTask
+        let converter = inputConverter
+        let target = pcm16Target
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+            if let converter,
+               let data = RealtimeVoiceManager.pcm16Data(from: buffer, using: converter, target: target) {
+                let payload = "{\"type\":\"input_audio_buffer.append\",\"audio\":\"\(data.base64EncodedString())\"}"
+                task?.send(.string(payload)) { _ in }
+            }
+            let level = RealtimeVoiceManager.level(from: buffer)
+            Task { @MainActor in self?.inputLevel = level }
+        }
+    }
+
+    /// 方式3 断线重连：连接断了但仍在对练中 → 退避后重开 WS、把麦克风改发到新连接、让 AI 续话。
+    /// 实时模型上下文在 provider 侧、重连即重置（模型不记得之前内容，实时语义固有）；客户端字幕(transcript)保留。
+    private func scheduleRTReconnect() {
+        wsTask?.cancel(with: .abnormalClosure, reason: nil)
+        wsTask = nil
+        reconnectAttempts += 1
+        statusText = "网络不稳，正在重连…"
+        let delay = min(6.0, pow(2.0, Double(reconnectAttempts - 1)))
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, self.phase == .active else { return }
+            self.reconnectRT()
+        }
+    }
+
+    private func reconnectRT() {
+        guard let url = makeSocketURL(token: rtToken, sessionId: rtSessionId) else {
+            phase = .error("重连失败，请重试")
+            return
+        }
+        let task = urlSession.webSocketTask(with: url)
+        wsTask = task
+        task.resume()
+        receiveNext()
+        installMicTap()                          // 麦克风音频改发到新连接
+        sendJSON(["type": "response.create"])    // 让 AI 续话
+        statusText = rtTitle
     }
 
     // MARK: WebSocket
@@ -264,6 +312,8 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String else { return }
+
+        reconnectAttempts = 0   // 收到任何事件即说明连接健康，复位重连计数
 
         switch type {
         case "response.audio.delta":
@@ -331,6 +381,11 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
         // 已请求结束但 socket 先关：保留已收到的评分（若有）
         if phase == .ending {
             finishWithReview()
+            return
+        }
+        // 对练中网络抖动：自动重连（保留音频引擎与字幕），重试用尽才报错
+        if phase == .active, reconnectAttempts < maxReconnect {
+            scheduleRTReconnect()
             return
         }
         teardownAudio()
