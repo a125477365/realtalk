@@ -9,7 +9,9 @@ mode / 本地命令由部署控制（env / setup.sh），管理台只配置云�
 from __future__ import annotations
 
 import asyncio
+import base64
 import difflib
+import hashlib
 import os
 import re
 import struct
@@ -21,6 +23,58 @@ from typing import Any
 import httpx
 
 from .settings import settings
+
+
+class TTSOverloaded(Exception):
+    """合成并发已满，过载保护：调用方应返回 429 让客户端稍后重试。"""
+
+
+# 合成并发上限（懒初始化绑定到运行中的事件循环）
+_SYNTH_SEM: asyncio.Semaphore | None = None
+
+
+def _synth_sem() -> asyncio.Semaphore:
+    global _SYNTH_SEM
+    if _SYNTH_SEM is None:
+        _SYNTH_SEM = asyncio.Semaphore(max(1, settings.tts_max_concurrency))
+    return _SYNTH_SEM
+
+
+# ---- TTS 结果缓存（Redis；台词重复→命中率高，刷同文本=命中缓存，省云端 $ 与 CPU）----
+
+def _redis():
+    try:
+        from .capture_store import capture_store
+
+        return getattr(capture_store, "r", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tts_cache_key(text: str, voice: str, fmt: str) -> str:
+    h = hashlib.sha256(f"{voice}|{fmt}|{text}".encode("utf-8")).hexdigest()[:40]
+    return f"rt:tts:{h}"
+
+
+def _cache_get(key: str) -> bytes | None:
+    r = _redis()
+    if r is None:
+        return None
+    try:
+        val = r.get(key)  # capture_store 客户端 decode_responses=True → 取回 base64 字符串
+        return base64.b64decode(val) if val else None
+    except Exception:  # noqa: BLE001 — 缓存失败不影响主流程
+        return None
+
+
+def _cache_set(key: str, audio: bytes) -> None:
+    r = _redis()
+    if r is None or len(audio) > 2 * 1024 * 1024:  # 单条 TTS 很小；超 2MB 不缓存兜底
+        return
+    try:
+        r.set(key, base64.b64encode(audio).decode("ascii"), ex=settings.tts_cache_ttl_seconds)
+    except Exception:  # noqa: BLE001
+        pass
 
 _FORMAT_CONTENT_TYPE = {
     "mp3": "audio/mpeg",
@@ -133,23 +187,40 @@ async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
     is_local_ready = bool(config["mode"] == "local" and config["local_command"])
 
     if config["dev_mode"] and not is_cloud_ready and not is_local_ready:
-        return _silent_wav(), content_type_for("wav")
+        return _silent_wav(), content_type_for("wav")   # dev：便宜，不缓存不限并发
 
-    if config["mode"] == "local":
-        if not is_local_ready:
-            raise RuntimeError("本地 TTS 命令未配置，请在部署时设置 TTS_LOCAL_COMMAND")
-        return await asyncio.to_thread(_synthesize_local, config, text, voice)
+    ct = content_type_for(fmt)
+    cache_key = _tts_cache_key(text, voice, fmt)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached, ct   # 命中缓存：秒回，不消耗合成资源（刷同一文本也只命中缓存）
 
-    if not is_cloud_ready:
-        raise RuntimeError("语音合成服务未配置，请在管理台「系统设置 → 语音合成」中配置")
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15)) as client:
-        resp = await client.post(
-            config["base_url"].rstrip("/") + "/audio/speech",
-            headers={"Authorization": f"Bearer {config['api_key']}"},
-            json={"model": config["model"], "input": text, "voice": voice, "response_format": fmt},
-        )
-    resp.raise_for_status()
-    return resp.content, content_type_for(fmt)
+    # 并发上限：合成位满则过载（调用方返回 429），避免突发把上游/CPU 打满
+    try:
+        await asyncio.wait_for(_synth_sem().acquire(), timeout=3.0)
+    except asyncio.TimeoutError as exc:
+        raise TTSOverloaded("语音合成繁忙，请稍后再试") from exc
+    try:
+        if config["mode"] == "local":
+            if not is_local_ready:
+                raise RuntimeError("本地 TTS 命令未配置，请在部署时设置 TTS_LOCAL_COMMAND")
+            audio, ct = await asyncio.to_thread(_synthesize_local, config, text, voice)
+        else:
+            if not is_cloud_ready:
+                raise RuntimeError("语音合成服务未配置，请在管理台「系统设置 → 语音合成」中配置")
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15)) as client:
+                resp = await client.post(
+                    config["base_url"].rstrip("/") + "/audio/speech",
+                    headers={"Authorization": f"Bearer {config['api_key']}"},
+                    json={"model": config["model"], "input": text, "voice": voice, "response_format": fmt},
+                )
+            resp.raise_for_status()
+            audio, ct = resp.content, content_type_for(fmt)
+    finally:
+        _synth_sem().release()
+
+    _cache_set(cache_key, audio)
+    return audio, ct
 
 
 # ============================================================

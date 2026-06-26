@@ -925,14 +925,38 @@ def tts_set_voice(request: TtsVoiceRequest, user: UserOut = Depends(current_user
     return TtsVoicesResponse(voices=voice_io.available_voices(), current=voice, configured=voice_io.tts_configured())
 
 
+def _enforce_user_rate(user_id: str, name: str, limit: int, window: int = 60) -> None:
+    """每用户每窗口分布式限流（Redis 固定窗口计数，跨节点）。比按 IP 的进程内限流更贴近防滥用。
+    Redis 异常时放行——不因缓存抖动锁死正常用户（按 IP 的进程内限流仍兜底）。"""
+    if limit <= 0:
+        return
+    r = getattr(capture_store, "r", None)
+    if r is None:
+        return
+    n = 0
+    try:
+        key = f"rt:rl:{name}:{user_id}:{int(_time.time()) // window}"
+        n = r.incr(key)
+        if n == 1:
+            r.expire(key, window)
+    except Exception:  # noqa: BLE001
+        return
+    if n > limit:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="操作过于频繁，请稍后再试")
+
+
 @app.get("/tts/speak")
 async def tts_speak(
     text: str = Query(..., min_length=1, max_length=600),
     user: UserOut = Depends(current_user),
 ) -> Response:
     """用用户选定的音色朗读一段文本（练习时播放 AI 台词）。"""
+    _enforce_user_rate(user.id, "tts", settings.tts_user_rate_per_min)
     voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
-    audio, content_type = await voice_io.synthesize(text, voice)
+    try:
+        audio, content_type = await voice_io.synthesize(text, voice)
+    except voice_io.TTSOverloaded as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     return Response(content=audio, media_type=content_type)
 
 
@@ -943,7 +967,11 @@ async def tts_preview(
     user: UserOut = Depends(current_user),
 ) -> Response:
     """试听某个音色（音色选择界面用）。返回音频字节。"""
-    audio, content_type = await voice_io.synthesize(text[:200], voice or None)
+    _enforce_user_rate(user.id, "tts", settings.tts_user_rate_per_min)
+    try:
+        audio, content_type = await voice_io.synthesize(text[:200], voice or None)
+    except voice_io.TTSOverloaded as exc:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     return Response(content=audio, media_type=content_type)
 
 
@@ -2391,6 +2419,7 @@ async def roleplay_message_audio(
     """方式1/2 后端语音：上传一句录音 → ASR（参考句偏置容错）→ 复用文字评分 → 词级发音纠正。
     操作步骤与文字版完全一致，只是把端侧识别换成后端识别。"""
     require_ai_access(user)
+    _enforce_user_rate(user.id, "rp_audio", settings.audio_user_rate_per_min)
     session = db.get_roleplay_session(user.id, session_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景练习不存在")

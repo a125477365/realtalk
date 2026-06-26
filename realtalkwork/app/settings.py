@@ -126,6 +126,11 @@ class Settings:
     tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND")
     tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
     tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
+    # 防滥用：TTS 结果缓存 TTL、合成并发上限、贵接口每用户每分钟上限
+    tts_cache_ttl_seconds: int = int(os.getenv("TTS_CACHE_TTL_SECONDS", str(7 * 24 * 3600)))
+    tts_max_concurrency: int = int(os.getenv("TTS_MAX_CONCURRENCY", "8"))
+    tts_user_rate_per_min: int = int(os.getenv("TTS_USER_RATE_PER_MIN", "30"))
+    audio_user_rate_per_min: int = int(os.getenv("AUDIO_USER_RATE_PER_MIN", "30"))
 
     # 音频分布式：入口节点把上传文件转发给某个 worker 节点处理（共享同一数据库）
     # 逗号分隔的 worker 内部地址，如 "http://10.0.0.6:8000,http://10.0.0.7:8000"；留空=本机处理
