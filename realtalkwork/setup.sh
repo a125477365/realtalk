@@ -319,10 +319,18 @@ if $DEPLOY_BACKEND; then
     PAY_DEV_CONFIRM=false
     ask "收款主体名称（显示给用户）" "RealTalk"
     RECV_NAME="$REPLY_VALUE"
+    note "支付回调必须验签后才入账（防伪造通知白嫖会员）。这些凭证也可稍后在管理台「支付验签配置」维护。"
     ask "配置微信支付商户？(yes/no)" "no"
     if [ "$REPLY_VALUE" = "yes" ]; then
       ask "微信支付商户号 MCHID" ""; WX_MCHID="$REPLY_VALUE"
-      ask_secret "微信支付 APIv3 密钥"; WX_APIKEY="$REPLY_VALUE"
+      ask_secret "微信支付 APIv3 密钥（回调验签解密用）"; WX_APIKEY="$REPLY_VALUE"
+      ask "微信平台证书序列号（回调验签用，可留空稍后在管理台填）" ""; WX_SERIAL="$REPLY_VALUE"
+      ask "微信平台证书 PEM 文件路径（回调验签用，可留空稍后在管理台粘贴）" ""; WX_CERT_PATH="$REPLY_VALUE"
+      WX_CERT=""
+      if [ -n "$WX_CERT_PATH" ] && [ -f "$WX_CERT_PATH" ]; then
+        # 多行 PEM → 字面 \n 单行写入 .env（后端 _multiline_env 还原）
+        WX_CERT="$(sed ':a;N;$!ba;s/\n/\\n/g' "$WX_CERT_PATH")"
+      fi
       ask "微信支付回调地址 NOTIFY_URL" "https://your-domain.com/payment/wechat/webhook"; WX_NOTIFY="$REPLY_VALUE"
     fi
     ask "配置支付宝当面付？(yes/no)" "no"
@@ -359,6 +367,7 @@ if $DEPLOY_BACKEND; then
     "WECHAT_RECEIVER_ACCOUNT=$WX_RECV" "ALIPAY_RECEIVER_ACCOUNT=$ALI_RECV"
     "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
     "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
+    "WECHAT_CERT_SERIAL=$WX_SERIAL" "WECHAT_PLATFORM_CERT=$WX_CERT"
     "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
   )
 fi

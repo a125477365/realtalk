@@ -130,6 +130,7 @@ from .schemas import (
     SupportTicketOut,
     SupportTicketUpdateRequest,
     TokenUsageInfo,
+    PaymentSettingsRequest,
     PronunciationWord,
     TtsSettingsRequest,
     TtsVoiceRequest,
@@ -139,6 +140,7 @@ from .schemas import (
 from .capture_store import capture_store
 from . import voice_pipeline
 from . import voice_io
+from . import payments
 from .realtime_voice import (
     build_session_instructions,
     proxy_session,
@@ -998,6 +1000,45 @@ def admin_set_voice_servers(
     return admin_get_voice_servers(admin)
 
 
+@app.get("/admin/api/settings/payment")
+def admin_get_payment(admin: dict = Depends(current_admin)) -> dict:
+    """支付验签凭证（敏感项只回是否已配置/掩码，不回明文）。"""
+    c = payments.resolve_payment_config()
+    return {
+        "wechat_mchid": c["wechat_mchid"] or "",
+        "wechat_cert_serial": c["wechat_cert_serial"] or "",
+        "wechat_apiv3_key_configured": bool(c["wechat_apiv3_key"]),
+        "wechat_platform_cert_configured": bool(c["wechat_platform_cert"]),
+        "wechat_verify_ready": payments.wechat_configured(c),
+        "alipay_app_id": c["alipay_app_id"] or "",
+        "alipay_public_key_configured": bool(c["alipay_public_key"]),
+        "alipay_verify_ready": payments.alipay_configured(c),
+    }
+
+
+@app.post("/admin/api/settings/payment")
+def admin_set_payment(
+    request: PaymentSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    # 非敏感项空串也允许清空；敏感项（密钥/证书/公钥）留空=保持不变
+    if request.wechat_mchid is not None:
+        db.set_app_setting("wechat_mchid", request.wechat_mchid.strip())
+    if request.wechat_cert_serial is not None:
+        db.set_app_setting("wechat_cert_serial", request.wechat_cert_serial.strip())
+    if request.wechat_apiv3_key:
+        db.set_app_setting("wechat_apiv3_key", request.wechat_apiv3_key.strip())
+    if request.wechat_platform_cert:
+        db.set_app_setting("wechat_platform_cert", request.wechat_platform_cert.strip())
+    if request.alipay_app_id is not None:
+        db.set_app_setting("alipay_app_id", request.alipay_app_id.strip())
+    if request.alipay_public_key:
+        db.set_app_setting("alipay_public_key", request.alipay_public_key.strip())
+    return admin_get_payment(admin)
+
+
 @app.get("/admin/api/usage/users")
 def admin_usage_users(
     days: int = Query(default=30, ge=1, le=120),
@@ -1605,34 +1646,42 @@ async def verify_apple_purchase(
 
 @app.post("/payment/wechat/webhook")
 async def wechat_payment_webhook(request: Request) -> dict:
-    """WeChat Pay v3 async notification handler."""
+    """WeChat Pay v3 异步回调：必须验签 + 解密，绝不信任明文（防伪造通知白嫖会员）。"""
     body = await request.body()
-    headers = dict(request.headers)
-    
-    if not settings.wechat_mchid:
-        return {"code": "FAIL", "message": "not configured"}
-    
+    headers = {k.lower(): v for k, v in request.headers.items()}
+
+    config = payments.resolve_payment_config()
+    if not payments.wechat_configured(config):
+        return {"code": "FAIL", "message": "not configured"}   # 未配 APIv3 密钥/平台证书 → 拒绝，不处理
+    # 1) 验签（平台证书 RSA-SHA256 + 时间窗防重放）：失败直接拒绝
+    if not payments.verify_wechat_signature(headers, body, config):
+        return {"code": "FAIL", "message": "invalid signature"}
+
     try:
         payload = _json.loads(body)
     except Exception:
         return {"code": "FAIL", "message": "invalid json"}
-    
+
     event_type = payload.get("event_type", "")
-    resource = payload.get("resource", {})
+    # 2) 解密 resource（真实金额/状态在密文里，明文不可信）
+    try:
+        resource = payments.decrypt_wechat_resource(payload.get("resource", {}), config["wechat_apiv3_key"])
+    except Exception:
+        return {"code": "FAIL", "message": "decrypt failed"}
     out_trade_no = resource.get("out_trade_no", "")
-    
+
     if not out_trade_no:
         return {"code": "FAIL", "message": "no order id"}
-    
-    payload_json = _json.dumps(payload)
+
+    payload_json = _json.dumps(resource)
     webhook_id = db.store_payment_webhook(out_trade_no, "wechat", event_type, payload_json)
-    
+
     if event_type == "TRANSACTION.SUCCESS":
         trade_state = resource.get("trade_state", "")
         if trade_state == "SUCCESS":
             trade_data = resource.get("amount", {})
             paid_amount = int(trade_data.get("total", 0))
-            
+
             if paid_amount > 0:
                 try:
                     _, _ = db.mark_recharge_paid_by_order_id(out_trade_no, paid_amount)
@@ -1647,17 +1696,20 @@ async def wechat_payment_webhook(request: Request) -> dict:
 
 @app.post("/payment/alipay/webhook")
 async def alipay_payment_webhook(request: Request) -> str:
-    """Alipay async notification handler. Returns 'success' plain text."""
+    """支付宝异步回调：必须 RSA2 验签后才处理（防伪造通知白嫖会员）。返回 'success' 纯文本。"""
     form = await request.form()
-    
-    if not settings.alipay_app_id:
-        return "fail"
-    
+
+    config = payments.resolve_payment_config()
+    if not payments.alipay_configured(config):
+        return "fail"   # 未配支付宝公钥 → 无法验签 → 拒绝
     try:
-        params = dict(form)
+        params = {k: str(v) for k, v in form.items()}
+        # 验签：失败直接拒绝
+        if not payments.verify_alipay_signature(params, config["alipay_public_key"]):
+            return "fail"
         out_trade_no = params.get("out_trade_no", "")
         trade_status = params.get("trade_status", "")
-        
+
         if not out_trade_no:
             return "fail"
         

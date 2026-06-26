@@ -31,6 +31,13 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _multiline_env(name: str) -> str | None:
+    """多行 PEM/证书类 env：setup.sh 写入时把换行转义为字面 \\n，这里还原成真实换行。
+    （管理台维护时存的是真实换行，不经过这里。）"""
+    value = os.getenv(name)
+    return value.replace("\\n", "\n") if value else value
+
+
 _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 
@@ -217,7 +224,9 @@ class Settings:
 
     # WeChat Pay (native payment)
     wechat_mchid: str | None = os.getenv("WECHAT_MCHID")
-    wechat_api_key: str | None = os.getenv("WECHAT_API_KEY")
+    wechat_api_key: str | None = os.getenv("WECHAT_API_KEY")           # APIv3 密钥（回调验签解密用）
+    wechat_platform_cert: str | None = _multiline_env("WECHAT_PLATFORM_CERT")  # 微信支付平台证书 PEM（验回调签名）
+    wechat_cert_serial: str | None = os.getenv("WECHAT_CERT_SERIAL")      # 平台证书序列号（与回调 Wechatpay-Serial 比对）
     wechat_ssl_cert_path: str | None = os.getenv("WECHAT_SSL_CERT_PATH")
     wechat_ssl_key_path: str | None = os.getenv("WECHAT_SSL_KEY_PATH")
     wechat_notify_url: str | None = os.getenv("WECHAT_NOTIFY_URL")
@@ -225,7 +234,7 @@ class Settings:
     # Alipay (当面付)
     alipay_app_id: str | None = os.getenv("ALIPAY_APP_ID")
     alipay_private_key: str | None = os.getenv("ALIPAY_PRIVATE_KEY")
-    alipay_public_key: str | None = os.getenv("ALIPAY_PUBLIC_KEY")
+    alipay_public_key: str | None = _multiline_env("ALIPAY_PUBLIC_KEY")
     alipay_sandbox: bool = _bool_env("ALIPAY_SANDBOX", False)
     alipay_notify_url: str | None = os.getenv("ALIPAY_NOTIFY_URL")
 

@@ -482,6 +482,16 @@ class TtsVoiceRequest(BaseModel):
     voice: str = Field(min_length=1, max_length=100)
 
 
+class PaymentSettingsRequest(BaseModel):
+    # 支付回调验签/解密凭证（管理台维护、存 DB 系统参数表；多活后端共用）
+    wechat_mchid: str | None = Field(default=None, max_length=64)
+    wechat_apiv3_key: str | None = Field(default=None, max_length=128)      # 留空=不改
+    wechat_platform_cert: str | None = Field(default=None, max_length=8000)  # 平台证书 PEM
+    wechat_cert_serial: str | None = Field(default=None, max_length=128)
+    alipay_app_id: str | None = Field(default=None, max_length=64)
+    alipay_public_key: str | None = Field(default=None, max_length=8000)
+
+
 class TtsVoicesResponse(BaseModel):
     voices: list[str]
     current: str

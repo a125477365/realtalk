@@ -1016,6 +1016,22 @@ function renderPlanQuotaCards() {
     '  <div class="hint" id="voice-servers-current" style="margin:6px 0"></div>',
     '  <button class="btn btn-primary" style="margin-top:6px" onclick="saveVoiceServers()">保存语音服务器列表</button>',
     "</div>",
+    '<div class="card">',
+    "  <h2>支付验签配置<span class=\"subtitle\">支付回调必须验签后才入账，防伪造通知白嫖会员</span></h2>",
+    '  <div id="pay-status" class="hint" style="margin-bottom:8px"></div>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>微信 mchid（商户号）</label><input type="text" id="pay-wx-mchid" /></div>',
+    '    <div class="form-group"><label>微信平台证书序列号</label><input type="text" id="pay-wx-serial" placeholder="可留空" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>微信 APIv3 密钥 <span class="hint" id="pay-wx-key-st"></span></label>',
+    '      <input type="password" id="pay-wx-apiv3" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>微信支付平台证书 PEM <span class="hint" id="pay-wx-cert-st"></span></label>',
+    '      <textarea id="pay-wx-cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----...（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    '    <div class="form-group"><label>支付宝 app_id</label><input type="text" id="pay-ali-appid" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>支付宝公钥 <span class="hint" id="pay-ali-key-st"></span></label>',
+    '      <textarea id="pay-ali-pub" rows="3" placeholder="支付宝公钥（base64 或 PEM；留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" style="margin-top:8px" onclick="savePayment()">保存支付配置</button>',
+    "</div>",
   ].join("");
 }
 
@@ -1121,6 +1137,43 @@ function loadPlanQuotaAsr() {
           : '<span style="color:var(--danger,#e03131)">未配置 — 语音上传当前会直接报错</span>';
       }
     });
+  });
+  apiGet("/admin/api/settings/payment").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("pay-wx-mchid")) getEl("pay-wx-mchid").value = d.wechat_mchid || "";
+      if (getEl("pay-wx-serial")) getEl("pay-wx-serial").value = d.wechat_cert_serial || "";
+      if (getEl("pay-ali-appid")) getEl("pay-ali-appid").value = d.alipay_app_id || "";
+      if (getEl("pay-wx-key-st")) getEl("pay-wx-key-st").textContent = d.wechat_apiv3_key_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-wx-cert-st")) getEl("pay-wx-cert-st").textContent = d.wechat_platform_cert_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-ali-key-st")) getEl("pay-ali-key-st").textContent = d.alipay_public_key_configured ? "（已配置）" : "（未配置）";
+      var st = getEl("pay-status");
+      if (st) {
+        st.innerHTML =
+          "微信验签：" + (d.wechat_verify_ready ? "<b style='color:#0a7a3a'>就绪</b>" : "<b style='color:#e03131'>未就绪（回调将被拒绝）</b>") +
+          "　支付宝验签：" + (d.alipay_verify_ready ? "<b style='color:#0a7a3a'>就绪</b>" : "<b style='color:#e03131'>未就绪（回调将被拒绝）</b>");
+      }
+    });
+  });
+}
+
+function savePayment() {
+  var body = {
+    wechat_mchid: (getEl("pay-wx-mchid") || { value: "" }).value.trim(),
+    wechat_cert_serial: (getEl("pay-wx-serial") || { value: "" }).value.trim(),
+    alipay_app_id: (getEl("pay-ali-appid") || { value: "" }).value.trim(),
+  };
+  var k = (getEl("pay-wx-apiv3") || { value: "" }).value.trim();
+  if (k) body.wechat_apiv3_key = k;
+  var c = (getEl("pay-wx-cert") || { value: "" }).value.trim();
+  if (c) body.wechat_platform_cert = c;
+  var ap = (getEl("pay-ali-pub") || { value: "" }).value.trim();
+  if (ap) body.alipay_public_key = ap;
+  apiPost("/admin/api/settings/payment", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("支付配置已保存", "success");
+    loadPlanQuotaAsr();
   });
 }
 
@@ -2119,6 +2172,7 @@ window.saveQuota = saveQuota;
 window.saveAsr = saveAsr;
 window.saveTts = saveTts;
 window.saveVoiceServers = saveVoiceServers;
+window.savePayment = savePayment;
 window.markOrderPaid = markOrderPaid;
 window.loadOverviewCharts = loadOverviewCharts;
 window.applyModelPreset = applyModelPreset;

@@ -1196,6 +1196,13 @@ class Database:
             "asr_base_url": getattr(s, "asr_base_url", None),
             "asr_api_key": getattr(s, "asr_api_key", None),
             "asr_model": getattr(s, "asr_model", None),
+            # 支付验签凭证（多活后端共用，DB 为准；env/setup.sh 仅首装播种）
+            "wechat_mchid": getattr(s, "wechat_mchid", None),
+            "wechat_apiv3_key": getattr(s, "wechat_api_key", None),
+            "wechat_platform_cert": getattr(s, "wechat_platform_cert", None),
+            "wechat_cert_serial": getattr(s, "wechat_cert_serial", None),
+            "alipay_app_id": getattr(s, "alipay_app_id", None),
+            "alipay_public_key": getattr(s, "alipay_public_key", None),
         }
         existing = self.get_app_settings_map(list(numeric) + list(strings))
         written = 0
