@@ -1154,6 +1154,18 @@ class Database:
                     insert(app_settings).values(key=key, value_text=value, updated_at=now)
                 )
 
+    def get_or_create_jwt_secret(self) -> str:
+        """JWT 签名密钥存共享 DB（系统参数表），保证多活各后端用同一把——否则 A 节点签的令牌 B 节点不认。
+        已有则返回；没有则生成一把存入并重读（重读化解并发首启的竞态，最终各节点收敛到同一值）。"""
+        existing = self.get_app_setting_str("jwt_secret")
+        if existing:
+            return existing
+        try:
+            self.set_app_setting("jwt_secret", os.urandom(32).hex())
+        except Exception:  # noqa: BLE001 — 并发首启可能撞键，忽略后重读
+            pass
+        return self.get_app_setting_str("jwt_secret") or ""
+
     def seed_app_settings_from_env(self) -> int:
         """只在「全新数据库的首次启动」把这些「DB 存储型」参数从 env/默认值初始化进 app_settings。
 
@@ -1196,6 +1208,12 @@ class Database:
             "asr_base_url": getattr(s, "asr_base_url", None),
             "asr_api_key": getattr(s, "asr_api_key", None),
             "asr_model": getattr(s, "asr_model", None),
+            # TTS 云端配置（管理台可改；mode/本地命令是每节点的，不入库）
+            "tts_base_url": getattr(s, "tts_base_url", None),
+            "tts_api_key": getattr(s, "tts_api_key", None),
+            "tts_model": getattr(s, "tts_model", None),
+            "tts_voices": getattr(s, "tts_voices", None),
+            "tts_default_voice": getattr(s, "tts_default_voice", None),
             # 支付验签凭证（多活后端共用，DB 为准；env/setup.sh 仅首装播种）
             "wechat_mchid": getattr(s, "wechat_mchid", None),
             "wechat_apiv3_key": getattr(s, "wechat_api_key", None),
