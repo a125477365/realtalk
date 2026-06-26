@@ -144,6 +144,10 @@ final class AppModel: ObservableObject {
     @Published var trainingAnswer = ""
     @Published var isWorking = false
     @Published var statusMessage = ""
+    // AI 朗读音色（后端 TTS）
+    @Published var ttsVoices: [String] = []
+    @Published var ttsCurrentVoice = ""
+    @Published var ttsConfigured = false
     /// 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在主界面显示）。
     @Published var failureAlert: FailureAlert?
 
@@ -226,10 +230,15 @@ final class AppModel: ObservableObject {
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
         }
-        practiceSpeech.onUtterance = { [weak self] text in
+        practiceSpeech.onAudioUtterance = { [weak self] url in
             Task { @MainActor in
-                await self?.submitRoleplayUtterance(text)
+                await self?.submitRoleplayAudio(url)
             }
+        }
+        // AI 台词改用后端 TTS（可选音色、口音更自然）；后端不可用时 VoicePromptPlayer 自动回退本机合成
+        voice.audioProvider = { [weak self] text in
+            guard let self else { return nil }
+            return await self.fetchTTSAudio(text)
         }
         shortcutObserver = NotificationCenter.default.addObserver(
             forName: RealTalkShortcutAction.notification,
@@ -1001,23 +1010,85 @@ final class AppModel: ObservableObject {
                 guidanceMode: guidanceMode.rawValue,
                 token: token
             )
-            let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let feedback, feedback.isEmpty == false {
-                statusMessage = feedback
-                if guidanceMode == .realtime || state.completed {
-                    appendChat(.assistant, feedback)
-                }
-                handleRoleplayState(state, spokenPreface: feedback)
-            } else {
-                statusMessage = "继续对话"
-                handleRoleplayState(state)
-            }
+            applyRoleplayTurnState(state)
             await loadPracticeHistory()
         } catch {
             // 系统/模型/额度异常中断了对话流程：停止本轮并弹失败提示框（保留会话，可重试或退出）
             isVoiceConversationActive = false
             practiceSpeech.stop(emit: false)
             presentFailure(error.localizedDescription, title: "对话中断")
+        }
+    }
+
+    /// 后端语音回合：把录好的一句音频上传给后端识别+评分+发音纠正（方式1/2 共用）。
+    func submitRoleplayAudio(_ fileURL: URL) async {
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        guard let token = auth.token else { statusMessage = "请先登录"; return }
+        guard let roleplay else { statusMessage = "请先开始口语对练"; return }
+        cancelAnswerTimeout()
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            let state = try await api.roleplayMessageAudio(
+                sessionId: roleplay.sessionId,
+                guidanceMode: guidanceMode.rawValue,
+                fileURL: fileURL,
+                token: token
+            )
+            // 把后端识别到的英文当作「用户这句」上屏；附词级发音提示
+            if let recognized = state.recognizedText?.trimmingCharacters(in: .whitespacesAndNewlines), recognized.isEmpty == false {
+                lastSpokenAnswer = recognized
+                appendChat(.user, recognized)
+                let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
+                if missed.isEmpty == false {
+                    appendChat(.system, "发音再注意：\(missed.joined(separator: "、"))")
+                }
+            }
+            applyRoleplayTurnState(state)
+            await loadPracticeHistory()
+        } catch {
+            isVoiceConversationActive = false
+            practiceSpeech.stop(emit: false)
+            presentFailure(error.localizedDescription, title: "对话中断")
+        }
+    }
+
+    /// 一轮回包的统一处理（文字/语音共用）：反馈上屏 + 推进 + 朗读 AI 台词。
+    private func applyRoleplayTurnState(_ state: RoleplayStateResponse) {
+        let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let feedback, feedback.isEmpty == false {
+            statusMessage = feedback
+            if guidanceMode == .realtime || state.completed {
+                appendChat(.assistant, feedback)
+            }
+            handleRoleplayState(state, spokenPreface: feedback)
+        } else {
+            statusMessage = "继续对话"
+            handleRoleplayState(state)
+        }
+    }
+
+    /// 供 VoicePromptPlayer 拉取后端 TTS 音频（主线程隔离，避免 actor 问题）。
+    func fetchTTSAudio(_ text: String) async -> Data? {
+        guard let token = auth.token else { return nil }
+        return try? await api.ttsSpeak(text: text, token: token)
+    }
+
+    func loadTtsVoices() async {
+        guard let token = auth.token else { return }
+        if let v = try? await api.ttsVoices(token: token) {
+            ttsVoices = v.voices
+            ttsCurrentVoice = v.current
+            ttsConfigured = v.configured
+        }
+    }
+
+    func setTtsVoice(_ voice: String) async {
+        guard let token = auth.token, voice.isEmpty == false else { return }
+        if let v = try? await api.setTtsVoice(voice, token: token) {
+            ttsVoices = v.voices
+            ttsCurrentVoice = v.current
+            statusMessage = "已设置 AI 音色：\(voice)"
         }
     }
 

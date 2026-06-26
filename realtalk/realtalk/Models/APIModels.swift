@@ -174,6 +174,17 @@ struct AudioUploadAck: Codable, Equatable {
     let status: String?
 }
 
+/// 可选 AI 音色 + 当前用户已选音色。
+struct TtsVoices: Codable, Equatable {
+    let voices: [String]
+    let current: String
+    let configured: Bool
+}
+
+struct TtsVoiceBody: Encodable {
+    let voice: String
+}
+
 struct AuthResponse: Codable {
     let token: String
     let refreshToken: String?

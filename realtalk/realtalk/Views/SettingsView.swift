@@ -29,6 +29,22 @@ struct SettingsView: View {
                     }
                 }
 
+                if model.ttsConfigured, model.ttsVoices.isEmpty == false {
+                    Section {
+                        Picker("AI 朗读音色", selection: $model.ttsCurrentVoice) {
+                            ForEach(model.ttsVoices, id: \.self) { Text($0).tag($0) }
+                        }
+                        .onChange(of: model.ttsCurrentVoice) { _, newValue in
+                            Task { await model.setTtsVoice(newValue) }
+                        }
+                    } header: {
+                        Text("AI 声音").font(.system(size: 13 * model.fontScale))
+                    } footer: {
+                        Text("练习时朗读 AI 台词的声音（由后端语音合成）。")
+                            .font(.system(size: 12 * model.fontScale))
+                    }
+                }
+
                 Section("对话与字幕") {
                     Toggle("显示双语字幕", isOn: $model.showDialogueContent)
                     Toggle("自动朗读 AI 台词", isOn: $model.autoSpeakAI)
@@ -83,6 +99,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .task { await model.loadTtsVoices() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }

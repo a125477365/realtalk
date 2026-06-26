@@ -158,6 +158,11 @@ struct RoleplayMessage: Identifiable, Codable, Equatable {
     }
 }
 
+struct PronunciationWord: Codable, Equatable {
+    let word: String
+    let ok: Bool
+}
+
 struct RoleplayStateResponse: Codable, Equatable {
     let sessionId: String
     let scenario: ScenarioResponse
@@ -171,6 +176,8 @@ struct RoleplayStateResponse: Codable, Equatable {
     let messages: [RoleplayMessage]
     let latestFeedback: String?
     let latestAccepted: Bool?
+    let recognizedText: String?              // 后端语音识别到的英文（语音回合）
+    let pronunciation: [PronunciationWord]   // 逐词发音命中（语音回合）
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -185,6 +192,26 @@ struct RoleplayStateResponse: Codable, Equatable {
         case messages
         case latestFeedback = "latest_feedback"
         case latestAccepted = "latest_accepted"
+        case recognizedText = "recognized_text"
+        case pronunciation
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try c.decode(String.self, forKey: .sessionId)
+        scenario = try c.decode(ScenarioResponse.self, forKey: .scenario)
+        selectedRole = try c.decode(String.self, forKey: .selectedRole)
+        aiRole = try c.decode(String.self, forKey: .aiRole)
+        nextLine = try c.decodeIfPresent(SceneLine.self, forKey: .nextLine)
+        progress = try c.decode(Int.self, forKey: .progress)
+        total = try c.decode(Int.self, forKey: .total)
+        score = try c.decode(Double.self, forKey: .score)
+        completed = try c.decode(Bool.self, forKey: .completed)
+        messages = try c.decode([RoleplayMessage].self, forKey: .messages)
+        latestFeedback = try c.decodeIfPresent(String.self, forKey: .latestFeedback)
+        latestAccepted = try c.decodeIfPresent(Bool.self, forKey: .latestAccepted)
+        recognizedText = try c.decodeIfPresent(String.self, forKey: .recognizedText)
+        pronunciation = (try c.decodeIfPresent([PronunciationWord].self, forKey: .pronunciation)) ?? []
     }
 }
 

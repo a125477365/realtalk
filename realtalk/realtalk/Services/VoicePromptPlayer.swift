@@ -2,18 +2,22 @@ import AVFoundation
 import Combine
 import Foundation
 
+/// 朗读 AI 台词。优先用「后端 TTS」（可选音色、口音更自然），后端不可用时回退本机合成，保证总能出声。
+/// 公开接口与原先一致（speak/stop/isSpeaking/audioLevel），上层对练编排无需改动。
 @MainActor
 final class VoicePromptPlayer: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
-    /// AI 朗读时的跳动强度（0...1）。由合成器的真实逐词朗读进度事件
-    /// (`willSpeakRangeOfSpeechString`) 驱动并随时间衰减，而非固定正弦动画，
-    /// 因此提示圈是跟着 AI 实际说话的音节律动跳动的。
     @Published private(set) var audioLevel: Double = 0
 
+    /// 由 AppModel 注入：给定文本返回后端合成的音频数据（调 /tts/speak）。为 nil 或返回 nil 时回退本机合成。
+    var audioProvider: ((String) async -> Data?)?
+
     private let synthesizer = AVSpeechSynthesizer()
-    private var queue: [SpokenPrompt] = []
+    private var player: AVAudioPlayer?
+    private var queue: [String] = []
     private var completion: (() -> Void)?
-    private var decayTimer: Timer?
+    private var levelTimer: Timer?
+    private var fetchTask: Task<Void, Never>?
 
     override init() {
         super.init()
@@ -32,21 +36,24 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
             completion?()
             return
         }
-
         stop()
-        queue = trimmed.map { SpokenPrompt(text: $0, language: Self.language(for: $0)) }
+        queue = trimmed
         self.completion = completion
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-        startLevelDecay()
+        startLevelTimer()
         speakNext()
     }
 
     func stop() {
+        fetchTask?.cancel()
+        fetchTask = nil
         queue.removeAll()
         completion = nil
         synthesizer.stopSpeaking(at: .immediate)
-        stopLevelDecay()
+        player?.stop()
+        player = nil
+        stopLevelTimer()
         isSpeaking = false
         audioLevel = 0
     }
@@ -55,26 +62,47 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
         guard queue.isEmpty == false else {
             isSpeaking = false
             audioLevel = 0
-            stopLevelDecay()
+            stopLevelTimer()
             let finished = completion
             completion = nil
             finished?()
             return
         }
+        let text = queue.removeFirst()
+        isSpeaking = true
+        if let provider = audioProvider {
+            fetchTask = Task { [weak self] in
+                let data = await provider(text)
+                guard let self, Task.isCancelled == false else { return }
+                if let data, self.playData(data) { return }   // 播放完成会在 delegate 里继续下一句
+                self.speakFallback(text)                       // 后端音频不可用 → 本机合成兜底
+            }
+        } else {
+            speakFallback(text)
+        }
+    }
 
-        let prompt = queue.removeFirst()
-        let utterance = AVSpeechUtterance(string: prompt.text)
-        // 优先选用「增强/高级」音质的语音，紧凑(compact)版常有吞字/含糊；同时给一点起播延迟避免首字被切
-        utterance.voice = Self.bestVoice(for: prompt.language)
+    private func playData(_ data: Data) -> Bool {
+        do {
+            let p = try AVAudioPlayer(data: data)
+            p.delegate = self
+            p.isMeteringEnabled = true
+            player = p
+            return p.play()
+        } catch {
+            return false
+        }
+    }
+
+    private func speakFallback(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = Self.bestVoice(for: Self.language(for: text))
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9
-        utterance.pitchMultiplier = 1.0
         utterance.preUtteranceDelay = 0.06
         synthesizer.speak(utterance)
     }
 
     private static var voiceCache: [String: AVSpeechSynthesisVoice?] = [:]
-
-    /// 同语言下优先 premium > enhanced > 默认，提升清晰度。
     private static func bestVoice(for language: String) -> AVSpeechSynthesisVoice? {
         if let cached = voiceCache[language] { return cached }
         let candidates = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == language }
@@ -85,48 +113,59 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
         return chosen
     }
 
-    // MARK: 音律跳动（基于真实朗读进度，逐词脉冲 + 衰减）
-
-    private func startLevelDecay() {
-        decayTimer?.invalidate()
-        decayTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
-            guard let player = self else { return }
-            Task { @MainActor in
-                player.decayTick()
-            }
-        }
-    }
-
-    private func decayTick() {
-        audioLevel *= 0.80
-        if audioLevel < 0.02 { audioLevel = 0 }
-    }
-
-    private func stopLevelDecay() {
-        decayTimer?.invalidate()
-        decayTimer = nil
-    }
-
-    private func pulse(forWordLength length: Int) {
-        // 词越长脉冲越强，模拟真实说话的音节起伏
-        audioLevel = min(1.0, 0.5 + Double(length) * 0.06)
-    }
-
     private static func language(for text: String) -> String {
         text.range(of: "\\p{Han}", options: .regularExpression) == nil ? "en-US" : "zh-CN"
     }
+
+    // MARK: 音律跳动（后端音频用功率计，本机合成用逐词脉冲衰减）
+
+    private func startLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.levelTick() }
+        }
+    }
+
+    private func levelTick() {
+        if let player, player.isPlaying {
+            player.updateMeters()
+            let power = player.averagePower(forChannel: 0)        // dB，约 -60...0
+            audioLevel = max(0, min(1, (Double(power) + 50) / 50))
+        } else {
+            audioLevel *= 0.80
+            if audioLevel < 0.02 { audioLevel = 0 }
+        }
+    }
+
+    private func stopLevelTimer() {
+        levelTimer?.invalidate()
+        levelTimer = nil
+    }
+
+    private func pulse(forWordLength length: Int) {
+        audioLevel = min(1.0, 0.5 + Double(length) * 0.06)
+    }
 }
 
-private struct SpokenPrompt {
-    let text: String
-    let language: String
+extension VoicePromptPlayer: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.player = nil
+            speakNext()
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            self.player = nil
+            speakNext()
+        }
+    }
 }
 
 extension VoicePromptPlayer: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            isSpeaking = true
-        }
+        Task { @MainActor in isSpeaking = true }
     }
 
     nonisolated func speechSynthesizer(
@@ -135,20 +174,14 @@ extension VoicePromptPlayer: AVSpeechSynthesizerDelegate {
         utterance: AVSpeechUtterance
     ) {
         let length = characterRange.length
-        Task { @MainActor in
-            pulse(forWordLength: length)
-        }
+        Task { @MainActor in pulse(forWordLength: length) }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            speakNext()
-        }
+        Task { @MainActor in speakNext() }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            isSpeaking = false
-        }
+        Task { @MainActor in isSpeaking = false }
     }
 }

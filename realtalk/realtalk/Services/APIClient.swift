@@ -246,6 +246,61 @@ final class APIClient {
         )
     }
 
+    /// 方式1/2 后端语音：上传一句录音，后端识别+评分+发音纠正，返回对练状态。
+    func roleplayMessageAudio(sessionId: String, guidanceMode: String, fileURL: URL, token: String) async throws -> RoleplayStateResponse {
+        let boundary = "rt-\(UUID().uuidString)"
+        var comps = URLComponents(url: url(for: "/roleplay/message/audio"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "session_id", value: sessionId),
+                             URLQueryItem(name: "guidance_mode", value: guidanceMode)]
+        guard let u = comps?.url else { throw APIClientError.invalidResponse }
+        var request = URLRequest(url: u)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let filename = fileURL.lastPathComponent
+        let fileData = try Data(contentsOf: fileURL)
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+        return try await send(request)
+    }
+
+    /// 后端 TTS 朗读一段文本（用用户选定音色），返回音频数据供播放。
+    func ttsSpeak(text: String, token: String) async throws -> Data {
+        var comps = URLComponents(url: url(for: "/tts/speak"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "text", value: text)]
+        guard let u = comps?.url else { throw APIClientError.invalidResponse }
+        var request = URLRequest(url: u)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIClientError.server("语音合成失败")
+        }
+        return data
+    }
+
+    func ttsVoices(token: String) async throws -> TtsVoices {
+        try await get("/tts/voices", token: token, queryItems: [])
+    }
+
+    func setTtsVoice(_ voice: String, token: String) async throws -> TtsVoices {
+        try await post("/tts/voice", body: TtsVoiceBody(voice: voice), token: token)
+    }
+
+    /// 试听某音色的 URL（音色选择界面用）。
+    func ttsPreviewURL(voice: String) -> URL? {
+        var comps = URLComponents(url: url(for: "/tts/preview"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "voice", value: voice)]
+        return comps?.url
+    }
+
     func evaluateRoleplay(sessionId: String, token: String) async throws -> RoleplayStateResponse {
         try await post(
             "/roleplay/evaluate",
