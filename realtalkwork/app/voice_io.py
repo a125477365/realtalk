@@ -9,10 +9,13 @@ mode / 本地命令由部署控制（env / setup.sh），管理台只配置云�
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
+import re
 import struct
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -147,3 +150,64 @@ async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
         )
     resp.raise_for_status()
     return resp.content, content_type_for(fmt)
+
+
+# ============================================================
+# 语音识别（练习用）：复用 ASR 配置，转写时用参考句做偏置实现「宽容容错」
+# ============================================================
+
+async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: str | None = None,
+                     language: str = "en") -> str:
+    """把一小段练习录音转成文字。cloud 用参考句 prompt 做偏置（宽容识别），local 直接转写，dev 回参考句。"""
+    from .audio_pipeline import resolve_asr_config, _transcribe_local
+
+    config = resolve_asr_config()
+    is_cloud = bool(config["base_url"] and config["api_key"])
+    is_local = bool(config["mode"] == "local" and config["local_command"])
+    if config["dev_mode"] and not is_cloud and not is_local:
+        return (reference_text or "").strip()  # 开发模式：假定识别到参考句，链路可端到端联调
+
+    workdir = tempfile.mkdtemp(prefix="rt-asr-")
+    path = Path(workdir) / f"clip{suffix or '.m4a'}"
+    path.write_bytes(audio_bytes)
+    try:
+        if config["mode"] == "local":
+            if not is_local:
+                raise RuntimeError("本地转写命令未配置")
+            return (await asyncio.to_thread(_transcribe_local, config, path, Path(workdir))).strip()
+        if not is_cloud:
+            raise RuntimeError("语音识别服务未配置，请在管理台「系统设置」中配置 ASR")
+        data = {"model": config["model"], "language": language, "response_format": "json"}
+        if reference_text:
+            data["prompt"] = reference_text  # whisper 把 prompt 当上下文偏置 → 更宽容地识别成目标句
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
+            with path.open("rb") as fh:
+                resp = await client.post(
+                    config["base_url"].rstrip("/") + "/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {config['api_key']}"},
+                    data=data,
+                    files={"file": (path.name, fh, "audio/mpeg")},
+                )
+        resp.raise_for_status()
+        return str(resp.json().get("text", "")).strip()
+    finally:
+        import shutil
+
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _tokens(s: str) -> list[str]:
+    return [w for w in re.sub(r"[^\w']", " ", (s or "").lower()).split() if w]
+
+
+def pronunciation_diff(recognized: str, reference: str) -> list[dict]:
+    """逐词对比：参考句每个词是否在识别结果中按序出现。未出现≈漏读/读错，供发音纠正提示。"""
+    ref = _tokens(reference)
+    rec = _tokens(recognized)
+    ok = [False] * len(ref)
+    matcher = difflib.SequenceMatcher(a=ref, b=rec, autojunk=False)
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for i in range(i1, i2):
+                ok[i] = True
+    return [{"word": ref[i], "ok": ok[i]} for i in range(len(ref))]

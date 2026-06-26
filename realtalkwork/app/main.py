@@ -130,6 +130,7 @@ from .schemas import (
     SupportTicketOut,
     SupportTicketUpdateRequest,
     TokenUsageInfo,
+    PronunciationWord,
     TtsSettingsRequest,
     TtsVoiceRequest,
     TtsVoicesResponse,
@@ -922,6 +923,17 @@ def tts_set_voice(request: TtsVoiceRequest, user: UserOut = Depends(current_user
     voice = voice_io.normalize_voice(request.voice)
     db.set_user_tts_voice(user.id, voice)
     return TtsVoicesResponse(voices=voice_io.available_voices(), current=voice, configured=voice_io.tts_configured())
+
+
+@app.get("/tts/speak")
+async def tts_speak(
+    text: str = Query(..., min_length=1, max_length=600),
+    user: UserOut = Depends(current_user),
+) -> Response:
+    """用用户选定的音色朗读一段文本（练习时播放 AI 台词）。"""
+    voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
+    audio, content_type = await voice_io.synthesize(text, voice)
+    return Response(content=audio, media_type=content_type)
 
 
 @app.get("/tts/preview")
@@ -2367,6 +2379,42 @@ async def roleplay_message(
         latest_feedback=latest_feedback,
         latest_accepted=accepted,
     )
+
+
+@app.post("/roleplay/message/audio", response_model=RoleplayStateResponse)
+async def roleplay_message_audio(
+    session_id: str = Query(...),
+    guidance_mode: str = Query(default="realtime"),
+    file: UploadFile = File(...),
+    user: UserOut = Depends(current_user),
+) -> RoleplayStateResponse:
+    """方式1/2 后端语音：上传一句录音 → ASR（参考句偏置容错）→ 复用文字评分 → 词级发音纠正。
+    操作步骤与文字版完全一致，只是把端侧识别换成后端识别。"""
+    require_ai_access(user)
+    session = db.get_roleplay_session(user.id, session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景练习不存在")
+    scenario = db.get_scenario(user.id, session.scene_id)
+    if scenario is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="场景不存在")
+    target_line = next_user_line(session, scenario)
+    reference = target_line.english if target_line else None
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".m4a"
+    audio = await file.read()
+    if not audio:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="录音为空")
+    recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference)).strip()
+    if not recognized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="没听清，请再说一次")
+    gm = "final" if guidance_mode == "final" else "realtime"
+    resp = await roleplay_message(
+        RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
+        user,
+    )
+    resp.recognized_text = recognized
+    if reference:
+        resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
+    return resp
 
 
 @app.post("/roleplay/evaluate", response_model=RoleplayStateResponse)

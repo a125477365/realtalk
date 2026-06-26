@@ -250,6 +250,11 @@ class RoleplayMessageOut(BaseModel):
     created_at: datetime
 
 
+class PronunciationWord(BaseModel):
+    word: str
+    ok: bool  # 该参考词是否在识别结果中出现（未出现≈漏读/读错，供发音纠正提示）
+
+
 class RoleplayStateResponse(BaseModel):
     session_id: str
     scenario: ScenarioResponse
@@ -263,6 +268,9 @@ class RoleplayStateResponse(BaseModel):
     messages: list[RoleplayMessageOut]
     latest_feedback: str | None = None
     latest_accepted: bool | None = None
+    # 后端语音对练新增（仅 /roleplay/message/audio 填充；文字接口与旧客户端不受影响）
+    recognized_text: str | None = None              # 后端 ASR 识别到的英文
+    pronunciation: list[PronunciationWord] = Field(default_factory=list)  # 逐词发音命中情况
 
 
 class PracticeHistoryItem(BaseModel):
