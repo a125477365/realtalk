@@ -178,6 +178,21 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun ttsVoices(token: String): TtsVoices = get("/tts/voices", token)
     suspend fun setTtsVoice(voice: String, token: String): TtsVoices = post("/tts/voice", TtsVoiceBody(voice), token)
 
+    /** 解码 WebSocket 推来的整轮对练状态（与 HTTP 同一套解码器）。 */
+    fun decodeRoleplayState(jsonStr: String): RoleplayState? =
+        runCatching { json.decodeFromString<RoleplayState>(jsonStr) }.getOrNull()
+
+    /** 沉浸式后端语音流的 WebSocket 地址（http→ws / https→wss）。 */
+    fun roleplayStreamUrl(sessionId: String, token: String): String {
+        val q = java.net.URLEncoder.encode(token, "UTF-8")
+        val base = url("/roleplay/stream?token=$q&session_id=$sessionId")
+        return when {
+            base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+            base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+            else -> base
+        }
+    }
+
     /** 按需最终评估：中途退出也能拿到评分与建议，不推进对话。 */
     suspend fun evaluateRoleplay(sessionId: String, token: String): RoleplayState =
         post("/roleplay/evaluate", RoleplayEvaluateRequest(sessionId), token)

@@ -18,6 +18,7 @@ import com.example.realtalkad.data.TranscriptFileStore
 import com.example.realtalkad.data.TranscriptItem
 import com.example.realtalkad.speech.PracticeSpeech
 import com.example.realtalkad.speech.RealtimeVoiceClient
+import com.example.realtalkad.speech.RoleplayStreamClient
 import com.example.realtalkad.speech.SpeechCapture
 import com.example.realtalkad.speech.VoicePlayer
 import kotlinx.coroutines.Job
@@ -41,6 +42,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val capture = SpeechCapture(application)
     val practice = PracticeSpeech(application)
     val voice = VoicePlayer(application)
+    val stream = RoleplayStreamClient(application)
     val realtime = RealtimeVoiceClient(application)
     private val transcriptStore = TranscriptFileStore(application)
 
@@ -132,6 +134,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // AI 台词改用后端 TTS（可选音色）；后端不可用 VoicePlayer 自动回退本机 TTS
         voice.scope = viewModelScope
         voice.audioProvider = { text -> auth.token?.let { t -> runCatching { api.ttsSpeak(text, t) }.getOrNull() } }
+        // 沉浸式后端语音流（WS）：复用现有音圈电平绑定，结果回来直接刷新对练状态
+        stream.onUserLevel = { practiceAudioLevel.value = it }
+        stream.onAiLevel = { aiAudioLevel.value = it }
+        stream.onAiSpeaking = { isSpeaking.value = it }
+        stream.onResultState = { jsonStr -> applyStreamState(jsonStr) }
+        stream.onResultMessage = { msg -> statusMessage.value = msg }
+        stream.onCompleted = { isVoiceActive.value = false }
+        stream.onError = { msg ->
+            isVoiceActive.value = false
+            stream.stop()
+            presentFailure(msg, title = "对话中断")
+        }
         // 账号被其它设备顶掉/令牌被吊销时服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { viewModelScope.launch { forceLogout() } }
         // access 过期时用 refresh 续期（单飞）
@@ -519,7 +533,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     conversationExited = false
                     isVoiceActive.value = true
                     showImmersive.value = true   // 进入对话字幕全屏
-                    handleRoleplayState(state)
+                    applyStartState(state)
                 }
             }.onFailure { presentFailure(it.message, title = "无法开始练习") }
             isWorking.value = false
@@ -553,11 +567,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 cancelAnswerTimeout()
                 practice.stop()
                 voice.stop()
+                stream.stop()
                 statusMessage.value = "语音对话已暂停"
             }
             else -> {
                 isVoiceActive.value = true
-                listenForNextTurn()
+                if (conversationMode.value == "immersive") startImmersiveStream() else listenForNextTurn()
             }
         }
     }
@@ -579,7 +594,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 conversationExited = false
                 isVoiceActive.value = true
                 showImmersive.value = true
-                handleRoleplayState(state)
+                applyStartState(state)
             }.onFailure { presentFailure(it.message, title = "重新开始失败") }
             isWorking.value = false
         }
@@ -759,7 +774,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         file.delete()
     }
 
-    private fun handleRoleplayState(state: RoleplayState, spokenPreface: String? = null) {
+    /** 沉浸式是否走后端语音流（WebSocket：流式 + 抢话打断）。 */
+    private fun startImmersiveStream() {
+        val token = auth.token ?: return
+        val sid = roleplay?.sessionId ?: return
+        isVoiceActive.value = true
+        stream.start(api.roleplayStreamUrl(sid, token), guidanceMode.value)
+    }
+
+    /** 开始对练后：沉浸式由 WS 流驱动，其余走原 HTTP 流程。 */
+    private fun applyStartState(state: RoleplayState) {
+        if (conversationMode.value == "immersive") {
+            handleRoleplayState(state, drivenByStream = true)   // 上屏开场，不本地朗读
+            startImmersiveStream()
+        } else {
+            handleRoleplayState(state)
+        }
+    }
+
+    /** WS 推来的整轮状态：上屏识别文本/发音提示，并刷新对练状态。 */
+    private fun applyStreamState(jsonStr: String) {
+        val state = api.decodeRoleplayState(jsonStr) ?: return
+        state.recognizedText?.takeIf { it.isNotBlank() }?.let { rec ->
+            appendChat(ChatMessage.Sender.USER, rec)
+            val missed = state.pronunciation.filter { !it.ok }.map { it.word }
+            if (missed.isNotEmpty()) appendChat(ChatMessage.Sender.SYSTEM, "发音再注意：${missed.joinToString("、")}")
+        }
+        state.latestFeedback?.takeIf { it.isNotBlank() }?.let { appendChat(ChatMessage.Sender.ASSISTANT, it) }
+        handleRoleplayState(state, drivenByStream = true)
+    }
+
+    private fun handleRoleplayState(state: RoleplayState, spokenPreface: String? = null, drivenByStream: Boolean = false) {
         roleplay = state
         roleplayState.value = state
         scenario = state.scenario
@@ -784,6 +829,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听
         if (conversationExited) return
+        // 沉浸式后端语音流：识别/朗读/抢话都在流里，不本地朗读/聆听
+        if (drivenByStream) return
 
         // 「自动朗读 AI 台词」关闭时不朗读，直接进入聆听
         val toSpeak = if (autoSpeakAI.value) {
@@ -973,6 +1020,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         cancelAnswerTimeout()
         practice.stop()
         voice.stop()
+        stream.stop()
         isVoiceActive.value = false
         showImmersive.value = false
     }
