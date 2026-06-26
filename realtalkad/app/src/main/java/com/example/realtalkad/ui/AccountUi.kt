@@ -537,6 +537,10 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val autoEnabled by model.autoCaptureEnabled.collectAsState()
     val windows by model.captureWindows.collectAsState()
     val appearance by model.appearance.collectAsState()
+    val ttsConfigured by model.ttsConfigured.collectAsState()
+    val ttsVoices by model.ttsVoices.collectAsState()
+    val ttsVoice by model.ttsCurrentVoice.collectAsState()
+    LaunchedEffect(Unit) { model.loadTtsVoices() }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -629,6 +633,28 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, if (appearance == key) RT.Accent else RT.Hairline),
                     ) { Text(label, fontSize = (12 * fontScale).sp, color = if (appearance == key) RT.Accent else RT.TextSecondary) }
+                }
+            }
+        }
+        if (ttsConfigured && ttsVoices.isNotEmpty()) {
+            item {
+                Text("AI 朗读音色", fontWeight = FontWeight.SemiBold)
+                Text("练习时朗读 AI 台词的声音（由后端语音合成）。", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ttsVoices.chunked(3).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            row.forEach { v ->
+                                OutlinedButton(
+                                    onClick = { model.setTtsVoice(v) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, if (ttsVoice == v) RT.Accent else RT.Hairline),
+                                ) { Text(v, fontSize = (12 * fontScale).sp, color = if (ttsVoice == v) RT.Accent else RT.TextSecondary) }
+                            }
+                            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
                 }
             }
         }

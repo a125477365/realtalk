@@ -204,7 +204,18 @@ data class RoleplayState(
     val messages: List<RoleplayMessage>,
     @SerialName("latest_feedback") val latestFeedback: String? = null,
     @SerialName("latest_accepted") val latestAccepted: Boolean? = null,
+    @SerialName("recognized_text") val recognizedText: String? = null,
+    val pronunciation: List<PronunciationWord> = emptyList(),
 )
+
+@Serializable
+data class PronunciationWord(val word: String, val ok: Boolean)
+
+@Serializable
+data class TtsVoices(val voices: List<String> = emptyList(), val current: String = "", val configured: Boolean = false)
+
+@Serializable
+data class TtsVoiceBody(val voice: String)
 
 @Serializable
 data class AIChatMessage(val role: String, val content: String)

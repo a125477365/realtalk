@@ -61,6 +61,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val rechargeOrder = MutableStateFlow<RechargeOrder?>(null)
     val audioJobs = MutableStateFlow<List<AudioJob>>(emptyList())
     val isUploadingAudio = MutableStateFlow(false)
+    // AI 朗读音色（后端 TTS）
+    val ttsVoices = MutableStateFlow<List<String>>(emptyList())
+    val ttsCurrentVoice = MutableStateFlow("")
+    val ttsConfigured = MutableStateFlow(false)
     val showSubtitles = MutableStateFlow(auth.showSubtitles)
     val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
@@ -122,9 +126,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         practice.onPartial = { partialSubtitle.value = it }
         practice.onLevel = { practiceAudioLevel.value = it }
         practice.onStateChange = { isListening.value = it }
-        practice.onUtterance = { text -> viewModelScope.launch { submitUtterance(text) } }
+        practice.onAudioFile = { file -> viewModelScope.launch { submitRoleplayAudio(file) } }
         voice.onStateChange = { isSpeaking.value = it }
         voice.onLevel = { aiAudioLevel.value = it }
+        // AI 台词改用后端 TTS（可选音色）；后端不可用 VoicePlayer 自动回退本机 TTS
+        voice.scope = viewModelScope
+        voice.audioProvider = { text -> auth.token?.let { t -> runCatching { api.ttsSpeak(text, t) }.getOrNull() } }
         // 账号被其它设备顶掉/令牌被吊销时服务端返回 401 → 自动退出回到登录页
         api.onUnauthorized = { viewModelScope.launch { forceLogout() } }
         // access 过期时用 refresh 续期（单飞）
@@ -696,6 +703,60 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 presentFailure(it.message, title = "对话中断")
             }
         isWorking.value = false
+    }
+
+    fun loadTtsVoices() {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.ttsVoices(token) }.onSuccess {
+                ttsVoices.value = it.voices
+                ttsCurrentVoice.value = it.current
+                ttsConfigured.value = it.configured
+            }
+        }
+    }
+
+    fun setTtsVoice(voice: String) {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            if (voice.isBlank()) return@launch
+            runCatching { api.setTtsVoice(voice, token) }.onSuccess {
+                ttsVoices.value = it.voices
+                ttsCurrentVoice.value = it.current
+                statusMessage.value = "已设置 AI 音色：$voice"
+            }
+        }
+    }
+
+    /** 后端语音回合：把录好的一句音频上传给后端识别+评分+发音纠正（方式1/2 共用）。 */
+    private suspend fun submitRoleplayAudio(file: java.io.File) {
+        partialSubtitle.value = ""
+        cancelAnswerTimeout()
+        val token = auth.token ?: run { file.delete(); return }
+        val rp = roleplay ?: run { file.delete(); return }
+        isWorking.value = true
+        runCatching { api.sendRoleplayAudio(rp.sessionId, guidanceMode.value, file, token) }
+            .onSuccess { state ->
+                state.recognizedText?.trim()?.takeIf { it.isNotBlank() }?.let { recognized ->
+                    appendChat(ChatMessage.Sender.USER, recognized)
+                    val missed = state.pronunciation.filter { !it.ok }.map { it.word }
+                    if (missed.isNotEmpty()) {
+                        appendChat(ChatMessage.Sender.SYSTEM, "发音再注意：${missed.joinToString("、")}")
+                    }
+                }
+                state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
+                    appendChat(ChatMessage.Sender.ASSISTANT, it)
+                }
+                handleRoleplayState(state, spokenPreface = state.latestFeedback)
+            }
+            .onFailure {
+                isVoiceActive.value = false
+                practice.stop()
+                cancelAnswerTimeout()
+                presentFailure(it.message, title = "对话中断")
+            }
+        isWorking.value = false
+        file.delete()
     }
 
     private fun handleRoleplayState(state: RoleplayState, spokenPreface: String? = null) {

@@ -151,6 +151,33 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun sendRoleplayMessage(sessionId: String, message: String, guidanceMode: String, token: String): RoleplayState =
         post("/roleplay/message", RoleplayMessageRequest(sessionId, message, guidanceMode), token)
 
+    /** 方式1/2 后端语音：上传一句录音，后端识别+评分+发音纠正，返回对练状态。 */
+    suspend fun sendRoleplayAudio(sessionId: String, guidanceMode: String, file: File, token: String): RoleplayState {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("file", file.name, file.asRequestBody("audio/m4a".toMediaType()))
+            .build()
+        val req = Request.Builder()
+            .url(url("/roleplay/message/audio?session_id=$sessionId&guidance_mode=$guidanceMode"))
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        return json.decodeFromString(execute(req))
+    }
+
+    /** 后端 TTS 朗读一段文本（用用户选定音色），返回音频字节供播放。 */
+    suspend fun ttsSpeak(text: String, token: String): ByteArray = withContext(Dispatchers.IO) {
+        val q = java.net.URLEncoder.encode(text, "UTF-8")
+        val req = Request.Builder().url(url("/tts/speak?text=$q"))
+            .header("Authorization", "Bearer $token").get().build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw ApiException("语音合成失败 HTTP ${resp.code}")
+            resp.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    suspend fun ttsVoices(token: String): TtsVoices = get("/tts/voices", token)
+    suspend fun setTtsVoice(voice: String, token: String): TtsVoices = post("/tts/voice", TtsVoiceBody(voice), token)
+
     /** 按需最终评估：中途退出也能拿到评分与建议，不推进对话。 */
     suspend fun evaluateRoleplay(sessionId: String, token: String): RoleplayState =
         post("/roleplay/evaluate", RoleplayEvaluateRequest(sessionId), token)

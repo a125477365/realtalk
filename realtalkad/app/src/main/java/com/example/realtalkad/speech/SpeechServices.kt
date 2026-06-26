@@ -2,6 +2,8 @@ package com.example.realtalkad.speech
 
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.media.audiofx.Visualizer
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -9,6 +11,13 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -75,137 +84,127 @@ class SpeechCapture(private val context: Context) {
 }
 
 /**
- * 口语对练：英文识别（en-US），带实时字幕。
- * - 沉浸式（autoSubmit=true）：拉长静音判定，停顿思考不算说完；静音到阈值才自动提交。
- * - 手工触发式（autoSubmit=false）：不自动提交，允许停顿（识别段落累积），由用户松手时提交/取消。
+ * 口语对练：录这一句音频交后端识别+评分（不再端侧 ASR，更宽容、可发音纠正）。
+ * - 沉浸式（autoSubmit=true）：能量 VAD，静音到阈值自动提交。
+ * - 手工触发式（autoSubmit=false）：不自动提交，由用户松手 stopAndEmit / 滑动 cancel。
+ * 公开接口与原先一致；区别是「说完一句」交付音频文件（onAudioFile）而非文本。
  */
 class PracticeSpeech(private val context: Context) {
     var isListening = false
         private set
     var onPartial: ((String) -> Unit)? = null
-    var onUtterance: ((String) -> Unit)? = null
+    var onAudioFile: ((File) -> Unit)? = null
     var onStateChange: ((Boolean) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
-    /// 当前这句的目标英文（场景台词），作识别上下文偏置，提升口语转写准确度。
+    /// 兼容旧调用点：识别已移到后端并按场景目标句自动偏置，端侧无需再传。
     var expectedPhrases: List<String> = emptyList()
 
-    private var recognizer: SpeechRecognizer? = null
-    private var lastPartial = ""
-    private var accumulated = ""
-    private var manualMode = false
-
-    private fun combined(): String = ("$accumulated $lastPartial").trim()
-    private fun appendSeg(seg: String) {
-        accumulated = if (accumulated.isBlank()) seg else "$accumulated $seg"
-    }
+    private var recorder: MediaRecorder? = null
+    private var file: File? = null
+    private var meterJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.Main)
+    private var autoSubmit = true
+    private var heardSpeech = false
+    private var silentMs = 0L
+    private val tickMs = 100L
+    private val silenceThresholdMs = 2600L
+    private val speechLevel = 0.12f
 
     fun start(autoSubmit: Boolean = true) {
         if (isListening) return
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) return
-        manualMode = !autoSubmit
-        accumulated = ""
-        lastPartial = ""
+        this.autoSubmit = autoSubmit
+        heardSpeech = false
+        silentMs = 0
+        val out = File(context.cacheDir, "rt-utt-${UUID.randomUUID()}.m4a")
+        val rec = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
+        try {
+            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            rec.setAudioSamplingRate(16000)
+            rec.setAudioChannels(1)
+            rec.setOutputFile(out.absolutePath)
+            rec.prepare()
+            rec.start()
+        } catch (e: Exception) {
+            runCatching { rec.release() }
+            out.delete()
+            return
+        }
+        recorder = rec
+        file = out
         isListening = true
         onStateChange?.invoke(true)
-        startSession()
-    }
-
-    private fun startSession() {
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).also { r ->
-            r.setRecognitionListener(object : RecognitionListener {
-                override fun onPartialResults(partialResults: Bundle?) {
-                    partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        ?.let { lastPartial = it; onPartial?.invoke(combined()) }
-                }
-
-                override fun onResults(results: Bundle) {
-                    val text = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull() ?: lastPartial
-                    if (manualMode) {
-                        if (text.isNotBlank()) appendSeg(text)
-                        lastPartial = ""
-                        onPartial?.invoke(combined())
-                        if (isListening) startSession()  // 继续听，允许停顿
-                    } else {
-                        stop()
-                        text.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
-                    }
-                }
-
-                override fun onError(error: Int) {
-                    if (manualMode) {
-                        if (isListening) startSession()  // 静音/超时就重启继续听
-                    } else {
-                        val pending = lastPartial
-                        stop()
-                        pending.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
-                    }
-                }
-
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {
-                    onLevel?.invoke(((rmsdB + 2f) / 12f).coerceIn(0f, 1f))
-                }
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-            r.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                // 拉长静音判定，给思考停顿留时间（参考主流口语 App）
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500L)
-                // 用目标台词做上下文偏置（Android 13+ 支持，旧系统忽略），提升对目标句的转写准确度
-                if (android.os.Build.VERSION.SDK_INT >= 33 && expectedPhrases.isNotEmpty()) {
-                    putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(expectedPhrases))
-                }
-            })
+        meterJob = scope.launch {
+            while (isListening) {
+                delay(tickMs)
+                meterTick()
+            }
         }
     }
 
-    /** 手工触发式：松手发送，提交累积文本。 */
+    private fun meterTick() {
+        val r = recorder ?: return
+        val amp = runCatching { r.maxAmplitude }.getOrDefault(0)
+        val level = (amp / 12000f).coerceIn(0f, 1f)
+        onLevel?.invoke(level)
+        if (level >= speechLevel) {
+            heardSpeech = true
+            silentMs = 0
+        } else if (heardSpeech) {
+            silentMs += tickMs
+            if (autoSubmit && silentMs >= silenceThresholdMs) stopAndEmit()
+        }
+    }
+
+    /** 手工触发式：松手发送（也是沉浸式静音自动提交的入口）。 */
     fun stopAndEmit() {
-        val text = combined()
+        val out = file
+        val heard = heardSpeech
         stop()
-        text.takeIf { it.isNotBlank() }?.let { onUtterance?.invoke(it) }
+        if (heard && out != null && out.length() > 1200) {
+            onAudioFile?.invoke(out)   // 上层负责用完删除
+        } else {
+            out?.delete()
+        }
     }
 
     /** 手工触发式：滑到取消区，丢弃本次。 */
-    fun cancel() = stop()
+    fun cancel() {
+        val out = file
+        stop()
+        out?.delete()
+    }
 
     fun stop() {
         isListening = false
-        manualMode = false
-        accumulated = ""
-        lastPartial = ""
+        meterJob?.cancel()
+        meterJob = null
+        runCatching { recorder?.stop() }
+        runCatching { recorder?.release() }
+        recorder = null
+        file = null
         onPartial?.invoke("")
         onLevel?.invoke(0f)
-        recognizer?.destroy()
-        recognizer = null
         onStateChange?.invoke(false)
     }
 }
 
-/** AI 台词朗读（英文 TTS），完成后回调以驱动连续对话。 */
-class VoicePlayer(context: Context) {
+/** AI 台词朗读。优先后端 TTS（可选音色），后端不可用回退本机 TTS，完成后回调驱动连续对话。 */
+class VoicePlayer(private val context: Context) {
     var isSpeaking = false
         private set
     var onStateChange: ((Boolean) -> Unit)? = null
-
-    /**
-     * AI 朗读时的实时输出电平（0..1）。用 [Visualizer] 监听系统输出混音的真实波形，
-     * 因此提示圈是跟着 AI 实际播放音量跳动，而不是固定正弦动画。
-     */
     var onLevel: ((Float) -> Unit)? = null
+
+    /** 由 AppViewModel 注入：给定文本返回后端合成音频（调 /tts/speak）。为 null/返回 null 时回退本机 TTS。 */
+    var audioProvider: (suspend (String) -> ByteArray?)? = null
+    var scope: CoroutineScope? = null
 
     private var pendingCompletion: (() -> Unit)? = null
     private var visualizer: Visualizer? = null
+    private var player: MediaPlayer? = null
+    private var fetchJob: Job? = null
     private val tts = TextToSpeech(context) { status ->
         if (status == TextToSpeech.SUCCESS) ready = true
     }
@@ -228,11 +227,56 @@ class VoicePlayer(context: Context) {
     }
 
     fun speak(text: String, completion: (() -> Unit)? = null) {
-        if (!ready || text.isBlank()) { completion?.invoke(); return }
-        // 含中文（如纠正/评分建议）用中文 TTS，否则英文，避免中文被英文引擎读乱（item 3）
+        if (text.isBlank()) { completion?.invoke(); return }
+        stopPlayback()
+        val provider = audioProvider
+        val sc = scope
+        if (provider != null && sc != null) {
+            isSpeaking = true
+            onStateChange?.invoke(true)
+            fetchJob = sc.launch {
+                val bytes = runCatching { provider(text) }.getOrNull()
+                if (bytes != null && playBytes(bytes, completion)) return@launch
+                withContext(Dispatchers.Main) { speakTts(text, completion) }   // 后端音频不可用 → 本机兜底
+            }
+        } else {
+            speakTts(text, completion)
+        }
+    }
+
+    private fun playBytes(bytes: ByteArray, completion: (() -> Unit)?): Boolean {
+        return try {
+            val f = File(context.cacheDir, "rt-tts-${UUID.randomUUID()}.mp3")
+            f.writeBytes(bytes)
+            val mp = MediaPlayer()
+            mp.setDataSource(f.absolutePath)
+            mp.setOnCompletionListener {
+                isSpeaking = false
+                stopMetering()
+                onStateChange?.invoke(false)
+                runCatching { it.release() }
+                player = null
+                f.delete()
+                pendingCompletion = null
+                completion?.invoke()
+            }
+            mp.setOnErrorListener { _, _, _ -> f.delete(); false }
+            mp.prepare()
+            player = mp
+            pendingCompletion = completion
+            startMetering()
+            mp.start()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun speakTts(text: String, completion: (() -> Unit)?) {
+        if (!ready) { completion?.invoke(); return }
         val hasHan = text.any { it.code in 0x4E00..0x9FFF }
         tts.language = if (hasHan) Locale.CHINESE else Locale.US
-        tts.setSpeechRate(0.92f)   // 稍放慢，减少吞字/含糊，提升清晰度
+        tts.setSpeechRate(0.92f)
         tts.setPitch(1.0f)
         isSpeaking = true
         onStateChange?.invoke(true)
@@ -241,9 +285,18 @@ class VoicePlayer(context: Context) {
         tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
     }
 
+    private fun stopPlayback() {
+        fetchJob?.cancel()
+        fetchJob = null
+        runCatching { player?.stop() }
+        runCatching { player?.release() }
+        player = null
+        tts.stop()
+    }
+
     fun stop() {
         pendingCompletion = null
-        tts.stop()
+        stopPlayback()
         stopMetering()
         isSpeaking = false
         onStateChange?.invoke(false)
