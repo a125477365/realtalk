@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -2510,6 +2510,154 @@ async def roleplay_voice(
         await websocket.close()
     except Exception:  # noqa: BLE001
         pass
+
+
+@app.websocket("/roleplay/stream")
+async def roleplay_stream(
+    websocket: WebSocket,
+    token: str = Query(...),
+    session_id: str = Query(...),
+) -> None:
+    """方式2 沉浸式后端语音：客户端流式上传音频帧 + 客户端 VAD 在一句结束时发 commit；
+    后端转写(参考句偏置)→复用文字评分→把推进的 AI 台词流式 TTS 推回；客户端抢话发 interrupt 即停 AI 朗读。
+    操作步骤与原沉浸式一致，只是识别/朗读搬到后端，并支持抢话打断。"""
+    await websocket.accept()
+    try:
+        user = _authenticate_token(token)
+        require_ai_access(user, estimated_cents=0.0)
+    except HTTPException as exc:
+        await websocket.close(code=4401, reason=_ws_reason(exc.detail))
+        return
+    session = db.get_roleplay_session(user.id, session_id)
+    scenario = db.get_scenario(user.id, session.scene_id) if session else None
+    if session is None or scenario is None:
+        await websocket.close(code=4404, reason=_ws_reason("场景练习不存在"))
+        return
+
+    voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
+    send_lock = asyncio.Lock()          # 串行化发送，避免「朗读音频帧」与「结果 JSON」并发写 WS 冲突
+    utterance = bytearray()
+    spoken_count = 0
+    tts_task: asyncio.Task | None = None
+
+    async def _sj(obj: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(obj)
+
+    async def _sb(data: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(data)
+
+    async def _send_tts(text: str) -> None:
+        try:
+            audio, ct = await voice_io.synthesize(text, voice)
+        except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
+            await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
+            return
+        await _sj({"type": "ai_audio_begin", "content_type": ct})
+        for i in range(0, len(audio), 16384):
+            await _sb(audio[i:i + 16384])
+        await _sj({"type": "ai_audio_end"})
+
+    async def _speak_new(messages) -> None:
+        nonlocal spoken_count
+        for msg in messages[spoken_count:]:
+            if getattr(msg, "speaker", "") == "ai":
+                await _sj({"type": "ai_line", "role": msg.role, "text": msg.content, "translation": msg.translation})
+                await _send_tts(msg.content)
+        spoken_count = len(messages)
+
+    def _cancel_tts() -> None:
+        nonlocal tts_task
+        if tts_task and not tts_task.done():
+            tts_task.cancel()
+        tts_task = None
+
+    # 开场：发当前状态并朗读已有 AI 台词
+    state0 = roleplay_state_response(user.id, session, scenario)
+    await _sj({
+        "type": "state",
+        "next_line": state0.next_line.english if state0.next_line else None,
+        "completed": state0.completed,
+    })
+    tts_task = asyncio.create_task(_speak_new(state0.messages))
+
+    try:
+        while True:
+            event = await websocket.receive()
+            if event.get("type") == "websocket.disconnect":
+                break
+            if event.get("bytes") is not None:
+                utterance.extend(event["bytes"])
+                continue
+            text = event.get("text")
+            if not text:
+                continue
+            try:
+                data = _json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            mtype = data.get("type")
+            if mtype == "interrupt":          # 抢话：用户开始说话 → 立刻停 AI 朗读
+                _cancel_tts()
+                continue
+            if mtype == "bye":
+                break
+            if mtype != "commit":
+                continue
+            # 一句话结束：拿累计音频去识别+评分
+            _cancel_tts()
+            audio = bytes(utterance)
+            utterance.clear()
+            if not audio:
+                continue
+            session = db.get_roleplay_session(user.id, session_id)
+            if session is None:
+                break
+            target = next_user_line(session, scenario)
+            reference = target.english if target else None
+            try:
+                recognized = (await voice_io.transcribe(
+                    audio, suffix=data.get("format", ".m4a"), reference_text=reference
+                )).strip()
+            except Exception as exc:  # noqa: BLE001
+                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[:120]}"})
+                continue
+            if not recognized:
+                await _sj({"type": "result", "accepted": False, "recognized_text": "",
+                           "feedback": "没听清，请再说一次", "pronunciation": []})
+                continue
+            gm = "final" if data.get("guidance_mode") == "final" else "realtime"
+            resp = await roleplay_message(
+                RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
+                user,
+            )
+            pron = voice_io.pronunciation_diff(recognized, reference) if reference else []
+            await _sj({
+                "type": "result",
+                "accepted": bool(resp.latest_accepted),
+                "recognized_text": recognized,
+                "feedback": resp.latest_feedback,
+                "pronunciation": pron,
+                "next_line": resp.next_line.english if resp.next_line else None,
+                "completed": resp.completed,
+            })
+            tts_task = asyncio.create_task(_speak_new(resp.messages))
+            if resp.completed:
+                await _sj({"type": "completed", "review": resp.latest_feedback})
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # noqa: BLE001 — 任一异常结束会话
+        try:
+            await _sj({"type": "error", "detail": str(exc)[:160]})
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _cancel_tts()
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)
