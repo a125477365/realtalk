@@ -95,15 +95,15 @@ def resolve_tts_config() -> dict[str, Any]:
 
     overrides = db.get_app_settings_map(["tts_base_url", "tts_api_key", "tts_model", "tts_voices", "tts_default_voice"])
     return {
-        "mode": settings.tts_mode,
-        "base_url": overrides.get("tts_base_url") or settings.tts_base_url,
-        "api_key": overrides.get("tts_api_key") or settings.tts_api_key,
-        "model": overrides.get("tts_model") or settings.tts_model,
-        "voices": overrides.get("tts_voices") or settings.tts_voices,
-        "default_voice": overrides.get("tts_default_voice") or settings.tts_default_voice,
-        "local_command": settings.tts_local_command,
-        "format": settings.tts_format,
-        "dev_mode": settings.tts_dev_mode,
+        "mode": settings.tts_mode,                          # 每节点（env）
+        "base_url": overrides.get("tts_base_url"),           # 系统共享：只读 DB
+        "api_key": overrides.get("tts_api_key"),
+        "model": overrides.get("tts_model"),
+        "voices": overrides.get("tts_voices") or settings.tts_voices,  # 音色清单留内置默认兜底（非密钥、纯展示）
+        "default_voice": overrides.get("tts_default_voice"),
+        "local_command": settings.tts_local_command,        # 每节点（env）
+        "format": settings.tts_format,                      # 每节点（env）
+        "dev_mode": settings.tts_dev_mode,                  # 每节点（env）
     }
 
 

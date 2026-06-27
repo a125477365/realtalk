@@ -31,14 +31,15 @@ def resolve_payment_config() -> dict[str, str | None]:
     """DB 系统参数为准，env 仅兜底（首装由 seed 播种）。"""
     from .storage import db
 
+    # 单一来源：只读 DB（装库时由 db_init 入库）。不再回退 env，避免一个参数两处取值。
     ov = db.get_app_settings_map(_PAYMENT_KEYS)
     return {
-        "wechat_mchid": ov.get("wechat_mchid") or settings.wechat_mchid,
-        "wechat_apiv3_key": ov.get("wechat_apiv3_key") or settings.wechat_api_key,
-        "wechat_platform_cert": ov.get("wechat_platform_cert") or settings.wechat_platform_cert,
-        "wechat_cert_serial": ov.get("wechat_cert_serial") or settings.wechat_cert_serial,
-        "alipay_app_id": ov.get("alipay_app_id") or settings.alipay_app_id,
-        "alipay_public_key": ov.get("alipay_public_key") or settings.alipay_public_key,
+        "wechat_mchid": ov.get("wechat_mchid"),
+        "wechat_apiv3_key": ov.get("wechat_apiv3_key"),
+        "wechat_platform_cert": ov.get("wechat_platform_cert"),
+        "wechat_cert_serial": ov.get("wechat_cert_serial"),
+        "alipay_app_id": ov.get("alipay_app_id"),
+        "alipay_public_key": ov.get("alipay_public_key"),
     }
 
 

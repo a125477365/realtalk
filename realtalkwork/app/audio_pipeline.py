@@ -33,12 +33,12 @@ def resolve_asr_config() -> dict[str, Any]:
     # 云端服务的 base_url / api_key / model 允许管理台在线配置。
     overrides = db.get_app_settings_map(["asr_base_url", "asr_api_key", "asr_model"])
     return {
-        "mode": settings.asr_mode,
-        "base_url": overrides.get("asr_base_url") or settings.asr_base_url,
-        "api_key": overrides.get("asr_api_key") or settings.asr_api_key,
-        "model": overrides.get("asr_model") or settings.asr_model,
-        "local_command": settings.asr_local_command,
-        "dev_mode": settings.asr_dev_mode,
+        "mode": settings.asr_mode,                     # 每节点（部署控制，env）
+        "base_url": overrides.get("asr_base_url"),      # 系统共享：只读 DB
+        "api_key": overrides.get("asr_api_key"),
+        "model": overrides.get("asr_model"),
+        "local_command": settings.asr_local_command,   # 每节点（env）
+        "dev_mode": settings.asr_dev_mode,             # 每节点（env）
     }
 
 
@@ -215,46 +215,5 @@ async def process_audio_job(job_id: str, user_id: str, path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-# ============================================================
-# 分布式：入口节点把文件转发给某个 worker 节点处理
-# ============================================================
-
-def worker_nodes() -> list[str]:
-    raw = db.get_app_setting_str("audio_worker_nodes") or settings.audio_worker_nodes or ""
-    return [n.strip().rstrip("/") for n in raw.split(",") if n.strip()]
-
-
-def _pick_worker(nodes: list[str], user_id: str) -> str:
-    """按用户哈希稳定选节点：同一用户的任务总落在同一 worker。"""
-    import hashlib
-
-    idx = int(hashlib.sha256(user_id.encode()).hexdigest(), 16) % len(nodes)
-    return nodes[idx]
-
-
-async def dispatch_or_process(job_id: str, user_id: str, path: Path) -> None:
-    """有 worker 节点则转发给它处理（共享数据库，结果各节点可见）；否则本机处理。"""
-    nodes = worker_nodes()
-    if not nodes:
-        await process_audio_job(job_id, user_id, path)
-        return
-
-    target = _pick_worker(nodes, user_id)
-    token = settings.internal_token or ""
-    try:
-        db.update_audio_job(job_id, "transcribing")  # 标记已派发
-        async with httpx.AsyncClient(timeout=httpx.Timeout(1800, connect=30)) as client:
-            with path.open("rb") as fh:
-                resp = await client.post(
-                    target + "/audio/internal/ingest",
-                    params={"job_id": job_id, "user_id": user_id},
-                    headers={"X-Internal-Token": token},
-                    files={"file": (path.name, fh, "audio/mpeg")},
-                )
-            resp.raise_for_status()
-    except Exception as exc:  # noqa: BLE001 — 转发失败兜底为本机处理，避免任务卡死
-        db.update_audio_job(job_id, "transcribing", error=f"转发到 {target} 失败，改由本机处理：{str(exc)[:200]}")
-        await process_audio_job(job_id, user_id, path)
-        return
-    # 转发成功，本机不再保留文件（worker 已落盘处理）
-    path.unlink(missing_ok=True)
+# 注：旧的「音频转发到 worker 节点」派发（worker_nodes/dispatch_or_process + INTERNAL_TOKEN/
+# AUDIO_WORKER_NODES）已随语音文件服务器（MD5 路由 + 定时任务）重构移除。

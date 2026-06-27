@@ -88,10 +88,11 @@ def resolve_ai_config() -> AIRuntimeConfig:
 
     return AIRuntimeConfig(
         provider=overrides.get("ai_provider") or "ark",
-        base_url=overrides.get("ai_base_url") or settings.ai_base_url,
-        api_key=overrides.get("ai_api_key") or settings.ai_api_key,
-        model=overrides.get("ai_model") or settings.ai_model,
-        bot_id=overrides.get("ai_bot_id") or settings.ark_bot_id,
+        # 系统共享凭据：只读 DB（装库时入库）。不再回退 env，单一来源。
+        base_url=overrides.get("ai_base_url"),
+        api_key=overrides.get("ai_api_key"),
+        model=overrides.get("ai_model"),
+        bot_id=overrides.get("ai_bot_id"),
         timeout_seconds=_float("ai_timeout_seconds", settings.ai_timeout_seconds),
         input_price_per_1m_cents=_float("ai_input_price_per_1m_cents", settings.ai_input_price_per_1m_cents),
         output_price_per_1m_cents=_float("ai_output_price_per_1m_cents", settings.ai_output_price_per_1m_cents),

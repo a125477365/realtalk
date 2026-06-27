@@ -255,15 +255,17 @@ def _warn_insecure_config() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    from .auth import seed_default_admin
+    # 数据库必须已「供给」（建表+系统参数入库）。API 后端只读，绝不自己建表/播种。
+    # 未供给 → 明确报错退出，提示去装库节点运行 db_init（避免多后端并发建表/播种竞争）。
+    if not db.is_provisioned():
+        raise RuntimeError(
+            "数据库未初始化：请在安装数据库的节点运行 `python -m app.db_init` 完成建表与系统参数入库后再启动 API。"
+        )
     _warn_insecure_config()
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
     asyncio.create_task(_capture_worker_loop())  # 采集场景生成消费者（多活：每节点一个）
     asyncio.create_task(_voice_cron_loop())       # 语音文件转写/生成场景/清理（每台语音服务器处理本地文件）
-    seed_default_admin()
-    # 首装把「管理台可配置」参数从 env 落库（仅补缺）；以后以 DB 为准
-    db.seed_app_settings_from_env()
     _register_self_as_voice_node()  # 语音服务器首次启动自动把本机加入列表（之后可在管理台删除）
 
 

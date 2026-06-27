@@ -139,12 +139,6 @@ class Settings:
     tts_user_rate_per_min: int = int(os.getenv("TTS_USER_RATE_PER_MIN", "30"))
     audio_user_rate_per_min: int = int(os.getenv("AUDIO_USER_RATE_PER_MIN", "30"))
 
-    # 音频分布式：入口节点把上传文件转发给某个 worker 节点处理（共享同一数据库）
-    # 逗号分隔的 worker 内部地址，如 "http://10.0.0.6:8000,http://10.0.0.7:8000"；留空=本机处理
-    audio_worker_nodes: str | None = os.getenv("AUDIO_WORKER_NODES")
-    # 节点间内部调用令牌（入口与 worker 必须一致）
-    internal_token: str | None = os.getenv("INTERNAL_TOKEN")
-
     # 语音文件服务器（高级会员上传录音）：
     # - 可处理语音文件的服务器列表「ip:port;ip:port」在【管理台】配置并存库，未配置则上传直接报错（不本地兜底）。
     # - 本机地址：本服务器在上面列表中的 ip:port，用于判断「某文件是否归我处理」。语音服务器必须在 .env 设置。

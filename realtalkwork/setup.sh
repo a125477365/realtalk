@@ -412,6 +412,14 @@ if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
   docker compose up -d --build
   if $DEPLOY_BACKEND; then
+    # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
+    # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。
+    say "初始化数据库（建表 + 系统参数入库，仅一次）…"
+    if docker compose run --rm api python -m app.db_init; then
+      say "${GREEN}✔ 数据库已初始化${RESET}"
+    else
+      say "数据库初始化失败，请检查后重试：docker compose run --rm api python -m app.db_init"
+    fi
     say "等待 API 就绪…"
     for _ in $(seq 1 30); do
       curl -fs "http://127.0.0.1:${API_PORT:-8000}/health" >/dev/null 2>&1 && break

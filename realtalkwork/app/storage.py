@@ -376,7 +376,8 @@ class Database:
         self.backend = _backend_name(self.url)
         self.engine = self._create_engine()
         self._wait_until_ready()
-        self.initialize()
+        # 不在连接时建表/迁移/播种：那是「装库时一次性供给(db_init)」做的事。
+        # 多个 API 后端只读已供给的库，避免并发建表/播种竞争与系统参数取值不确定。
 
     def _wait_until_ready(self, attempts: int = 30, delay: float = 2.0) -> None:
         """等待数据库可连接（容器编排下 API 可能先于 DB 启动）。SQLite 直接跳过。"""
@@ -395,6 +396,24 @@ class Database:
                 print(f"[storage] 等待数据库就绪（{i + 1}/{attempts}）：{str(exc)[:120]}", flush=True)
                 _time.sleep(delay)
         raise RuntimeError(f"数据库连接失败，已重试 {attempts} 次：{last_err}")
+
+    _SCHEMA_VERSION = "1"
+
+    def is_provisioned(self) -> bool:
+        """库是否已供给（建表+播种）。新库看 schema_version；老库兼容看 settings_seeded。
+        表都不存在 → 未供给。API 启动据此快速失败，绝不自己建表。"""
+        try:
+            from sqlalchemy import inspect as _inspect
+
+            insp = _inspect(self.engine)
+            if not insp.has_table("app_settings") or not insp.has_table("users"):
+                return False
+            return bool(self.get_app_setting_str("schema_version") or self.get_app_setting_str("settings_seeded"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def mark_provisioned(self) -> None:
+        self.set_app_setting("schema_version", self._SCHEMA_VERSION)
 
     def initialize(self) -> None:
         metadata.create_all(self.engine)
