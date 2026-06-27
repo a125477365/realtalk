@@ -141,12 +141,12 @@ private fun LastScoreBadge(score: Int?, fontScale: Float) {
     )
 }
 
-/// 「未完成可继续」标签：有进度时显示「继续 N」。
+/// 「未完成可继续」标签：有进度时显示「可继续」。
 @androidx.compose.runtime.Composable
-private fun ResumeBadge(inProgress: Boolean, progress: Int, fontScale: Float) {
+private fun ResumeBadge(inProgress: Boolean, fontScale: Float) {
     if (!inProgress) return
     Text(
-        "继续 $progress",
+        "可继续",
         color = RT.Accent, fontWeight = FontWeight.SemiBold, fontSize = (11 * fontScale).sp,
         modifier = Modifier.background(RT.Accent.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
             .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -186,7 +186,7 @@ private fun ScenarioCard(
             else "${summary.lineCount} 句"
             Text(meta, fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
         }
-        ResumeBadge(summary.inProgress, summary.resumeProgress, fontScale)
+        ResumeBadge(summary.inProgress, fontScale)
         if (summary.inProgress) Spacer(Modifier.width(6.dp))
         LastScoreBadge(summary.lastScore, fontScale)
         Spacer(Modifier.width(8.dp))
@@ -263,7 +263,7 @@ private fun PresetCatalogList(
                                 Text("${scene.lineCount} 句", fontSize = (11 * fontScale).sp,
                                     color = RT.TextSecondary.copy(alpha = 0.8f))
                             }
-                            ResumeBadge(scene.inProgress, scene.resumeProgress, fontScale)
+                            ResumeBadge(scene.inProgress, fontScale)
                             if (scene.inProgress) Spacer(Modifier.width(6.dp))
                             LastScoreBadge(scene.lastScore, fontScale)
                             Spacer(Modifier.width(8.dp))
@@ -570,7 +570,7 @@ fun MainChatScreen(model: AppViewModel) {
     resumeChoiceFor?.let { (summary, roleId) ->
         AlertDialog(
             onDismissRequest = { resumeChoiceFor = null },
-            title = { Text("「${summary.title}」上次练到第 ${summary.resumeProgress} 句") },
+            title = { Text("「${summary.title}」有未完成的练习") },
             text = {
                 Column {
                     OutlinedButton(

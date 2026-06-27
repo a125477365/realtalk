@@ -131,7 +131,7 @@ struct MainChatView: View {
                 }
             }
             .confirmationDialog(
-                resumeChoice.map { "「\($0.summary.title)」上次练到第 \($0.summary.resumeProgress) 句" } ?? "继续上次",
+                resumeChoice.map { "「\($0.summary.title)」有未完成的练习" } ?? "继续练习",
                 isPresented: Binding(
                     get: { resumeChoice != nil },
                     set: { if $0 == false { resumeChoice = nil } }
@@ -482,7 +482,7 @@ struct MainChatView: View {
                                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                                 }
                                 Spacer()
-                                resumeBadge(scene.inProgress, scene.resumeProgress)
+                                resumeBadge(scene.inProgress)
                                 lastScoreBadge(scene.lastScore)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
@@ -516,11 +516,11 @@ struct MainChatView: View {
         }
     }
 
-    /// 「未完成可继续」小标签：有进度时在场景卡上提示「继续 N」。
+    /// 「未完成可继续」小标签：有进度时在场景卡上提示「可继续」。
     @ViewBuilder
-    private func resumeBadge(_ inProgress: Bool, _ progress: Int) -> some View {
+    private func resumeBadge(_ inProgress: Bool) -> some View {
         if inProgress {
-            Text("继续 \(progress)")
+            Text("可继续")
                 .font(.system(size: 11 * model.fontScale, weight: .semibold))
                 .foregroundStyle(RTTheme.accent)
                 .padding(.horizontal, 8).padding(.vertical, 3)
@@ -548,7 +548,7 @@ struct MainChatView: View {
                         .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                 }
-                resumeBadge(summary.inProgress, summary.resumeProgress)
+                resumeBadge(summary.inProgress)
                 lastScoreBadge(summary.lastScore)
                 Image(systemName: "chevron.right")
                     .font(.footnote)
