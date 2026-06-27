@@ -1267,13 +1267,17 @@ class Database:
         return self.get_app_setting_bool("political_filter_enabled", settings.political_filter_enabled)
 
     def get_or_create_jwt_secret(self) -> str:
-        """JWT 签名密钥存共享 DB（系统参数表），保证多活各后端用同一把——否则 A 节点签的令牌 B 节点不认。
-        已有则返回；没有则生成一把存入并重读（重读化解并发首启的竞态，最终各节点收敛到同一值）。"""
+        """JWT 签名密钥：单一来源=共享 DB（系统参数表），保证多活各后端用同一把——否则 A 节点签的令牌 B 节点不认。
+        库里已有则直接返回；库空时优先把 env JWT_SECRET「播种」入库（兼容已用 env 签发过令牌的老部署，
+        切换后令牌不失效），env 未设才随机生成；写入后重读（化解并发首启竞态，各节点收敛到同一值）。
+        env 仅作首次播种来源，运行期一律只读 DB。"""
         existing = self.get_app_setting_str("jwt_secret")
         if existing:
             return existing
+        env = os.getenv("JWT_SECRET")
+        seed_value = env if (env and env != "change-me-before-production") else os.urandom(32).hex()
         try:
-            self.set_app_setting("jwt_secret", os.urandom(32).hex())
+            self.set_app_setting("jwt_secret", seed_value)
         except Exception:  # noqa: BLE001 — 并发首启可能撞键，忽略后重读
             pass
         return self.get_app_setting_str("jwt_secret") or ""

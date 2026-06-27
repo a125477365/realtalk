@@ -238,8 +238,7 @@ app.add_middleware(DynamicCORSMiddleware)
 def _warn_insecure_config() -> None:
     """启动时对危险的开发旁路 / 弱配置发出醒目告警（不阻断启动）。"""
     warnings: list[str] = []
-    if settings.jwt_secret_is_default:
-        warnings.append("未设置 JWT_SECRET（已用持久化随机密钥兜底；生产请显式配置）")
+    # JWT 密钥已单一来源化（共享 DB；装库时入库、多活共用），不再有「弱默认/各节点各自一把」的风险，故无需告警。
     if settings.payment_dev_auto_confirm:
         warnings.append("PAYMENT_DEV_AUTO_CONFIRM=true（用户可不实际付款即确认到账，务必生产关闭）")
     if settings.wechat_auth_dev_mode:

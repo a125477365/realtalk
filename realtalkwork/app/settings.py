@@ -41,42 +41,13 @@ def _multiline_env(name: str) -> str | None:
 _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 
-def _resolve_jwt_secret() -> str:
-    """解析 JWT 签名密钥。
-
-    安全要点：绝不使用众所周知的弱默认值——否则任何人都能伪造登录令牌冒充用户。
-    优先取 JWT_SECRET 环境变量；未配置时落到一个持久化的随机密钥文件
-    （令牌跨重启仍有效），文件不可写则退化为进程内随机密钥。
-    """
-    import secrets as _secrets
-
-    env = os.getenv("JWT_SECRET")
-    if env and env != _INSECURE_JWT_DEFAULT:
-        return env
-    secret_file = Path(os.getenv("JWT_SECRET_FILE", ".jwt_secret.key"))
-    try:
-        if secret_file.exists():
-            existing = secret_file.read_text(encoding="utf-8").strip()
-            if existing:
-                return existing
-        generated = _secrets.token_hex(32)
-        secret_file.write_text(generated, encoding="utf-8")
-        try:
-            os.chmod(secret_file, 0o600)
-        except OSError:
-            pass
-        return generated
-    except OSError:
-        return _secrets.token_hex(32)
-
-
 @dataclass(frozen=True)
 class Settings:
     database_url: str | None = os.getenv("DATABASE_URL")
     database_path: Path = Path(os.getenv("REALTALK_DB", "realtalk.sqlite3"))
     deployment_region: str = os.getenv("REALTALK_REGION") or os.getenv("REGION", "local")
-    jwt_secret: str = _resolve_jwt_secret()
-    jwt_secret_is_default: bool = os.getenv("JWT_SECRET", _INSECURE_JWT_DEFAULT) in ("", _INSECURE_JWT_DEFAULT)
+    # JWT 签名密钥单一来源=共享 DB（装库时 db_init 入库：库空则播种 env JWT_SECRET、否则随机生成）。
+    # 不再从 env/本地文件解析为运行期来源；env JWT_SECRET 仅作首装播种值。
     # 对话采集分块暂存：配置后用 Redis（TTL 自动过期、跨节点共享），否则回退本地文件
     redis_url: str | None = os.getenv("REDIS_URL")
     token_ttl_hours: int = int(os.getenv("TOKEN_TTL_HOURS", "720"))

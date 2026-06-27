@@ -201,22 +201,16 @@ _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 
 def _jwt_secret() -> str:
-    """签名密钥：显式配了 JWT_SECRET env 就用它（要求多活各节点设同一值）；
-    否则用共享 DB 里的密钥（首次自动生成、所有后端共用），避免各节点各生成各自的而互不认令牌。"""
+    """签名密钥：单一来源=共享 DB（装库时由 db_init 入库：库空则把 env JWT_SECRET 播种、否则随机生成）。
+    多活各后端共用同一把，运行期只读 DB，不再按 env/文件多处优先取值。"""
     global _cached_jwt_secret
     if _cached_jwt_secret:
         return _cached_jwt_secret
-    env = os.getenv("JWT_SECRET")
-    if env and env != _INSECURE_JWT_DEFAULT:
-        _cached_jwt_secret = env
-        return env
     from .storage import db
 
     secret = db.get_or_create_jwt_secret()
-    if secret:
-        _cached_jwt_secret = secret
-        return secret
-    return settings.jwt_secret  # 兜底（理论上不会到这）
+    _cached_jwt_secret = secret
+    return secret
 
 
 def _sign(payload_b64: str) -> str:

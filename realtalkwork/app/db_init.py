@@ -22,6 +22,9 @@ def main() -> int:
     print("[db_init] 系统参数入库（从环境变量取初始值，仅本次）…", flush=True)
     written = db.seed_app_settings_from_env()
 
+    print("[db_init] JWT 签名密钥入库（库空则播种 env JWT_SECRET / 否则随机，多活共用一把）…", flush=True)
+    db.get_or_create_jwt_secret()
+
     print("[db_init] 建默认管理员（若无）…", flush=True)
     seed_default_admin()
 
