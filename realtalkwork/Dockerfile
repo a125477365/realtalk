@@ -24,8 +24,19 @@ RUN pip install python-multipart
 ARG WITH_LOCAL_ASR=true
 RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3; fi
 
+# 用 Piper 官方独立二进制（pip 的 piper-tts 依赖 piper-phonemize，无 py3.12 wheel）。
+# 二进制小(~20MB)、自带 espeak-ng 数据;音色模型与 whisper 一样在运行期下载到 /app/models。
+# 下载失败【不阻断整体构建】(仅本地TTS不可用,云端TTS与其余功能照常);受限网络可重建或改用云端TTS。
 ARG WITH_LOCAL_TTS=true
-RUN if [ "$WITH_LOCAL_TTS" = "true" ]; then pip install piper-tts==1.2.0; fi
+RUN if [ "$WITH_LOCAL_TTS" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+      && arch="$(dpkg --print-architecture)" \
+      && case "$arch" in amd64) p=x86_64 ;; arm64) p=aarch64 ;; armhf) p=armv7l ;; *) p=x86_64 ;; esac \
+      && ( curl -fsSL --retry 3 "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${p}.tar.gz" -o /tmp/piper.tgz \
+           && tar -xzf /tmp/piper.tgz -C /opt && rm -f /tmp/piper.tgz \
+           || echo "WARN: Piper 二进制下载失败,本地TTS暂不可用(可重建/用云端TTS)" ) \
+      && rm -rf /var/lib/apt/lists/* ; \
+    fi
 
 COPY app ./app
 COPY docs ./docs
