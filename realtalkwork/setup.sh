@@ -225,9 +225,10 @@ if $DEPLOY_BACKEND; then
     echo "    3) 暂不配置（之后在管理台或重跑本脚本再设）"
     ask "选择 ASR 方式" "3"
     ASR_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_ASR=false
+    WITH_LOCAL_ASR=true   # 本地引擎随镜像默认装好（与 API 同容器）；菜单只决定用云端还是本地
     ASR_MODE_VAL="cloud"; ASR_BASE=""; ASR_KEY=""; ASR_MODEL_VAL="whisper-1"
-    ASR_LOCAL_CMD=""; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="false"
+    # 命令始终写入（内置脚本，引擎默认随镜像装好）→ 以后切 ASR_MODE=local 即生效，无需重建/重配
+    ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="false"
     if [ "$ASR_CHOICE" = "1" ]; then
       ask "ASR Base URL" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
       ask_secret "ASR API Key"; ASR_KEY="$REPLY_VALUE"
@@ -259,8 +260,9 @@ if $DEPLOY_BACKEND; then
     echo "    3) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
     ask "选择 TTS 方式" "3"
     TTS_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_TTS=false
-    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD=""
+    WITH_LOCAL_TTS=true   # Piper 随镜像默认装好（与 API 同容器）；菜单只决定用云端还是本地
+    # 命令始终写入（内置 Piper 脚本）→ 以后切 TTS_MODE=local（+ TTS_FORMAT=wav）即生效，无需重建
+    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
     TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
     if [ "$TTS_CHOICE" = "1" ]; then
@@ -290,14 +292,14 @@ if $DEPLOY_BACKEND; then
     note "连接已有数据库：AI 模型 / 实时语音 / ASR / TTS 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
     # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户
     ENV_LINES+=(
-      "WITH_LOCAL_ASR=false"
+      "WITH_LOCAL_ASR=true"
       "WHISPER_MODEL_DIR=./data/whisper-models"
       "ASR_MODE=cloud"
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
-      "ASR_LOCAL_COMMAND=" "ASR_LOCAL_MODEL=small"
+      "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=small"
       "ASR_DEV_MODE=false"
-      "WITH_LOCAL_TTS=false"
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND="
+      "WITH_LOCAL_TTS=true"
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND=python /app/app/tts_local.py {voice} {out}"
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
     )

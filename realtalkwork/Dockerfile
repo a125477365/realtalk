@@ -16,14 +16,15 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 RUN pip install python-multipart
 
-# 本地语音转写（faster-whisper，CPU int8）。仅当 setup.sh 选择「本地转写」时安装，
-# 避免云端 ASR 部署也背上这份依赖。
-ARG WITH_LOCAL_ASR=false
+# 本地语音转写（faster-whisper，CPU int8）与本地语音合成（Piper，CPU）。
+# 默认随镜像装好：ASR/TTS 与 API 同容器,无论运维后面用云端付费模型还是本地开源模型,
+# 切换只是改 ASR_MODE/TTS_MODE 配置即可,不必重建镜像。
+# 想要更小的「纯云端」镜像可在构建时传 --build-arg WITH_LOCAL_ASR=false / WITH_LOCAL_TTS=false。
+# 模型文件首次使用时才下载到 /app/models（不烤进镜像；建议挂持久卷）。
+ARG WITH_LOCAL_ASR=true
 RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3; fi
 
-# 本地语音合成（Piper，CPU）。仅当 setup.sh 选择「本地 Piper TTS」时安装，云端 TTS 部署不背这份依赖。
-# 音色模型首次合成时自动下载到 /app/models（与本地 ASR 共用持久卷）。
-ARG WITH_LOCAL_TTS=false
+ARG WITH_LOCAL_TTS=true
 RUN if [ "$WITH_LOCAL_TTS" = "true" ]; then pip install piper-tts==1.2.0; fi
 
 COPY app ./app

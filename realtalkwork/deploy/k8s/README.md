@@ -12,27 +12,27 @@
 
 4 个 manifest 都用预构建镜像 `your-registry/realtalk-api:latest`，所以先在 `realtalkwork/` 目录构建并推到你的仓库。
 
-**纯云端 ASR/TTS（推荐，Pod 完全无状态）：**
+**默认构建（推荐）—— 本地 ASR(faster-whisper) + TTS(Piper) 随镜像装好,与 API 同容器：**
 ```bash
 cd realtalkwork
 docker build -t your-registry/realtalk-api:latest .
 docker push your-registry/realtalk-api:latest
 ```
+这样云端付费模型和本地开源模型都已就绪,运维之后切换只改 `ASR_MODE/TTS_MODE` 配置即可,**不必重建镜像**。
 
-**要服务器本地 ASR(faster-whisper) / 本地 TTS(Piper) —— 是的，和 docker-compose 一样靠 build-arg，但 k8s 用预构建镜像，所以要在【构建镜像时】传：**
+**只想要更小的「纯云端」镜像**（确定不用本地引擎）时,构建时关掉即可：
 ```bash
 docker build \
-  --build-arg WITH_LOCAL_ASR=true \   # 装 faster-whisper
-  --build-arg WITH_LOCAL_TTS=true \   # 装 piper-tts
+  --build-arg WITH_LOCAL_ASR=false \
+  --build-arg WITH_LOCAL_TTS=false \
   -t your-registry/realtalk-api:latest .
 docker push your-registry/realtalk-api:latest
 ```
-（云端方式不传即可，默认 false，镜像不背这些依赖。）
 
 构建后把 4 个 manifest 里的 `your-registry/realtalk-api:latest` 替换成你的镜像地址（API Deployment、db-init Job、以及 initContainer 三处都在 `realtalk-api.yaml` / `db-init.yaml`）。
 
-> **建议**：k8s 多副本优先用**云端 ASR/TTS** —— Pod 无状态、可随意扩缩、无模型存储问题。
-> 本地引擎更适合单机 docker-compose；在 k8s 用本地引擎要额外处理模型持久化（见第 4 节）。
+> **建议**：k8s 多副本若用**云端 ASR/TTS** Pod 完全无状态、可随意扩缩；用**本地引擎**要额外处理模型持久化（见第 4 节）。
+> 镜像默认带本地引擎只是让你能随时切换,用不用是运行期的 `ASR_MODE/TTS_MODE` 决定的。
 
 ## 1. 外部依赖
 - **PostgreSQL**：自建或托管，拿到连接串（不在本目录管理）。

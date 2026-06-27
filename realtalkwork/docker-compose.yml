@@ -50,10 +50,10 @@ services:
     build:
       context: .
       args:
-        # 选了本地转写时 setup.sh 会把它设为 true，镜像里装 faster-whisper
-        WITH_LOCAL_ASR: ${WITH_LOCAL_ASR:-false}
-        # 选了本地 Piper TTS 时 setup.sh 会把它设为 true，镜像里装 piper-tts
-        WITH_LOCAL_TTS: ${WITH_LOCAL_TTS:-false}
+        # 默认随镜像装好本地 ASR(faster-whisper) / TTS(Piper)，与 API 同容器；
+        # 云端/本地切换只改 ASR_MODE/TTS_MODE 即可，不必重建。想要纯云端瘦镜像可设为 false。
+        WITH_LOCAL_ASR: ${WITH_LOCAL_ASR:-true}
+        WITH_LOCAL_TTS: ${WITH_LOCAL_TTS:-true}
     env_file:
       - .env
     environment:

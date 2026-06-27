@@ -87,7 +87,8 @@ class Settings:
     asr_api_key: str | None = os.getenv("ASR_API_KEY")
     asr_model: str = os.getenv("ASR_MODEL", "whisper-1")
     # 本地转写命令模板：{input}=音频路径，{dir}=可写目录；命令需把文本打到 stdout 或在 {dir} 生成同名 .txt
-    asr_local_command: str | None = os.getenv("ASR_LOCAL_COMMAND")
+    # 默认即镜像自带的内置脚本(faster-whisper)，故 ASR_MODE=local 开箱即用、无需另配命令。
+    asr_local_command: str | None = os.getenv("ASR_LOCAL_COMMAND", "python /app/app/asr_local.py {input}")
     # 本地 whisper 模型大小（faster-whisper：tiny/base/small/medium/large-v3）
     asr_local_model: str = os.getenv("ASR_LOCAL_MODEL", "small")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
@@ -100,8 +101,9 @@ class Settings:
     # 可选音色列表（逗号分隔，供用户选择）与默认音色
     tts_voices: str = os.getenv("TTS_VOICES", "alloy,echo,fable,onyx,nova,shimmer")
     tts_default_voice: str = os.getenv("TTS_DEFAULT_VOICE", "alloy")
-    # 本地合成命令模板：{text}=待合成文本，{voice}=音色，{out}=输出音频路径；命令需在 {out} 生成音频
-    tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND")
+    # 本地合成命令模板：{voice}=音色，{out}=输出音频路径，文本经 stdin 传入；命令需在 {out} 生成音频
+    # 默认即镜像自带的内置脚本(Piper)，故 TTS_MODE=local 开箱即用、无需另配命令。
+    tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND", "python /app/app/tts_local.py {voice} {out}")
     tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
     tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
     # 防滥用：TTS 结果缓存 TTL、合成并发上限、贵接口每用户每分钟上限
