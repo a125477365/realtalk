@@ -1038,6 +1038,14 @@ function renderPlanQuotaCards() {
     '    <div class="form-group" style="grid-column:1/-1"><label>支付宝应用私钥（下单签名） <span class="hint" id="pay-ali-merch-key-st"></span></label>',
     '      <textarea id="pay-ali-merch-key" rows="3" placeholder="应用私钥 PEM（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
     "  </div>",
+    '  <h3 style="margin:12px 0 6px">人工收款兜底 <span class="hint">未接官方支付时，用户转账后在「充值订单」人工确认</span></h3>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>收款主体名称</label><input type="text" id="pay-recv-name" placeholder="RealTalk" /></div>',
+    '    <div class="form-group"><label>微信收款账号</label><input type="text" id="pay-wx-recv" placeholder="可留空" /></div>',
+    '    <div class="form-group"><label>支付宝收款账号</label><input type="text" id="pay-ali-recv" placeholder="可留空" /></div>',
+    '    <div class="form-group"><label>微信收款码链接</label><input type="text" id="pay-wx-payurl" placeholder="收款码图片/链接，可留空" /></div>',
+    '    <div class="form-group"><label>支付宝收款码链接</label><input type="text" id="pay-ali-payurl" placeholder="收款码图片/链接，可留空" /></div>',
+    "  </div>",
     '  <button class="btn btn-primary" style="margin-top:8px" onclick="savePayment()">保存支付配置</button>',
     "</div>",
     '<div class="card">',
@@ -1209,6 +1217,11 @@ function loadPlanQuotaAsr() {
       if (getEl("pay-wx-merch-key-st")) getEl("pay-wx-merch-key-st").textContent = d.wechat_merchant_key_configured ? "（已配置）" : "（未配置）";
       if (getEl("pay-ali-key-st")) getEl("pay-ali-key-st").textContent = d.alipay_public_key_configured ? "（已配置）" : "（未配置）";
       if (getEl("pay-ali-merch-key-st")) getEl("pay-ali-merch-key-st").textContent = d.alipay_merchant_key_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-recv-name")) getEl("pay-recv-name").value = d.payment_receiver_name || "";
+      if (getEl("pay-wx-recv")) getEl("pay-wx-recv").value = d.wechat_receiver_account || "";
+      if (getEl("pay-ali-recv")) getEl("pay-ali-recv").value = d.alipay_receiver_account || "";
+      if (getEl("pay-wx-payurl")) getEl("pay-wx-payurl").value = d.wechat_pay_url || "";
+      if (getEl("pay-ali-payurl")) getEl("pay-ali-payurl").value = d.alipay_pay_url || "";
       var st = getEl("pay-status");
       if (st) {
         st.innerHTML =
@@ -1314,6 +1327,11 @@ function savePayment() {
     wechat_notify_url: (getEl("pay-wx-notify") || { value: "" }).value.trim(),
     alipay_app_id: (getEl("pay-ali-appid") || { value: "" }).value.trim(),
     alipay_notify_url: (getEl("pay-ali-notify") || { value: "" }).value.trim(),
+    payment_receiver_name: (getEl("pay-recv-name") || { value: "" }).value.trim(),
+    wechat_receiver_account: (getEl("pay-wx-recv") || { value: "" }).value.trim(),
+    alipay_receiver_account: (getEl("pay-ali-recv") || { value: "" }).value.trim(),
+    wechat_pay_url: (getEl("pay-wx-payurl") || { value: "" }).value.trim(),
+    alipay_pay_url: (getEl("pay-ali-payurl") || { value: "" }).value.trim(),
   };
   var k = (getEl("pay-wx-apiv3") || { value: "" }).value.trim();
   if (k) body.wechat_apiv3_key = k;

@@ -1358,6 +1358,12 @@ class Database:
             "wechat_merchant_cert": getattr(s, "wechat_merchant_cert", None),
             "wechat_merchant_private_key": getattr(s, "wechat_merchant_private_key", None),
             "alipay_merchant_private_key": getattr(s, "alipay_merchant_private_key", None),
+            # 人工收款兜底（多活共用，DB 为准；env/setup.sh 仅首装播种）
+            "payment_receiver_name": getattr(s, "payment_receiver_name", None),
+            "wechat_receiver_account": getattr(s, "wechat_receiver_account", None),
+            "alipay_receiver_account": getattr(s, "alipay_receiver_account", None),
+            "wechat_pay_url": getattr(s, "wechat_pay_url", None),
+            "alipay_pay_url": getattr(s, "alipay_pay_url", None),
             # A：多活共用凭据（DB 为准，env/setup.sh 仅首装播种）——SMTP / 微信登录 / Apple IAP
             "smtp_host": getattr(s, "smtp_host", None),
             "smtp_port": str(getattr(s, "smtp_port", "") or ""),

@@ -1021,6 +1021,11 @@ def admin_get_payment(admin: dict = Depends(current_admin)) -> dict:
         "alipay_public_key_configured": bool(c["alipay_public_key"]),
         "alipay_merchant_key_configured": bool(c["alipay_merchant_private_key"]),
         "alipay_verify_ready": payments.alipay_configured(c),
+        "payment_receiver_name": c["payment_receiver_name"] or "",
+        "wechat_receiver_account": c["wechat_receiver_account"] or "",
+        "alipay_receiver_account": c["alipay_receiver_account"] or "",
+        "wechat_pay_url": c["wechat_pay_url"] or "",
+        "alipay_pay_url": c["alipay_pay_url"] or "",
     }
 
 
@@ -1054,6 +1059,16 @@ def admin_set_payment(
         db.set_app_setting("alipay_public_key", request.alipay_public_key.strip())
     if request.alipay_merchant_private_key:
         db.set_app_setting("alipay_merchant_private_key", request.alipay_merchant_private_key.strip())
+    if request.payment_receiver_name is not None:
+        db.set_app_setting("payment_receiver_name", request.payment_receiver_name.strip())
+    if request.wechat_receiver_account is not None:
+        db.set_app_setting("wechat_receiver_account", request.wechat_receiver_account.strip())
+    if request.alipay_receiver_account is not None:
+        db.set_app_setting("alipay_receiver_account", request.alipay_receiver_account.strip())
+    if request.wechat_pay_url is not None:
+        db.set_app_setting("wechat_pay_url", request.wechat_pay_url.strip())
+    if request.alipay_pay_url is not None:
+        db.set_app_setting("alipay_pay_url", request.alipay_pay_url.strip())
     return admin_get_payment(admin)
 
 
@@ -1638,10 +1653,10 @@ async def create_recharge(
     wechat_official = bool(_pay_cfg["wechat_mchid"] and _pay_cfg["wechat_notify_url"])
     alipay_official = bool(_pay_cfg["alipay_app_id"] and _pay_cfg["alipay_notify_url"])
     manual_fallback = settings.payment_dev_auto_confirm or bool(
-        settings.wechat_receiver_account
-        or settings.alipay_receiver_account
-        or settings.wechat_pay_url
-        or settings.alipay_pay_url
+        _pay_cfg["wechat_receiver_account"]
+        or _pay_cfg["alipay_receiver_account"]
+        or _pay_cfg["wechat_pay_url"]
+        or _pay_cfg["alipay_pay_url"]
     )
     if request.method == "wechat" and not wechat_official and not manual_fallback:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信支付暂不可用，请联系管理员配置收款方式")
@@ -1666,8 +1681,8 @@ async def create_recharge(
                 amount_cents,
                 payment_url=result.get("code_url"),
                 qr_code_text=result.get("code_url"),
-                receiver_name=settings.payment_receiver_name,
-                receiver_account=settings.wechat_receiver_account,
+                receiver_name=_pay_cfg["payment_receiver_name"],
+                receiver_account=_pay_cfg["wechat_receiver_account"],
                 plan_id=plan_id,
             )
             return RechargeOrderResponse(
@@ -1701,8 +1716,8 @@ async def create_recharge(
                 amount_cents,
                 payment_url=result.get("qr_code"),
                 qr_code_text=result.get("qr_code"),
-                receiver_name=settings.payment_receiver_name,
-                receiver_account=settings.alipay_receiver_account,
+                receiver_name=_pay_cfg["payment_receiver_name"],
+                receiver_account=_pay_cfg["alipay_receiver_account"],
                 plan_id=plan_id,
             )
             return RechargeOrderResponse(
@@ -1729,7 +1744,7 @@ async def create_recharge(
         amount_cents,
         payment_url=method_settings["payment_url"],
         qr_code_text=method_settings["qr_code_text"],
-        receiver_name=settings.payment_receiver_name,
+        receiver_name=_pay_cfg["payment_receiver_name"],
         receiver_account=method_settings["receiver_account"],
         plan_id=plan_id,
     )
@@ -3116,19 +3131,20 @@ def token_usage_info(user: UserOut) -> TokenUsageInfo:
 
 
 def payment_method_settings(method: str) -> dict[str, str | None]:
+    cfg = payments.resolve_payment_config()   # 单一来源：收款码/收款账号只读 DB
     if method == "wechat":
         return {
             "title": "微信",
-            "payment_url": settings.wechat_pay_url,
-            "qr_code_text": settings.wechat_pay_url,
-            "receiver_account": settings.wechat_receiver_account,
+            "payment_url": cfg["wechat_pay_url"],
+            "qr_code_text": cfg["wechat_pay_url"],
+            "receiver_account": cfg["wechat_receiver_account"],
         }
     if method == "alipay":
         return {
             "title": "支付宝",
-            "payment_url": settings.alipay_pay_url,
-            "qr_code_text": settings.alipay_pay_url,
-            "receiver_account": settings.alipay_receiver_account,
+            "payment_url": cfg["alipay_pay_url"],
+            "qr_code_text": cfg["alipay_pay_url"],
+            "receiver_account": cfg["alipay_receiver_account"],
         }
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的支付方式")
 

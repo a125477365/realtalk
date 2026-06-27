@@ -251,10 +251,31 @@ if $DEPLOY_BACKEND; then
       "ASR_DEV_MODE=$ASR_DEV"
     )
 
+    # ---- 语音合成 TTS（方式1/2 对练用后端朗读，云端凭据入库，仅新建库时配置）----
+    echo
+    note "AI 朗读（TTS）：手工触发 / 沉浸式对练由后端合成语音。"
+    echo "    1) 云端 TTS（OpenAI 兼容 /audio/speech，需密钥，质量稳定）"
+    echo "    2) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
+    ask "选择 TTS 方式" "2"
+    TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
+    TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
+    if [ "$REPLY_VALUE" = "1" ]; then
+      ask "TTS Base URL" "https://api.openai.com/v1"; TTS_BASE="$REPLY_VALUE"
+      ask_secret "TTS API Key"; TTS_KEY="$REPLY_VALUE"
+      ask "TTS 模型名称" "tts-1"; TTS_MODEL_VAL="$REPLY_VALUE"
+      ask "可选音色（逗号分隔）" "alloy,echo,fable,onyx,nova,shimmer"; TTS_VOICES_VAL="$REPLY_VALUE"
+      ask "默认音色" "alloy"; TTS_DEFAULT_VOICE_VAL="$REPLY_VALUE"
+    fi
+    ENV_LINES+=(
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND="
+      "TTS_BASE_URL=$TTS_BASE" "TTS_API_KEY=$TTS_KEY" "TTS_MODEL=$TTS_MODEL_VAL"
+      "TTS_VOICES=$TTS_VOICES_VAL" "TTS_DEFAULT_VOICE=$TTS_DEFAULT_VOICE_VAL"
+    )
+
     note "额度参数已设为默认值（非会员每天 1000 token / 5 分钟录音，基础 12 万 / 高级 40 万），可在管理台「系统设置 → 额度」调整。"
   else
-    note "连接已有数据库：AI 模型 / 实时语音 / ASR 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
-    # 已有库时 ASR 仍需写入 .env 默认值（WITH_LOCAL_ASR 影响 Docker 构建），但不询问用户
+    note "连接已有数据库：AI 模型 / 实时语音 / ASR / TTS 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
+    # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户
     ENV_LINES+=(
       "WITH_LOCAL_ASR=false"
       "WHISPER_MODEL_DIR=./data/whisper-models"
@@ -262,6 +283,9 @@ if $DEPLOY_BACKEND; then
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
       "ASR_LOCAL_COMMAND=" "ASR_LOCAL_MODEL=small"
       "ASR_DEV_MODE=false"
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND="
+      "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
+      "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
     )
   fi
 

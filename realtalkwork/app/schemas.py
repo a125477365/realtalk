@@ -497,6 +497,12 @@ class PaymentSettingsRequest(BaseModel):
     alipay_public_key: str | None = Field(default=None, max_length=8000)
     alipay_notify_url: str | None = Field(default=None, max_length=500)
     alipay_merchant_private_key: str | None = Field(default=None, max_length=8000)  # 应用私钥 PEM（下单签名）；留空=不改
+    # 人工收款兜底（非敏感展示值，空串可清空）
+    payment_receiver_name: str | None = Field(default=None, max_length=120)
+    wechat_receiver_account: str | None = Field(default=None, max_length=200)
+    alipay_receiver_account: str | None = Field(default=None, max_length=200)
+    wechat_pay_url: str | None = Field(default=None, max_length=500)
+    alipay_pay_url: str | None = Field(default=None, max_length=500)
 
 
 class IntegrationSettingsRequest(BaseModel):

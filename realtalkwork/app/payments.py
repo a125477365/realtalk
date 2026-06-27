@@ -27,6 +27,9 @@ _PAYMENT_KEYS = [
     # 多活共用、改为只读 DB：回调地址 + 商户「下单签名」凭据（证书/私钥内容入库，不再每节点放文件）
     "wechat_notify_url", "alipay_notify_url",
     "wechat_merchant_cert", "wechat_merchant_private_key", "alipay_merchant_private_key",
+    # 人工收款兜底（多活共用展示值）：收款主体名 + 微信/支付宝收款账号 + 收款码链接
+    "payment_receiver_name", "wechat_receiver_account", "alipay_receiver_account",
+    "wechat_pay_url", "alipay_pay_url",
 ]
 
 
@@ -47,6 +50,11 @@ def resolve_payment_config() -> dict[str, str | None]:
         "wechat_merchant_cert": ov.get("wechat_merchant_cert"),
         "wechat_merchant_private_key": ov.get("wechat_merchant_private_key"),
         "alipay_merchant_private_key": ov.get("alipay_merchant_private_key"),
+        "payment_receiver_name": ov.get("payment_receiver_name") or "RealTalk",   # 非空展示默认
+        "wechat_receiver_account": ov.get("wechat_receiver_account"),
+        "alipay_receiver_account": ov.get("alipay_receiver_account"),
+        "wechat_pay_url": ov.get("wechat_pay_url"),
+        "alipay_pay_url": ov.get("alipay_pay_url"),
     }
 
 
