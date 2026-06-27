@@ -21,6 +21,11 @@ RUN pip install python-multipart
 ARG WITH_LOCAL_ASR=false
 RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3; fi
 
+# 本地语音合成（Piper，CPU）。仅当 setup.sh 选择「本地 Piper TTS」时安装，云端 TTS 部署不背这份依赖。
+# 音色模型首次合成时自动下载到 /app/models（与本地 ASR 共用持久卷）。
+ARG WITH_LOCAL_TTS=false
+RUN if [ "$WITH_LOCAL_TTS" = "true" ]; then pip install piper-tts==1.2.0; fi
+
 COPY app ./app
 COPY docs ./docs
 COPY web-frontend ./web-frontend

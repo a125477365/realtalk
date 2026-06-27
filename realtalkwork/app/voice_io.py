@@ -163,7 +163,9 @@ def _synthesize_local(config: dict[str, Any], text: str, voice: str) -> tuple[by
             .replace("{voice}", voice)
             .replace("{out}", out)
         )
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        # 文本同时经【标准输入】喂给命令（Piper 等本地引擎据此合成，长文本/特殊字符不必走命令行转义；
+        # 仍保留 {text} 占位以兼容自定义命令）。
+        proc = subprocess.run(cmd, shell=True, input=text, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0 or not os.path.exists(out):
             raise RuntimeError(f"本地 TTS 命令失败（{proc.returncode}）：{(proc.stderr or proc.stdout)[:300]}")
         with open(out, "rb") as fh:

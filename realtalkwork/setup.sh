@@ -255,19 +255,32 @@ if $DEPLOY_BACKEND; then
     echo
     note "AI 朗读（TTS）：手工触发 / 沉浸式对练由后端合成语音。"
     echo "    1) 云端 TTS（OpenAI 兼容 /audio/speech，需密钥，质量稳定）"
-    echo "    2) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
-    ask "选择 TTS 方式" "2"
+    echo "    2) 服务器本地 Piper（自动安装，免密钥，占用本机算力；输出 WAV）"
+    echo "    3) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
+    ask "选择 TTS 方式" "3"
+    TTS_CHOICE="$REPLY_VALUE"
+    WITH_LOCAL_TTS=false
+    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD=""
     TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
-    if [ "$REPLY_VALUE" = "1" ]; then
+    if [ "$TTS_CHOICE" = "1" ]; then
       ask "TTS Base URL" "https://api.openai.com/v1"; TTS_BASE="$REPLY_VALUE"
       ask_secret "TTS API Key"; TTS_KEY="$REPLY_VALUE"
       ask "TTS 模型名称" "tts-1"; TTS_MODEL_VAL="$REPLY_VALUE"
       ask "可选音色（逗号分隔）" "alloy,echo,fable,onyx,nova,shimmer"; TTS_VOICES_VAL="$REPLY_VALUE"
       ask "默认音色" "alloy"; TTS_DEFAULT_VOICE_VAL="$REPLY_VALUE"
+    elif [ "$TTS_CHOICE" = "2" ]; then
+      note "将自动在镜像中安装 piper-tts（CPU）；音色模型首次合成自动下载到 ./data/whisper-models（与本地 ASR 共用卷）。"
+      note "RealTalk 朗读英文，默认英文音色；可填多个 Piper 音色名（逗号分隔），列表见 rhasspy/piper。"
+      WITH_LOCAL_TTS=true
+      TTS_MODE_VAL="local"; TTS_FORMAT_VAL="wav"
+      TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
+      ask "可选 Piper 音色（逗号分隔）" "en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"; TTS_VOICES_VAL="$REPLY_VALUE"
+      ask "默认音色" "en_US-lessac-medium"; TTS_DEFAULT_VOICE_VAL="$REPLY_VALUE"
     fi
     ENV_LINES+=(
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND="
+      "WITH_LOCAL_TTS=$WITH_LOCAL_TTS"
+      "TTS_MODE=$TTS_MODE_VAL" "TTS_FORMAT=$TTS_FORMAT_VAL" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND=$TTS_LOCAL_CMD"
       "TTS_BASE_URL=$TTS_BASE" "TTS_API_KEY=$TTS_KEY" "TTS_MODEL=$TTS_MODEL_VAL"
       "TTS_VOICES=$TTS_VOICES_VAL" "TTS_DEFAULT_VOICE=$TTS_DEFAULT_VOICE_VAL"
     )
@@ -283,6 +296,7 @@ if $DEPLOY_BACKEND; then
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
       "ASR_LOCAL_COMMAND=" "ASR_LOCAL_MODEL=small"
       "ASR_DEV_MODE=false"
+      "WITH_LOCAL_TTS=false"
       "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND="
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"

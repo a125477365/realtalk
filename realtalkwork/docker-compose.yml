@@ -52,6 +52,8 @@ services:
       args:
         # 选了本地转写时 setup.sh 会把它设为 true，镜像里装 faster-whisper
         WITH_LOCAL_ASR: ${WITH_LOCAL_ASR:-false}
+        # 选了本地 Piper TTS 时 setup.sh 会把它设为 true，镜像里装 piper-tts
+        WITH_LOCAL_TTS: ${WITH_LOCAL_TTS:-false}
     env_file:
       - .env
     environment:
