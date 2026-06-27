@@ -1140,6 +1140,27 @@ class Database:
         except ValueError:
             return default
 
+    def get_app_setting_float(self, key: str, default: float) -> float:
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(app_settings.c.value_text).where(app_settings.c.key == key)
+            ).scalar_one_or_none()
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except ValueError:
+            return default
+
+    def get_app_setting_bool(self, key: str, default: bool) -> bool:
+        with self.engine.connect() as conn:
+            value = conn.execute(
+                select(app_settings.c.value_text).where(app_settings.c.key == key)
+            ).scalar_one_or_none()
+        if value is None or value == "":
+            return default
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     def get_app_setting_str(self, key: str, default: str | None = None) -> str | None:
         with self.engine.connect() as conn:
             value = conn.execute(
@@ -1172,6 +1193,78 @@ class Database:
                 conn.execute(
                     insert(app_settings).values(key=key, value_text=value, updated_at=now)
                 )
+
+    # ===== A：多活共用凭据（只读 DB，单一来源；env/setup.sh 仅 db_init 首装播种）=====
+
+    def resolve_smtp_config(self) -> dict[str, Any]:
+        ov = self.get_app_settings_map(["smtp_host", "smtp_port", "smtp_username", "smtp_password", "smtp_from"])
+        return {
+            "host": ov.get("smtp_host"),
+            "port": int(ov["smtp_port"]) if ov.get("smtp_port", "").isdigit() else 587,
+            "username": ov.get("smtp_username"),
+            "password": ov.get("smtp_password"),
+            "from_addr": ov.get("smtp_from") or "RealTalk <noreply@realtalk.local>",
+            "code_ttl_minutes": self.get_app_setting_int("email_code_ttl_minutes", settings.email_code_ttl_minutes),
+        }
+
+    def smtp_configured(self) -> bool:
+        c = self.resolve_smtp_config()
+        return bool(c["host"] and c["username"] and c["password"])
+
+    def resolve_wechat_login_config(self) -> dict[str, str | None]:
+        ov = self.get_app_settings_map(
+            ["wechat_app_id", "wechat_app_secret", "wechat_web_app_id", "wechat_web_app_secret"]
+        )
+        return {
+            "app_id": ov.get("wechat_app_id"),
+            "app_secret": ov.get("wechat_app_secret"),
+            "web_app_id": ov.get("wechat_web_app_id"),
+            "web_app_secret": ov.get("wechat_web_app_secret"),
+        }
+
+    def resolve_apple_iap_config(self) -> dict[str, str | None]:
+        ov = self.get_app_settings_map(
+            ["apple_product_id", "apple_bundle_id", "apple_issuer_id", "apple_key_id", "apple_private_key"]
+        )
+        return {
+            "product_id": ov.get("apple_product_id") or settings.apple_product_id,   # 非密钥默认（占位 bundle/product）
+            "bundle_id": ov.get("apple_bundle_id") or settings.apple_bundle_id,
+            "issuer_id": ov.get("apple_issuer_id"),
+            "key_id": ov.get("apple_key_id"),
+            "private_key": ov.get("apple_private_key"),
+        }
+
+    # ===== B：会话/留存策略（DB 为唯一运行期来源 + 管理台可改；settings.X 仅作首装默认）=====
+
+    def get_access_token_ttl_minutes(self) -> int:
+        return self.get_app_setting_int("access_token_ttl_minutes", settings.access_token_ttl_minutes)
+
+    def get_refresh_token_ttl_days(self) -> int:
+        return self.get_app_setting_int("refresh_token_ttl_days", settings.refresh_token_ttl_days)
+
+    def get_idle_timeout_app_minutes(self) -> int:
+        return self.get_app_setting_int("idle_timeout_app_minutes", settings.idle_timeout_app_minutes)
+
+    def get_idle_timeout_web_minutes(self) -> int:
+        return self.get_app_setting_int("idle_timeout_web_minutes", settings.idle_timeout_web_minutes)
+
+    def get_admin_idle_timeout_minutes(self) -> int:
+        return self.get_app_setting_int("admin_idle_timeout_minutes", settings.admin_idle_timeout_minutes)
+
+    def get_retention_days(self) -> int:
+        return self.get_app_setting_int("retention_days", settings.retention_days)
+
+    def get_history_retention_days(self) -> int:
+        return self.get_app_setting_int("history_retention_days", settings.history_retention_days)
+
+    def get_online_window_minutes(self) -> int:
+        return self.get_app_setting_int("online_window_minutes", settings.online_window_minutes)
+
+    def get_roleplay_accept_score(self) -> float:
+        return self.get_app_setting_float("roleplay_accept_score", settings.roleplay_accept_score)
+
+    def get_political_filter_enabled(self) -> bool:
+        return self.get_app_setting_bool("political_filter_enabled", settings.political_filter_enabled)
 
     def get_or_create_jwt_secret(self) -> str:
         """JWT 签名密钥存共享 DB（系统参数表），保证多活各后端用同一把——否则 A 节点签的令牌 B 节点不认。
@@ -1214,6 +1307,21 @@ class Database:
             "monthly_price_cents": s.monthly_price_cents,
             "ai_estimate_output_tokens": s.ai_estimate_output_tokens,
             "ai_estimate_min_input_tokens": s.ai_estimate_min_input_tokens,
+            # B：会话/留存策略（多活共用，DB 为唯一运行期来源 + 管理台可改）
+            "access_token_ttl_minutes": s.access_token_ttl_minutes,
+            "refresh_token_ttl_days": s.refresh_token_ttl_days,
+            "idle_timeout_app_minutes": s.idle_timeout_app_minutes,
+            "idle_timeout_web_minutes": s.idle_timeout_web_minutes,
+            "admin_idle_timeout_minutes": s.admin_idle_timeout_minutes,
+            "retention_days": s.retention_days,
+            "history_retention_days": s.history_retention_days,
+            "online_window_minutes": s.online_window_minutes,
+            "roleplay_accept_score": s.roleplay_accept_score,
+            "email_code_ttl_minutes": s.email_code_ttl_minutes,
+            "political_filter_enabled": 1 if s.political_filter_enabled else 0,
+            # Apple 非密钥标识（占位默认，管理台可改）
+            "apple_product_id": s.apple_product_id,
+            "apple_bundle_id": s.apple_bundle_id,
         }
         # 连接/密钥类：仅当 env 非空才补，避免把空串写进库
         strings = {
@@ -1240,6 +1348,19 @@ class Database:
             "wechat_cert_serial": getattr(s, "wechat_cert_serial", None),
             "alipay_app_id": getattr(s, "alipay_app_id", None),
             "alipay_public_key": getattr(s, "alipay_public_key", None),
+            # A：多活共用凭据（DB 为准，env/setup.sh 仅首装播种）——SMTP / 微信登录 / Apple IAP
+            "smtp_host": getattr(s, "smtp_host", None),
+            "smtp_port": str(getattr(s, "smtp_port", "") or ""),
+            "smtp_username": getattr(s, "smtp_username", None),
+            "smtp_password": getattr(s, "smtp_password", None),
+            "smtp_from": getattr(s, "smtp_from", None),
+            "wechat_app_id": getattr(s, "wechat_app_id", None),
+            "wechat_app_secret": getattr(s, "wechat_app_secret", None),
+            "wechat_web_app_id": getattr(s, "wechat_web_app_id", None),
+            "wechat_web_app_secret": getattr(s, "wechat_web_app_secret", None),
+            "apple_issuer_id": getattr(s, "apple_issuer_id", None),
+            "apple_key_id": getattr(s, "apple_key_id", None),
+            "apple_private_key": getattr(s, "apple_private_key", None),
         }
         existing = self.get_app_settings_map(list(numeric) + list(strings))
         written = 0
@@ -1667,9 +1788,10 @@ class Database:
         rows = []
         for item in clean_transcript_items(items):
             timestamp = _utc(item.timestamp)
-            if timestamp < now - timedelta(days=settings.retention_days):
+            retention_days = self.get_retention_days()
+            if timestamp < now - timedelta(days=retention_days):
                 continue
-            expires_at = timestamp + timedelta(days=settings.retention_days)
+            expires_at = timestamp + timedelta(days=retention_days)
             rows.append(
                 {
                     "id": item.id,
@@ -1765,7 +1887,7 @@ class Database:
     ) -> ScenarioResponse:
         scene_id = str(uuid.uuid4())
         now = _now()
-        expires_at = now + timedelta(days=settings.history_retention_days)
+        expires_at = now + timedelta(days=self.get_history_retention_days())
         saved = scenario.model_copy(update={"scene_id": scene_id})
         with self.engine.begin() as conn:
             conn.execute(
@@ -2285,7 +2407,8 @@ class Database:
         return items
 
     def admin_overview(self) -> dict[str, Any]:
-        online_since = _iso(_now() - timedelta(minutes=settings.online_window_minutes))
+        online_window_minutes = self.get_online_window_minutes()
+        online_since = _iso(_now() - timedelta(minutes=online_window_minutes))
         with self.engine.connect() as conn:
             total_users = int(conn.execute(select(func.count()).select_from(users)).scalar_one() or 0)
             banned_users = int(
@@ -2357,7 +2480,7 @@ class Database:
             "total_users": total_users,
             "banned_users": banned_users,
             "online_users": online_users,
-            "online_window_minutes": settings.online_window_minutes,
+            "online_window_minutes": online_window_minutes,
             "total_balance_cents": total_balance_cents,
             "paid_recharge_cents": paid_recharge_cents,
             "pending_recharge_cents": pending_recharge_cents,
@@ -2785,7 +2908,7 @@ class Database:
             return None
         # 闲置超时：超过 admin_idle_timeout_minutes 无操作即失效，需重新登录
         last_seen = _parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None
-        if last_seen is not None and (now - last_seen).total_seconds() > settings.admin_idle_timeout_minutes * 60:
+        if last_seen is not None and (now - last_seen).total_seconds() > self.get_admin_idle_timeout_minutes() * 60:
             return None
         admin = self.admin_get(row["admin_id"])
         if admin is None or not admin.get("is_active"):
@@ -2825,8 +2948,8 @@ class Database:
         self._last_cleanup_at = now_ts
 
         now = _iso(now_ts)
-        cutoff = _iso(now_ts - timedelta(days=settings.retention_days))
-        history_cutoff = _iso(now_ts - timedelta(days=settings.history_retention_days))
+        cutoff = _iso(now_ts - timedelta(days=self.get_retention_days()))
+        history_cutoff = _iso(now_ts - timedelta(days=self.get_history_retention_days()))
         with self.engine.begin() as conn:
             conn.execute(delete(transcripts).where(transcripts.c.expires_at < now))
             conn.execute(delete(sessions).where(sessions.c.created_at < cutoff))

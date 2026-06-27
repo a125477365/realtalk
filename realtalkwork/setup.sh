@@ -345,6 +345,41 @@ if $DEPLOY_BACKEND; then
     ask "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
   fi
 
+  # ---- 集成凭据（多活后端共用，入库；可留空稍后在管理台「集成凭据」维护）----
+  echo
+  note "以下凭据多活后端共用，装库时入库（DB 为唯一来源）。可全部留空，稍后在管理台「集成凭据」填。"
+  SMTP_HOST=""; SMTP_USER=""; SMTP_PW=""; SMTP_FROM_VAL="RealTalk <noreply@realtalk.local>"
+  WX_LOGIN_APPID=""; WX_LOGIN_SECRET=""; WXWEB_APPID=""; WXWEB_SECRET=""
+  AP_PRODUCT="realtalk.pro.monthly"; AP_BUNDLE="com.realtalk.app"; AP_ISSUER=""; AP_KEYID=""; AP_PRIV=""
+  ask "现在配置集成凭据（邮件/微信登录/Apple内购）吗？(yes/no)" "no"
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    ask "配置邮件 SMTP？(yes/no)" "no"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      ask "SMTP 主机" ""; SMTP_HOST="$REPLY_VALUE"
+      ask "SMTP 用户名" ""; SMTP_USER="$REPLY_VALUE"
+      ask_secret "SMTP 密码"; SMTP_PW="$REPLY_VALUE"
+      ask "发件人" "RealTalk <noreply@realtalk.local>"; SMTP_FROM_VAL="$REPLY_VALUE"
+    fi
+    ask "配置微信登录？(yes/no)" "no"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      ask "App 开放平台 appid" ""; WX_LOGIN_APPID="$REPLY_VALUE"
+      ask_secret "App secret"; WX_LOGIN_SECRET="$REPLY_VALUE"
+      ask "网站 appid（可留空）" ""; WXWEB_APPID="$REPLY_VALUE"
+      ask_secret "网站 secret（可留空）"; WXWEB_SECRET="$REPLY_VALUE"
+    fi
+    ask "配置 Apple 内购服务端校验？(yes/no)" "no"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      ask "product_id" "realtalk.pro.monthly"; AP_PRODUCT="$REPLY_VALUE"
+      ask "bundle_id" "com.realtalk.app"; AP_BUNDLE="$REPLY_VALUE"
+      ask "issuer_id" ""; AP_ISSUER="$REPLY_VALUE"
+      ask "key_id" ""; AP_KEYID="$REPLY_VALUE"
+      ask "私钥 .p8 文件路径（可留空稍后在管理台粘贴）" ""; AP_PRIV_PATH="$REPLY_VALUE"
+      if [ -n "$AP_PRIV_PATH" ] && [ -f "$AP_PRIV_PATH" ]; then
+        AP_PRIV="$(sed ':a;N;$!ba;s/\n/\\n/g' "$AP_PRIV_PATH")"
+      fi
+    fi
+  fi
+
   ENV_LINES+=(
     "REALTALK_REGION=prod"
     "TRIAL_DAYS=30"
@@ -369,6 +404,12 @@ if $DEPLOY_BACKEND; then
     "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
     "WECHAT_CERT_SERIAL=$WX_SERIAL" "WECHAT_PLATFORM_CERT=$WX_CERT"
     "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
+    "# 集成凭据（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台「集成凭据」维护）"
+    "SMTP_HOST=$SMTP_HOST" "SMTP_USERNAME=$SMTP_USER" "SMTP_PASSWORD=$SMTP_PW" "SMTP_FROM=$SMTP_FROM_VAL"
+    "WECHAT_APP_ID=$WX_LOGIN_APPID" "WECHAT_APP_SECRET=$WX_LOGIN_SECRET"
+    "WECHAT_WEB_APP_ID=$WXWEB_APPID" "WECHAT_WEB_APP_SECRET=$WXWEB_SECRET"
+    "APPLE_PRODUCT_ID=$AP_PRODUCT" "APPLE_BUNDLE_ID=$AP_BUNDLE"
+    "APPLE_ISSUER_ID=$AP_ISSUER" "APPLE_KEY_ID=$AP_KEYID" "APPLE_PRIVATE_KEY=$AP_PRIV"
   )
 fi
 

@@ -1032,6 +1032,55 @@ function renderPlanQuotaCards() {
     "  </div>",
     '  <button class="btn btn-primary" style="margin-top:8px" onclick="savePayment()">保存支付配置</button>',
     "</div>",
+    '<div class="card">',
+    "  <h2>集成凭据<span class=\"subtitle\">SMTP / 微信登录 / Apple 内购（多活后端共用，存数据库，密钥留空=不改）</span></h2>",
+    '  <div id="intg-status" class="hint" style="margin-bottom:8px"></div>',
+    '  <h3 style="margin:6px 0">邮件 SMTP</h3>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>SMTP 主机</label><input type="text" id="intg-smtp-host" placeholder="smtp.example.com" /></div>',
+    '    <div class="form-group"><label>端口</label><input type="number" id="intg-smtp-port" placeholder="587" /></div>',
+    '    <div class="form-group"><label>用户名</label><input type="text" id="intg-smtp-user" /></div>',
+    '    <div class="form-group"><label>密码 <span class="hint" id="intg-smtp-pw-st"></span></label>',
+    '      <input type="password" id="intg-smtp-pw" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>发件人</label><input type="text" id="intg-smtp-from" placeholder="RealTalk <noreply@...>" /></div>',
+    '    <div class="form-group"><label>验证码有效期（分钟）</label><input type="number" id="intg-code-ttl" placeholder="10" /></div>',
+    "  </div>",
+    '  <h3 style="margin:10px 0 6px">微信登录</h3>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>App appid（开放平台）</label><input type="text" id="intg-wx-appid" /></div>',
+    '    <div class="form-group"><label>App secret <span class="hint" id="intg-wx-secret-st"></span></label>',
+    '      <input type="password" id="intg-wx-secret" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>网站 appid</label><input type="text" id="intg-wxweb-appid" /></div>',
+    '    <div class="form-group"><label>网站 secret <span class="hint" id="intg-wxweb-secret-st"></span></label>',
+    '      <input type="password" id="intg-wxweb-secret" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    "  </div>",
+    '  <h3 style="margin:10px 0 6px">Apple 内购</h3>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>product_id</label><input type="text" id="intg-ap-product" /></div>',
+    '    <div class="form-group"><label>bundle_id</label><input type="text" id="intg-ap-bundle" /></div>',
+    '    <div class="form-group"><label>issuer_id</label><input type="text" id="intg-ap-issuer" /></div>',
+    '    <div class="form-group"><label>key_id</label><input type="text" id="intg-ap-keyid" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>私钥 .p8 <span class="hint" id="intg-ap-pk-st"></span></label>',
+    '      <textarea id="intg-ap-pk" rows="4" placeholder="-----BEGIN PRIVATE KEY-----...（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" style="margin-top:8px" onclick="saveIntegrations()">保存集成凭据</button>',
+    "</div>",
+    '<div class="card">',
+    "  <h2>会话/留存策略<span class=\"subtitle\">多活后端共用，存数据库，改后即时生效</span></h2>",
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>access 令牌有效期（分钟）</label><input type="number" id="sp-access-ttl" /></div>',
+    '    <div class="form-group"><label>refresh 令牌有效期（天）</label><input type="number" id="sp-refresh-ttl" /></div>',
+    '    <div class="form-group"><label>App 闲置超时（分钟）</label><input type="number" id="sp-idle-app" /></div>',
+    '    <div class="form-group"><label>用户 Web 闲置超时（分钟）</label><input type="number" id="sp-idle-web" /></div>',
+    '    <div class="form-group"><label>管理端闲置超时（分钟）</label><input type="number" id="sp-idle-admin" /></div>',
+    '    <div class="form-group"><label>采集数据留存（天）</label><input type="number" id="sp-retention" /></div>',
+    '    <div class="form-group"><label>历史记录留存（天）</label><input type="number" id="sp-hist-retention" /></div>',
+    '    <div class="form-group"><label>在线判定窗口（分钟）</label><input type="number" id="sp-online" /></div>',
+    '    <div class="form-group"><label>对练通过阈值（0~1）</label><input type="number" step="0.05" min="0" max="1" id="sp-accept" /></div>',
+    '    <div class="form-group"><label>涉政内容过滤</label><select id="sp-political"><option value="1">开启</option><option value="0">关闭</option></select></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" style="margin-top:8px" onclick="saveSessionPolicy()">保存会话策略</button>',
+    "</div>",
   ].join("");
 }
 
@@ -1154,6 +1203,94 @@ function loadPlanQuotaAsr() {
           "　支付宝验签：" + (d.alipay_verify_ready ? "<b style='color:#0a7a3a'>就绪</b>" : "<b style='color:#e03131'>未就绪（回调将被拒绝）</b>");
       }
     });
+  });
+  apiGet("/admin/api/settings/integrations").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("intg-smtp-host")) getEl("intg-smtp-host").value = d.smtp_host || "";
+      if (getEl("intg-smtp-port")) getEl("intg-smtp-port").value = d.smtp_port || "";
+      if (getEl("intg-smtp-user")) getEl("intg-smtp-user").value = d.smtp_username || "";
+      if (getEl("intg-smtp-from")) getEl("intg-smtp-from").value = d.smtp_from || "";
+      if (getEl("intg-code-ttl")) getEl("intg-code-ttl").value = d.email_code_ttl_minutes || "";
+      if (getEl("intg-wx-appid")) getEl("intg-wx-appid").value = d.wechat_app_id || "";
+      if (getEl("intg-wxweb-appid")) getEl("intg-wxweb-appid").value = d.wechat_web_app_id || "";
+      if (getEl("intg-ap-product")) getEl("intg-ap-product").value = d.apple_product_id || "";
+      if (getEl("intg-ap-bundle")) getEl("intg-ap-bundle").value = d.apple_bundle_id || "";
+      if (getEl("intg-ap-issuer")) getEl("intg-ap-issuer").value = d.apple_issuer_id || "";
+      if (getEl("intg-ap-keyid")) getEl("intg-ap-keyid").value = d.apple_key_id || "";
+      if (getEl("intg-smtp-pw-st")) getEl("intg-smtp-pw-st").textContent = d.smtp_password_configured ? "（已配置）" : "（未配置）";
+      if (getEl("intg-wx-secret-st")) getEl("intg-wx-secret-st").textContent = d.wechat_app_secret_configured ? "（已配置）" : "（未配置）";
+      if (getEl("intg-wxweb-secret-st")) getEl("intg-wxweb-secret-st").textContent = d.wechat_web_app_secret_configured ? "（已配置）" : "（未配置）";
+      if (getEl("intg-ap-pk-st")) getEl("intg-ap-pk-st").textContent = d.apple_private_key_configured ? "（已配置）" : "（未配置）";
+      var st = getEl("intg-status");
+      if (st) st.innerHTML = "邮件：" + (d.smtp_ready ? "<b style='color:#0a7a3a'>就绪</b>" : "<b style='color:#e03131'>未就绪</b>");
+    });
+  });
+  apiGet("/admin/api/settings/session").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      var m = {
+        "sp-access-ttl": d.access_token_ttl_minutes, "sp-refresh-ttl": d.refresh_token_ttl_days,
+        "sp-idle-app": d.idle_timeout_app_minutes, "sp-idle-web": d.idle_timeout_web_minutes,
+        "sp-idle-admin": d.admin_idle_timeout_minutes, "sp-retention": d.retention_days,
+        "sp-hist-retention": d.history_retention_days, "sp-online": d.online_window_minutes,
+        "sp-accept": d.roleplay_accept_score,
+      };
+      Object.keys(m).forEach(function(k) { if (getEl(k)) getEl(k).value = (m[k] == null ? "" : m[k]); });
+      if (getEl("sp-political")) getEl("sp-political").value = d.political_filter_enabled ? "1" : "0";
+    });
+  });
+}
+
+function saveIntegrations() {
+  var body = {
+    smtp_host: (getEl("intg-smtp-host") || { value: "" }).value.trim(),
+    smtp_username: (getEl("intg-smtp-user") || { value: "" }).value.trim(),
+    smtp_from: (getEl("intg-smtp-from") || { value: "" }).value.trim(),
+    wechat_app_id: (getEl("intg-wx-appid") || { value: "" }).value.trim(),
+    wechat_web_app_id: (getEl("intg-wxweb-appid") || { value: "" }).value.trim(),
+    apple_product_id: (getEl("intg-ap-product") || { value: "" }).value.trim(),
+    apple_bundle_id: (getEl("intg-ap-bundle") || { value: "" }).value.trim(),
+    apple_issuer_id: (getEl("intg-ap-issuer") || { value: "" }).value.trim(),
+    apple_key_id: (getEl("intg-ap-keyid") || { value: "" }).value.trim(),
+  };
+  var port = (getEl("intg-smtp-port") || { value: "" }).value.trim();
+  if (port) body.smtp_port = parseInt(port, 10);
+  var ttl = (getEl("intg-code-ttl") || { value: "" }).value.trim();
+  if (ttl) body.email_code_ttl_minutes = parseInt(ttl, 10);
+  var pw = (getEl("intg-smtp-pw") || { value: "" }).value.trim();
+  if (pw) body.smtp_password = pw;
+  var ws = (getEl("intg-wx-secret") || { value: "" }).value.trim();
+  if (ws) body.wechat_app_secret = ws;
+  var wws = (getEl("intg-wxweb-secret") || { value: "" }).value.trim();
+  if (wws) body.wechat_web_app_secret = wws;
+  var pk = (getEl("intg-ap-pk") || { value: "" }).value.trim();
+  if (pk) body.apple_private_key = pk;
+  apiPost("/admin/api/settings/integrations", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("集成凭据已保存", "success");
+    loadPlanQuotaAsr();
+  });
+}
+
+function saveSessionPolicy() {
+  function num(id) { var v = (getEl(id) || { value: "" }).value.trim(); return v === "" ? null : parseInt(v, 10); }
+  var body = {
+    access_token_ttl_minutes: num("sp-access-ttl"), refresh_token_ttl_days: num("sp-refresh-ttl"),
+    idle_timeout_app_minutes: num("sp-idle-app"), idle_timeout_web_minutes: num("sp-idle-web"),
+    admin_idle_timeout_minutes: num("sp-idle-admin"), retention_days: num("sp-retention"),
+    history_retention_days: num("sp-hist-retention"), online_window_minutes: num("sp-online"),
+    political_filter_enabled: (getEl("sp-political") || { value: "1" }).value === "1",
+  };
+  var acc = (getEl("sp-accept") || { value: "" }).value.trim();
+  if (acc !== "") body.roleplay_accept_score = parseFloat(acc);
+  Object.keys(body).forEach(function(k) { if (body[k] === null) delete body[k]; });
+  apiPost("/admin/api/settings/session", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    toast("会话策略已保存", "success");
+    loadPlanQuotaAsr();
   });
 }
 

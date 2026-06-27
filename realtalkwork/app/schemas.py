@@ -492,6 +492,42 @@ class PaymentSettingsRequest(BaseModel):
     alipay_public_key: str | None = Field(default=None, max_length=8000)
 
 
+class IntegrationSettingsRequest(BaseModel):
+    """多活共用凭据：SMTP / 微信登录 / Apple IAP（管理台维护、存 DB；密钥类留空=不改）。"""
+    # SMTP（邮箱验证码/找回密码）
+    smtp_host: str | None = Field(default=None, max_length=200)
+    smtp_port: int | None = Field(default=None, ge=1, le=65535)
+    smtp_username: str | None = Field(default=None, max_length=200)
+    smtp_password: str | None = Field(default=None, max_length=500)        # 留空=不改
+    smtp_from: str | None = Field(default=None, max_length=200)
+    email_code_ttl_minutes: int | None = Field(default=None, ge=1, le=1440)
+    # 微信登录（App 开放平台 + 网站扫码）
+    wechat_app_id: str | None = Field(default=None, max_length=64)
+    wechat_app_secret: str | None = Field(default=None, max_length=128)    # 留空=不改
+    wechat_web_app_id: str | None = Field(default=None, max_length=64)
+    wechat_web_app_secret: str | None = Field(default=None, max_length=128)  # 留空=不改
+    # Apple 内购服务端校验
+    apple_product_id: str | None = Field(default=None, max_length=120)
+    apple_bundle_id: str | None = Field(default=None, max_length=120)
+    apple_issuer_id: str | None = Field(default=None, max_length=120)
+    apple_key_id: str | None = Field(default=None, max_length=120)
+    apple_private_key: str | None = Field(default=None, max_length=8000)   # 留空=不改
+
+
+class SessionPolicyRequest(BaseModel):
+    """会话/留存策略（多活共用，存 DB 系统参数表；空=不改）。"""
+    access_token_ttl_minutes: int | None = Field(default=None, ge=1, le=43200)
+    refresh_token_ttl_days: int | None = Field(default=None, ge=1, le=3650)
+    idle_timeout_app_minutes: int | None = Field(default=None, ge=1, le=525600)
+    idle_timeout_web_minutes: int | None = Field(default=None, ge=1, le=525600)
+    admin_idle_timeout_minutes: int | None = Field(default=None, ge=1, le=525600)
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+    history_retention_days: int | None = Field(default=None, ge=1, le=3650)
+    online_window_minutes: int | None = Field(default=None, ge=1, le=1440)
+    roleplay_accept_score: float | None = Field(default=None, ge=0, le=1)
+    political_filter_enabled: bool | None = Field(default=None)
+
+
 class TtsVoicesResponse(BaseModel):
     voices: list[str]
     current: str

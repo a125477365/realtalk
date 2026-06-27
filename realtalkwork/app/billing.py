@@ -25,12 +25,26 @@ class WeChatPayClient:
     """WeChat Pay v3 API client for native payments."""
 
     def __init__(self):
-        self.mchid = settings.wechat_mchid
-        self.appid = settings.wechat_app_id
-        self.api_key = settings.wechat_api_key
-        self.cert_path = settings.wechat_ssl_cert_path
+        # 注：本对象是模块级单例，import 期实例化。凭据走 DB（管理台可改），故用 property 延迟读取——
+        # 既不在 import/未供给时碰库，又能在管理员改库后即时生效（不会缓存成旧值）。
+        self.cert_path = settings.wechat_ssl_cert_path   # 商户私钥/证书是每节点本地文件路径（部署项，env）
         self.key_path = settings.wechat_ssl_key_path
         self.base_url = "https://api.mch.weixin.qq.com"
+
+    @property
+    def mchid(self):  # 单一来源：只读 DB（与回调验签同一份）
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["wechat_mchid"]
+
+    @property
+    def appid(self):
+        from .storage import db
+        return db.resolve_wechat_login_config()["app_id"]
+
+    @property
+    def api_key(self):
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["wechat_apiv3_key"]
 
     def _get_serial_no(self) -> str:
         """Get certificate serial number from PEM file."""
@@ -206,11 +220,20 @@ class AlipayClient:
     """Alipay Alipay+ /当面付 integration."""
 
     def __init__(self):
-        self.app_id = settings.alipay_app_id
-        self.private_key = settings.alipay_private_key
-        self.alipay_public_key = settings.alipay_public_key
+        # 模块级单例：appid/支付宝公钥走 DB（管理台可改），用 property 延迟读取，避免 import 期碰库、且改库即时生效。
+        self.private_key = settings.alipay_private_key   # 商户私钥是每节点本地文件路径（部署项，env）
         self.notify_url = None  # Set per-request
         self.gateway = "https://openapi.alipaydev.com" if settings.alipay_sandbox else "https://openapi.alipay.com"
+
+    @property
+    def app_id(self):  # 单一来源：只读 DB
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["alipay_app_id"]
+
+    @property
+    def alipay_public_key(self):
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["alipay_public_key"]
 
     def _sign(self, params: dict) -> str:
         """Sign parameters with RSA2."""
@@ -330,8 +353,14 @@ class AlipayClient:
 # ============================================================
 
 class AppleBillingVerifier:
+    @staticmethod
+    def _cfg() -> dict:
+        from .storage import db   # 单一来源：bundle/product/issuer/key/私钥 只读 DB（沙箱与 dev 旁路是每节点 env）
+        return db.resolve_apple_iap_config()
+
     async def verify(self, request: ApplePurchaseVerifyRequest) -> tuple[bool, datetime | None, str]:
-        if request.product_id != settings.apple_product_id:
+        cfg = self._cfg()
+        if request.product_id != cfg["product_id"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="内购商品 ID 不匹配")
 
         if settings.apple_iap_dev_bypass:
@@ -341,9 +370,9 @@ class AppleBillingVerifier:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Apple IAP 服务端校验未配置")
 
         payload = await self._fetch_transaction_payload(request.transaction_id)
-        if payload.get("bundleId") != settings.apple_bundle_id:
+        if payload.get("bundleId") != cfg["bundle_id"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bundle ID 不匹配")
-        if payload.get("productId") != settings.apple_product_id:
+        if payload.get("productId") != cfg["product_id"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="商品 ID 不匹配")
 
         expires_at = _apple_millis_to_datetime(payload.get("expiresDate"))
@@ -363,19 +392,21 @@ class AppleBillingVerifier:
         return jwt.decode(signed_info, options={"verify_signature": False})
 
     def _make_app_store_server_token(self) -> str:
+        cfg = self._cfg()
         now = datetime.now(timezone.utc)
         payload = {
-            "iss": settings.apple_issuer_id,
+            "iss": cfg["issuer_id"],
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=20)).timestamp()),
             "aud": "appstoreconnect-v1",
-            "bid": settings.apple_bundle_id,
+            "bid": cfg["bundle_id"],
         }
-        headers = {"kid": settings.apple_key_id, "typ": "JWT"}
-        return jwt.encode(payload, settings.apple_private_key, algorithm="ES256", headers=headers)
+        headers = {"kid": cfg["key_id"], "typ": "JWT"}
+        return jwt.encode(payload, cfg["private_key"], algorithm="ES256", headers=headers)
 
     def _has_server_api_credentials(self) -> bool:
-        return all([settings.apple_issuer_id, settings.apple_key_id, settings.apple_private_key])
+        cfg = self._cfg()
+        return all([cfg["issuer_id"], cfg["key_id"], cfg["private_key"]])
 
 
 def _apple_millis_to_datetime(value: Any) -> datetime | None:

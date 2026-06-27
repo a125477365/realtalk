@@ -131,6 +131,8 @@ from .schemas import (
     SupportTicketUpdateRequest,
     TokenUsageInfo,
     PaymentSettingsRequest,
+    IntegrationSettingsRequest,
+    SessionPolicyRequest,
     PronunciationWord,
     TtsSettingsRequest,
     TtsVoiceRequest,
@@ -272,8 +274,8 @@ async def startup() -> None:
 def _idle_ttl_seconds(surface: str | None) -> int:
     """按登录端返回会话闲置超时秒数：web 较短、app 较长。"""
     if surface == "web":
-        return settings.idle_timeout_web_minutes * 60
-    return settings.idle_timeout_app_minutes * 60
+        return db.get_idle_timeout_web_minutes() * 60
+    return db.get_idle_timeout_app_minutes() * 60
 
 
 def _authenticate_token(token: str) -> UserOut:
@@ -430,8 +432,8 @@ def admin_change_password(
 async def health() -> dict[str, str | int]:
     return {
         "status": "ok",
-        "retention_days": settings.retention_days,
-        "history_retention_days": settings.history_retention_days,
+        "retention_days": db.get_retention_days(),
+        "history_retention_days": db.get_history_retention_days(),
         "database": db.backend,
         "region": settings.deployment_region,
     }
@@ -449,7 +451,7 @@ def billing_prices() -> PriceResponse:
     return PriceResponse(
         monthly_price_cents=monthly_price_cents,
         monthly_price_yuan=monthly_price_cents / 100,
-        product_id=settings.apple_product_id,
+        product_id=db.resolve_apple_iap_config()["product_id"],
     )
 
 
@@ -1041,6 +1043,112 @@ def admin_set_payment(
     return admin_get_payment(admin)
 
 
+@app.get("/admin/api/settings/integrations")
+def admin_get_integrations(admin: dict = Depends(current_admin)) -> dict:
+    """多活共用凭据：SMTP / 微信登录 / Apple IAP（密钥类只回是否已配置，不回明文）。"""
+    smtp = db.resolve_smtp_config()
+    wx = db.resolve_wechat_login_config()
+    ap = db.resolve_apple_iap_config()
+    return {
+        "smtp_host": smtp["host"] or "",
+        "smtp_port": smtp["port"],
+        "smtp_username": smtp["username"] or "",
+        "smtp_password_configured": bool(smtp["password"]),
+        "smtp_from": smtp["from_addr"],
+        "email_code_ttl_minutes": smtp["code_ttl_minutes"],
+        "smtp_ready": db.smtp_configured(),
+        "wechat_app_id": wx["app_id"] or "",
+        "wechat_app_secret_configured": bool(wx["app_secret"]),
+        "wechat_web_app_id": wx["web_app_id"] or "",
+        "wechat_web_app_secret_configured": bool(wx["web_app_secret"]),
+        "apple_product_id": ap["product_id"] or "",
+        "apple_bundle_id": ap["bundle_id"] or "",
+        "apple_issuer_id": ap["issuer_id"] or "",
+        "apple_key_id": ap["key_id"] or "",
+        "apple_private_key_configured": bool(ap["private_key"]),
+    }
+
+
+@app.post("/admin/api/settings/integrations")
+def admin_set_integrations(
+    request: IntegrationSettingsRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    # 非敏感项空串=清空；密钥/私钥类（password/secret/private_key）留空=保持不变
+    if request.smtp_host is not None:
+        db.set_app_setting("smtp_host", request.smtp_host.strip())
+    if request.smtp_port is not None:
+        db.set_app_setting("smtp_port", str(request.smtp_port))
+    if request.smtp_username is not None:
+        db.set_app_setting("smtp_username", request.smtp_username.strip())
+    if request.smtp_password:
+        db.set_app_setting("smtp_password", request.smtp_password.strip())
+    if request.smtp_from is not None:
+        db.set_app_setting("smtp_from", request.smtp_from.strip())
+    if request.email_code_ttl_minutes is not None:
+        db.set_app_setting("email_code_ttl_minutes", str(request.email_code_ttl_minutes))
+    if request.wechat_app_id is not None:
+        db.set_app_setting("wechat_app_id", request.wechat_app_id.strip())
+    if request.wechat_app_secret:
+        db.set_app_setting("wechat_app_secret", request.wechat_app_secret.strip())
+    if request.wechat_web_app_id is not None:
+        db.set_app_setting("wechat_web_app_id", request.wechat_web_app_id.strip())
+    if request.wechat_web_app_secret:
+        db.set_app_setting("wechat_web_app_secret", request.wechat_web_app_secret.strip())
+    if request.apple_product_id is not None:
+        db.set_app_setting("apple_product_id", request.apple_product_id.strip())
+    if request.apple_bundle_id is not None:
+        db.set_app_setting("apple_bundle_id", request.apple_bundle_id.strip())
+    if request.apple_issuer_id is not None:
+        db.set_app_setting("apple_issuer_id", request.apple_issuer_id.strip())
+    if request.apple_key_id is not None:
+        db.set_app_setting("apple_key_id", request.apple_key_id.strip())
+    if request.apple_private_key:
+        db.set_app_setting("apple_private_key", request.apple_private_key.strip())
+    return admin_get_integrations(admin)
+
+
+@app.get("/admin/api/settings/session")
+def admin_get_session_policy(admin: dict = Depends(current_admin)) -> dict:
+    """会话/留存策略（多活共用，DB 为唯一运行期来源）。"""
+    return {
+        "access_token_ttl_minutes": db.get_access_token_ttl_minutes(),
+        "refresh_token_ttl_days": db.get_refresh_token_ttl_days(),
+        "idle_timeout_app_minutes": db.get_idle_timeout_app_minutes(),
+        "idle_timeout_web_minutes": db.get_idle_timeout_web_minutes(),
+        "admin_idle_timeout_minutes": db.get_admin_idle_timeout_minutes(),
+        "retention_days": db.get_retention_days(),
+        "history_retention_days": db.get_history_retention_days(),
+        "online_window_minutes": db.get_online_window_minutes(),
+        "roleplay_accept_score": db.get_roleplay_accept_score(),
+        "political_filter_enabled": db.get_political_filter_enabled(),
+    }
+
+
+@app.post("/admin/api/settings/session")
+def admin_set_session_policy(
+    request: SessionPolicyRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    for key in (
+        "access_token_ttl_minutes", "refresh_token_ttl_days",
+        "idle_timeout_app_minutes", "idle_timeout_web_minutes", "admin_idle_timeout_minutes",
+        "retention_days", "history_retention_days", "online_window_minutes",
+    ):
+        val = getattr(request, key)
+        if val is not None:
+            db.set_app_setting(key, str(int(val)))
+    if request.roleplay_accept_score is not None:
+        db.set_app_setting("roleplay_accept_score", str(float(request.roleplay_accept_score)))
+    if request.political_filter_enabled is not None:
+        db.set_app_setting("political_filter_enabled", "1" if request.political_filter_enabled else "0")
+    return admin_get_session_policy(admin)
+
+
 @app.get("/admin/api/usage/users")
 def admin_usage_users(
     days: int = Query(default=30, ge=1, le=120),
@@ -1195,13 +1303,14 @@ def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict
     """Web 端微信登录配置：开发模式直登；生产返回开放平台扫码授权 URL。"""
     if settings.wechat_auth_dev_mode:
         return {"dev_mode": True, "auth_url": None}
-    if not settings.wechat_web_app_id:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="网站微信登录未配置（WECHAT_WEB_APP_ID）")
+    web_app_id = db.resolve_wechat_login_config()["web_app_id"]   # 单一来源：只读 DB
+    if not web_app_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="网站微信登录未配置（wechat_web_app_id）")
     from urllib.parse import quote
 
     auth_url = (
         "https://open.weixin.qq.com/connect/qrconnect"
-        f"?appid={settings.wechat_web_app_id}"
+        f"?appid={web_app_id}"
         f"&redirect_uri={quote(redirect, safe='')}"
         "&response_type=code&scope=snsapi_login#wechat_redirect"
     )
@@ -1262,7 +1371,7 @@ def register_password(
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
-        expires_in=settings.access_token_ttl_minutes * 60,
+        expires_in=db.get_access_token_ttl_minutes() * 60,
     )
 
 
@@ -1293,7 +1402,7 @@ def login_password(
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
-        expires_in=settings.access_token_ttl_minutes * 60,
+        expires_in=db.get_access_token_ttl_minutes() * 60,
     )
 
 
@@ -1317,7 +1426,7 @@ def change_password(
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
-        expires_in=settings.access_token_ttl_minutes * 60,
+        expires_in=db.get_access_token_ttl_minutes() * 60,
     )
 
 
@@ -1329,7 +1438,7 @@ def send_password_reset(
     user = db.get_user_by_login_identifier(normalized)
     if user is not None:
         raw_token, token_hash = create_password_reset_token()
-        ttl_minutes = settings.email_code_ttl_minutes
+        ttl_minutes = db.get_app_setting_int("email_code_ttl_minutes", settings.email_code_ttl_minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes * 6)
         db.create_email_reset_token(user.id, normalized, token_hash, expires_at)
         send_password_reset_email(normalized, raw_token, settings.app_base_url)
@@ -1356,7 +1465,7 @@ def confirm_password_reset(
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
-        expires_in=settings.access_token_ttl_minutes * 60,
+        expires_in=db.get_access_token_ttl_minutes() * 60,
     )
 
 
@@ -1394,7 +1503,7 @@ def refresh_token(
     return AuthTokenResponse(
         access_token=access_token,
         refresh_token=refresh,
-        expires_in=settings.access_token_ttl_minutes * 60,
+        expires_in=db.get_access_token_ttl_minutes() * 60,
     )
 
 
@@ -1420,8 +1529,9 @@ def send_register_code(
     code = make_email_code()
     send_email_code(email, code)
     
-    ttl_seconds = settings.email_code_ttl_minutes * 60
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.email_code_ttl_minutes)
+    code_ttl_minutes = db.get_app_setting_int("email_code_ttl_minutes", settings.email_code_ttl_minutes)
+    ttl_seconds = code_ttl_minutes * 60
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=code_ttl_minutes)
     db.store_email_code(email, hash_email_code(code), expires_at)
     
     if settings.email_dev_mode:
@@ -1510,8 +1620,9 @@ async def create_recharge(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="充值金额不能小于 1 元")
 
     # 三种到账方式（按优先级）：官方支付（商户号）→ 收款码人工确认 → 开发模式自动确认。
-    wechat_official = bool(settings.wechat_mchid and settings.wechat_notify_url)
-    alipay_official = bool(settings.alipay_app_id and settings.alipay_notify_url)
+    _pay_cfg = payments.resolve_payment_config()   # 单一来源：商户号/支付宝 appid 只读 DB
+    wechat_official = bool(_pay_cfg["wechat_mchid"] and settings.wechat_notify_url)
+    alipay_official = bool(_pay_cfg["alipay_app_id"] and settings.alipay_notify_url)
     manual_fallback = settings.payment_dev_auto_confirm or bool(
         settings.wechat_receiver_account
         or settings.alipay_receiver_account
@@ -1759,7 +1870,7 @@ async def query_payment_status(
     provider_status = "unknown"
     if order_status == "pending" and method in ("wechat", "alipay"):
         try:
-            if method == "wechat" and settings.wechat_mchid:
+            if method == "wechat" and payments.resolve_payment_config()["wechat_mchid"]:
                 result = await wechat_pay.query_order(order_id)
                 provider_status = result.get("trade_state", "unknown")
                 if provider_status == "SUCCESS":
@@ -1767,7 +1878,7 @@ async def query_payment_status(
                     if amount > 0:
                         _, _ = db.mark_recharge_paid_by_order_id(order_id, amount)
                         order_status = "paid"
-            elif method == "alipay" and settings.alipay_app_id:
+            elif method == "alipay" and payments.resolve_payment_config()["alipay_app_id"]:
                 result = await alipay.query_trade(order_id)
                 provider_status = result.get("trade_status", "unknown")
                 if provider_status in ("TRADE_SUCCESS", "TRADE_FINISHED"):
@@ -2401,12 +2512,13 @@ async def roleplay_message(
     final_guidance = request.guidance_mode == "final"
     # 更宽松、更看重「意思是否表达到位」：模型判定通过(意思对)即通过；
     # 或字符相似度达阈值(近乎原句)也通过。不再要求逐字/标点完全一致。
-    accepted = True if final_guidance else (evaluation.accepted or score >= settings.roleplay_accept_score)
+    accept_score = db.get_roleplay_accept_score()
+    accepted = True if final_guidance else (evaluation.accepted or score >= accept_score)
     had_rejected_attempt = db.has_rejected_practice_attempt(
         user.id,
         session.session_id,
         target_line.index,
-        settings.roleplay_accept_score,
+        accept_score,
     )
     feedback = "" if final_guidance else format_roleplay_feedback(
         evaluation.feedback,
@@ -3004,10 +3116,11 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
             "avatar_url": request.avatar_url,
         }
 
+    wx = db.resolve_wechat_login_config()   # 单一来源：只读 DB
     if request.client == "web":
-        app_id, app_secret = settings.wechat_web_app_id, settings.wechat_web_app_secret
+        app_id, app_secret = wx["web_app_id"], wx["web_app_secret"]
     else:
-        app_id, app_secret = settings.wechat_app_id, settings.wechat_app_secret
+        app_id, app_secret = wx["app_id"], wx["app_secret"]
     if not app_id or not app_secret:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信登录未配置")
 

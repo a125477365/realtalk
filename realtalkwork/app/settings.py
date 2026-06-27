@@ -210,7 +210,7 @@ class Settings:
     apple_bundle_id: str = os.getenv("APPLE_BUNDLE_ID", "com.realtalk.app")
     apple_issuer_id: str | None = os.getenv("APPLE_ISSUER_ID")
     apple_key_id: str | None = os.getenv("APPLE_KEY_ID")
-    apple_private_key: str | None = os.getenv("APPLE_PRIVATE_KEY")
+    apple_private_key: str | None = _multiline_env("APPLE_PRIVATE_KEY")  # .p8 私钥 PEM（首装由 db_init 入库）
     apple_use_sandbox: bool = _bool_env("APPLE_USE_SANDBOX", True)
     apple_iap_dev_bypass: bool = _bool_env("APPLE_IAP_DEV_BYPASS", True)
 

@@ -29,47 +29,53 @@ def hash_email_code(code: str) -> str:
 
 
 def send_email_code(email: str, code: str) -> None:
-    if settings.email_dev_mode:
+    if settings.email_dev_mode:   # dev 开关是每节点部署项，仍走 env
         return
-    if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password:
+    from .storage import db
+
+    cfg = db.resolve_smtp_config()   # 单一来源：只读 DB（装库时由 db_init 入库）
+    if not cfg["host"] or not cfg["username"] or not cfg["password"]:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="邮件服务未配置")
 
     message = EmailMessage()
     message["Subject"] = "RealTalk 邮箱验证码"
-    message["From"] = settings.smtp_from
+    message["From"] = cfg["from_addr"]
     message["To"] = email
     message.set_content(
         f"你的 RealTalk 验证码是：{code}\n\n"
-        f"验证码 {settings.email_code_ttl_minutes} 分钟内有效。"
+        f"验证码 {cfg['code_ttl_minutes']} 分钟内有效。"
     )
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as smtp:
         smtp.starttls()
-        smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.login(cfg["username"], cfg["password"])
         smtp.send_message(message)
 
 
 def send_password_reset_email(email: str, token: str, base_url: str = "https://realtalk.app") -> None:
     if settings.email_dev_mode:
         return
-    if not settings.smtp_host or not settings.smtp_username or not settings.smtp_password:
+    from .storage import db
+
+    cfg = db.resolve_smtp_config()   # 单一来源：只读 DB
+    if not cfg["host"] or not cfg["username"] or not cfg["password"]:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="邮件服务未配置")
-    
+
     reset_url = f"{base_url}/auth/reset-password?token={token}"
     message = EmailMessage()
     message["Subject"] = "RealTalk 密码重置"
-    message["From"] = settings.smtp_from
+    message["From"] = cfg["from_addr"]
     message["To"] = email
     message.set_content(
         f"您请求重置 RealTalk 账号的密码。\n\n"
-        f"请点击以下链接重置密码（链接 {settings.email_code_ttl_minutes * 6} 分钟内有效）：\n"
+        f"请点击以下链接重置密码（链接 {cfg['code_ttl_minutes'] * 6} 分钟内有效）：\n"
         f"{reset_url}\n\n"
         f"如果您没有请求重置密码，请忽略此邮件。\n"
         f"此链接只能使用一次。\n"
     )
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
+    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as smtp:
         smtp.starttls()
-        smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.login(cfg["username"], cfg["password"])
         smtp.send_message(message)
 
 
@@ -94,6 +100,8 @@ def verify_admin_password(admin: dict, password: str) -> bool:
 
 
 def create_token(user_id: str, device_id: str | None = None, token_version: int = 1, surface: str = "app") -> str:
+    from .storage import db
+
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
@@ -102,7 +110,7 @@ def create_token(user_id: str, device_id: str | None = None, token_version: int 
         "sur": surface,              # 登录端（app/web）：用于按端区分会话闲置超时时长
         "jti": os.urandom(6).hex(),  # 每次签发唯一，保证轮换出的令牌互不相同
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=settings.access_token_ttl_minutes)).timestamp()),
+        "exp": int((now + timedelta(minutes=db.get_access_token_ttl_minutes())).timestamp()),
         "type": "access",
     }
     payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -127,6 +135,8 @@ def verify_token(token: str) -> tuple[str, str | None, int, str]:
 
 
 def create_refresh_token(user_id: str, device_id: str | None = None, token_version: int = 1, surface: str = "app") -> str:
+    from .storage import db
+
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
@@ -135,7 +145,7 @@ def create_refresh_token(user_id: str, device_id: str | None = None, token_versi
         "sur": surface,
         "jti": os.urandom(6).hex(),
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(days=settings.refresh_token_ttl_days)).timestamp()),
+        "exp": int((now + timedelta(days=db.get_refresh_token_ttl_days())).timestamp()),
         "type": "refresh",
     }
     payload_b64 = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))

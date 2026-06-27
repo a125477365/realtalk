@@ -54,7 +54,16 @@ _GENERAL_POLITICAL_PATTERNS = (
 
 
 def is_political_sensitive(text: str | None) -> bool:
-    if not settings.political_filter_enabled or not text:
+    if not text:
+        return False
+    # 单一来源：只读 DB（装库时由 db_init 入库）。开关读取异常一律按「开启过滤」处理（涉政过滤只能更严不能更松）。
+    try:
+        from .storage import db
+
+        enabled = db.get_political_filter_enabled()
+    except Exception:  # noqa: BLE001 — 失败即默认开启过滤，绝不因配置读取失败而放行涉政内容
+        enabled = True
+    if not enabled:
         return False
     normalized = re.sub(r"\s+", "", text.lower())
     if not normalized:
