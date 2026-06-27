@@ -355,13 +355,12 @@ if $DEPLOY_BACKEND; then
     ask "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
   fi
 
-  # ---- 集成凭据（多活后端共用，入库；可留空稍后在管理台「集成凭据」维护）----
+  # ---- 集成凭据：邮件 SMTP / Apple 内购（多活后端共用，入库；微信登录在上面已单独配过）----
   echo
   note "以下凭据多活后端共用，装库时入库（DB 为唯一来源）。可全部留空，稍后在管理台「集成凭据」填。"
   SMTP_HOST=""; SMTP_USER=""; SMTP_PW=""; SMTP_FROM_VAL="RealTalk <noreply@realtalk.local>"
-  WX_LOGIN_APPID=""; WX_LOGIN_SECRET=""; WXWEB_APPID=""; WXWEB_SECRET=""
   AP_PRODUCT="realtalk.pro.monthly"; AP_BUNDLE="com.realtalk.app"; AP_ISSUER=""; AP_KEYID=""; AP_PRIV=""
-  ask "现在配置集成凭据（邮件/微信登录/Apple内购）吗？(yes/no)" "no"
+  ask "现在配置集成凭据（邮件 SMTP / Apple 内购）吗？(yes/no)" "no"
   if [ "$REPLY_VALUE" = "yes" ]; then
     ask "配置邮件 SMTP？(yes/no)" "no"
     if [ "$REPLY_VALUE" = "yes" ]; then
@@ -369,13 +368,6 @@ if $DEPLOY_BACKEND; then
       ask "SMTP 用户名" ""; SMTP_USER="$REPLY_VALUE"
       ask_secret "SMTP 密码"; SMTP_PW="$REPLY_VALUE"
       ask "发件人" "RealTalk <noreply@realtalk.local>"; SMTP_FROM_VAL="$REPLY_VALUE"
-    fi
-    ask "配置微信登录？(yes/no)" "no"
-    if [ "$REPLY_VALUE" = "yes" ]; then
-      ask "App 开放平台 appid" ""; WX_LOGIN_APPID="$REPLY_VALUE"
-      ask_secret "App secret"; WX_LOGIN_SECRET="$REPLY_VALUE"
-      ask "网站 appid（可留空）" ""; WXWEB_APPID="$REPLY_VALUE"
-      ask_secret "网站 secret（可留空）"; WXWEB_SECRET="$REPLY_VALUE"
     fi
     ask "配置 Apple 内购服务端校验？(yes/no)" "no"
     if [ "$REPLY_VALUE" = "yes" ]; then
@@ -390,35 +382,28 @@ if $DEPLOY_BACKEND; then
     fi
   fi
 
+  # 配了 SMTP 才真正发邮件（验证码/找回密码）；没配就保持开发模式（不外发）。
+  EMAIL_DEV="true"; [ -n "$SMTP_HOST" ] && EMAIL_DEV="false"
   ENV_LINES+=(
     "REALTALK_REGION=prod"
-    "TRIAL_DAYS=30"
-    "BUDGET_RATIO=0.5"
-    "NONMEMBER_DAILY_CHAT_TOKENS=1000"
-    "NONMEMBER_DAILY_CAPTURE_TOKENS=1000"
-    "NONMEMBER_DAILY_CAPTURE_SECONDS=300"
-    "DAILY_TOKEN_LIMIT_FREE=8000"
-    "DAILY_TOKEN_LIMIT_BASIC=120000"
-    "DAILY_TOKEN_LIMIT_PREMIUM=400000"
     "UPLOAD_DATA_DIR=./data/uploads"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
+    "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"
     "# 安全：生产默认关闭内购校验旁路（接 Apple 内购前保持 false）"
     "APPLE_IAP_DEV_BYPASS=false"
-    "# 邮箱注册默认关闭，仅微信认证"
+    "# 邮箱注册默认关闭，仅微信认证；配了 SMTP 自动关开发模式以真正发信"
     "EMAIL_AUTH_ENABLED=false"
-    "EMAIL_DEV_MODE=true"
+    "EMAIL_DEV_MODE=$EMAIL_DEV"
+    "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
+    "# —— 多活共用值（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台维护）——"
     "PAYMENT_RECEIVER_NAME=$RECV_NAME"
     "WECHAT_RECEIVER_ACCOUNT=$WX_RECV" "ALIPAY_RECEIVER_ACCOUNT=$ALI_RECV"
-    "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
     "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
     "WECHAT_CERT_SERIAL=$WX_SERIAL" "WECHAT_PLATFORM_CERT=$WX_CERT"
     "WECHAT_MERCHANT_CERT=$WX_MERCH_CERT" "WECHAT_MERCHANT_KEY=$WX_MERCH_KEY"
     "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_MERCHANT_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
-    "# 集成凭据（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台「集成凭据」维护）"
     "SMTP_HOST=$SMTP_HOST" "SMTP_USERNAME=$SMTP_USER" "SMTP_PASSWORD=$SMTP_PW" "SMTP_FROM=$SMTP_FROM_VAL"
-    "WECHAT_APP_ID=$WX_LOGIN_APPID" "WECHAT_APP_SECRET=$WX_LOGIN_SECRET"
-    "WECHAT_WEB_APP_ID=$WXWEB_APPID" "WECHAT_WEB_APP_SECRET=$WXWEB_SECRET"
     "APPLE_PRODUCT_ID=$AP_PRODUCT" "APPLE_BUNDLE_ID=$AP_BUNDLE"
     "APPLE_ISSUER_ID=$AP_ISSUER" "APPLE_KEY_ID=$AP_KEYID" "APPLE_PRIVATE_KEY=$AP_PRIV"
   )
