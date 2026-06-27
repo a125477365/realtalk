@@ -482,7 +482,6 @@ struct MainChatView: View {
                                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                                 }
                                 Spacer()
-                                resumeBadge(scene.inProgress)
                                 lastScoreBadge(scene.lastScore)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
@@ -516,18 +515,6 @@ struct MainChatView: View {
         }
     }
 
-    /// 「未完成可继续」小标签：有进度时在场景卡上提示「可继续」。
-    @ViewBuilder
-    private func resumeBadge(_ inProgress: Bool) -> some View {
-        if inProgress {
-            Text("可继续")
-                .font(.system(size: 11 * model.fontScale, weight: .semibold))
-                .foregroundStyle(RTTheme.accent)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(RTTheme.accent.opacity(0.12), in: Capsule())
-        }
-    }
-
     @ViewBuilder
     private func scenarioCard(_ summary: ScenarioSummary) -> some View {
         Button {
@@ -548,7 +535,6 @@ struct MainChatView: View {
                         .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                 }
-                resumeBadge(summary.inProgress)
                 lastScoreBadge(summary.lastScore)
                 Image(systemName: "chevron.right")
                     .font(.footnote)

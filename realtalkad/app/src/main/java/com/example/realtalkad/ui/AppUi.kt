@@ -141,18 +141,6 @@ private fun LastScoreBadge(score: Int?, fontScale: Float) {
     )
 }
 
-/// 「未完成可继续」标签：有进度时显示「可继续」。
-@androidx.compose.runtime.Composable
-private fun ResumeBadge(inProgress: Boolean, fontScale: Float) {
-    if (!inProgress) return
-    Text(
-        "可继续",
-        color = RT.Accent, fontWeight = FontWeight.SemiBold, fontSize = (11 * fontScale).sp,
-        modifier = Modifier.background(RT.Accent.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    )
-}
-
 /// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。单击进入对练，长按弹菜单。
 @kotlin.OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @androidx.compose.runtime.Composable
@@ -186,8 +174,6 @@ private fun ScenarioCard(
             else "${summary.lineCount} 句"
             Text(meta, fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
         }
-        ResumeBadge(summary.inProgress, fontScale)
-        if (summary.inProgress) Spacer(Modifier.width(6.dp))
         LastScoreBadge(summary.lastScore, fontScale)
         Spacer(Modifier.width(8.dp))
         Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
@@ -263,8 +249,6 @@ private fun PresetCatalogList(
                                 Text("${scene.lineCount} 句", fontSize = (11 * fontScale).sp,
                                     color = RT.TextSecondary.copy(alpha = 0.8f))
                             }
-                            ResumeBadge(scene.inProgress, fontScale)
-                            if (scene.inProgress) Spacer(Modifier.width(6.dp))
                             LastScoreBadge(scene.lastScore, fontScale)
                             Spacer(Modifier.width(8.dp))
                             Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (16 * fontScale).sp)
