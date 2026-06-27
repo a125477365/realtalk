@@ -141,6 +141,18 @@ private fun LastScoreBadge(score: Int?, fontScale: Float) {
     )
 }
 
+/// 「未完成可继续」标签：有进度时显示「继续 N」。
+@androidx.compose.runtime.Composable
+private fun ResumeBadge(inProgress: Boolean, progress: Int, fontScale: Float) {
+    if (!inProgress) return
+    Text(
+        "继续 $progress",
+        color = RT.Accent, fontWeight = FontWeight.SemiBold, fontSize = (11 * fontScale).sp,
+        modifier = Modifier.background(RT.Accent.copy(alpha = 0.12f), RoundedCornerShape(99.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    )
+}
+
 /// 场景卡片；showDate=true 时在底部显示日期+时间（用于「全部」分组列表）。单击进入对练，长按弹菜单。
 @kotlin.OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @androidx.compose.runtime.Composable
@@ -174,6 +186,8 @@ private fun ScenarioCard(
             else "${summary.lineCount} 句"
             Text(meta, fontSize = (10 * fontScale).sp, color = RT.TextSecondary.copy(alpha = 0.8f))
         }
+        ResumeBadge(summary.inProgress, summary.resumeProgress, fontScale)
+        if (summary.inProgress) Spacer(Modifier.width(6.dp))
         LastScoreBadge(summary.lastScore, fontScale)
         Spacer(Modifier.width(8.dp))
         Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (20 * fontScale).sp)
@@ -249,6 +263,8 @@ private fun PresetCatalogList(
                                 Text("${scene.lineCount} 句", fontSize = (11 * fontScale).sp,
                                     color = RT.TextSecondary.copy(alpha = 0.8f))
                             }
+                            ResumeBadge(scene.inProgress, scene.resumeProgress, fontScale)
+                            if (scene.inProgress) Spacer(Modifier.width(6.dp))
                             LastScoreBadge(scene.lastScore, fontScale)
                             Spacer(Modifier.width(8.dp))
                             Text("›", color = RT.TextSecondary.copy(alpha = 0.6f), fontSize = (16 * fontScale).sp)
@@ -335,6 +351,7 @@ fun MainChatScreen(model: AppViewModel) {
 
     var showAccount by remember { mutableStateOf(false) }
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
+    var resumeChoiceFor by remember { mutableStateOf<Pair<ScenarioSummary, String>?>(null) }  // (场景,角色)：选完角色若有进度，弹「继续/重新开始」
     var scenarioScope by remember { mutableStateOf("today") }
     var expandedPresetGroup by remember { mutableStateOf<String?>(null) }
     var expandedDate by remember { mutableStateOf<String?>(null) }
@@ -533,7 +550,11 @@ fun MainChatScreen(model: AppViewModel) {
                         OutlinedButton(
                             onClick = {
                                 roleDialogFor = null
-                                model.startScenarioPractice(summary, role.id)
+                                if (summary.inProgress) {
+                                    resumeChoiceFor = summary to role.id   // 有未完成进度：先问继续/重新开始
+                                } else {
+                                    model.startScenarioPractice(summary, role.id)
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                         ) { Text("${role.name}（${role.description}）", maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -543,6 +564,28 @@ fun MainChatScreen(model: AppViewModel) {
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { roleDialogFor = null }) { Text("取消") } },
+        )
+    }
+
+    resumeChoiceFor?.let { (summary, roleId) ->
+        AlertDialog(
+            onDismissRequest = { resumeChoiceFor = null },
+            title = { Text("「${summary.title}」上次练到第 ${summary.resumeProgress} 句") },
+            text = {
+                Column {
+                    OutlinedButton(
+                        onClick = { resumeChoiceFor = null; model.startScenarioPractice(summary, roleId, resume = true) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("继续上次进度") }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { resumeChoiceFor = null; model.startScenarioPractice(summary, roleId, resume = false) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("从头重新开始") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { resumeChoiceFor = null }) { Text("取消") } },
         )
     }
 

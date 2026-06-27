@@ -72,7 +72,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
     val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
     val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/voice/immersive/manual
-    val pendingPractice = MutableStateFlow<Pair<ScenarioSummary, String>?>(null) // 非空时弹「对话前询问」
+    val pendingPractice = MutableStateFlow<Triple<ScenarioSummary, String, Boolean>?>(null) // (场景, 角色, 是否继续上次)；非空时弹「对话前询问」
     val showVoiceLLM = MutableStateFlow(false)                          // 控制实时语音沉浸式界面呈现
     val fontScale = MutableStateFlow(auth.fontScale)
     val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
@@ -473,19 +473,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             createdAt = now,
             lastScore = scene.lastScore,
             lastPracticedAt = scene.lastPracticedAt,
+            inProgress = scene.inProgress,
+            resumeProgress = scene.resumeProgress,
         )
     }
 
     /** 进入练习前：若指导/对话方式设为 ask，先弹窗让用户选择（对话中不可切换）。 */
-    fun startScenarioPractice(summary: ScenarioSummary, roleId: String) {
+    fun startScenarioPractice(summary: ScenarioSummary, roleId: String, resume: Boolean = false) {
         if (auth.token == null) { statusMessage.value = "请先登录"; return }
         if (guidancePreference.value == "ask" || conversationPreference.value == "ask") {
-            pendingPractice.value = summary to roleId
+            pendingPractice.value = Triple(summary, roleId, resume)
             return
         }
         conversationMode.value = resolvedConversationMode(conversationPreference.value)
         guidanceMode.value = if (guidancePreference.value == "final") "final" else "realtime"
-        beginPractice(summary, roleId)
+        beginPractice(summary, roleId, resume)
     }
 
     /** 把「对话方式偏好」解析为本次会话实际模式：voice（语音模型对话）仅高级会员生效，否则回退沉浸式。 */
@@ -509,28 +511,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (rememberConversation) { conversationPreference.value = mode; auth.conversationPreference = mode }
         if (rememberGuidance) { guidancePreference.value = guidanceMode.value; auth.guidancePreference = guidanceMode.value }
         pendingPractice.value = null
-        beginPractice(pending.first, pending.second)
+        beginPractice(pending.first, pending.second, pending.third)
     }
 
     fun cancelPendingPractice() { pendingPractice.value = null }
 
-    private fun beginPractice(summary: ScenarioSummary, roleId: String) {
+    private fun beginPractice(summary: ScenarioSummary, roleId: String, resume: Boolean = false) {
         viewModelScope.launch {
             val token = auth.token ?: return@launch
             isWorking.value = true
             runCatching {
                 scenario = api.scenarioDetail(summary.sceneId, token)
                 selectedRole = roleId
-                appendChat(ChatMessage.Sender.USER, "练习：${summary.title}（扮演${roleName(roleId)}）")
+                appendChat(ChatMessage.Sender.USER, "练习：${summary.title}（扮演${roleName(roleId)}${if (resume) "·继续上次" else ""}）")
                 if (shouldUseVoiceLLM()) {
                     // 高级会员沉浸式 + 实时语音大模型：用 /roleplay/start 建会话拿 session_id，再用 WS 直接语音对话
                     practice.stop(); voice.stop()
-                    val state = api.startRoleplay(summary.sceneId, roleId, token)
+                    val state = api.startRoleplay(summary.sceneId, roleId, token, resume)
                     statusMessage.value = "实时语音对练已开始"
                     showVoiceLLM.value = true
                     realtime.start(auth.baseUrl, token, state.sessionId, scenario?.title ?: summary.title)
                 } else {
-                    val state = api.startRoleplay(summary.sceneId, roleId, token)
+                    val state = api.startRoleplay(summary.sceneId, roleId, token, resume)
                     conversationExited = false
                     isVoiceActive.value = true
                     showImmersive.value = true   // 进入对话字幕全屏

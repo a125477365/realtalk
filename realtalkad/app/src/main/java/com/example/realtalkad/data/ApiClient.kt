@@ -143,9 +143,9 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun presetCatalog(token: String): PresetScenarioCatalog = get("/scenario/presets/catalog", token)
 
     // ---- 口语对练 ----
-    suspend fun startRoleplay(sceneId: String, selectedRole: String, token: String): RoleplayState {
+    suspend fun startRoleplay(sceneId: String, selectedRole: String, token: String, resume: Boolean = false): RoleplayState {
         val now = Instant.now().toString()
-        return post("/roleplay/start", RoleplayStartRequest(now, now, selectedRole, sceneId), token)
+        return post("/roleplay/start", RoleplayStartRequest(now, now, selectedRole, sceneId, resume = resume), token)
     }
 
     suspend fun sendRoleplayMessage(sessionId: String, message: String, guidanceMode: String, token: String): RoleplayState =
