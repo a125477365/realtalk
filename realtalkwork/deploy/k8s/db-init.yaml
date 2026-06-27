@@ -1,0 +1,48 @@
+# 数据库「供给」一次性 Job：建表 + 迁移 + 系统参数入库 + 建默认管理员 + JWT 密钥入库 + 打供给标记。
+#
+# 为什么需要它（多活控制）：
+#   API 后端启动【只读】已供给的库，绝不自己建表/播种，未供给会 fail-fast 退出。
+#   建表/播种必须由【单一执行者】完成一次——就是本 Job，避免多个 API 副本并发建表/播种竞争。
+#
+# 运行时机：与 Deployment 一起 apply 即可；API Pod 有 initContainer 会阻塞等待本 Job 供给完成后再启动。
+#   （若用 Helm，可加 "helm.sh/hook: pre-install,pre-upgrade" 让它在升级前先跑。）
+#
+# env 来源与 API 相同：
+#   - realtalk-api-secret：DATABASE_URL、JWT_SECRET，以及【首次装库要入库的】AI/支付/微信/SMTP/Apple 凭据初值
+#   - realtalk-api-config：区域、每节点开关等
+#   这些 DB 类凭据由本 Job 一次性写入数据库后即以 DB 为唯一来源（之后在管理台维护，Secret 里的初值不再被读取）。
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: realtalk-db-init
+  labels:
+    app: realtalk-api
+    component: db-init
+spec:
+  backoffLimit: 6          # DB 尚未就绪时自动重试
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: realtalk-api
+        component: db-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: db-init
+          image: your-registry/realtalk-api:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.db_init"]
+          envFrom:
+            - secretRef:
+                name: realtalk-api-secret
+            - configMapRef:
+                name: realtalk-api-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi

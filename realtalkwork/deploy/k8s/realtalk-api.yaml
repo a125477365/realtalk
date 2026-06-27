@@ -1,8 +1,14 @@
 # RealTalk API 部署（3 副本 + Redis 主从）
 #
+# 供给模型（多活）：建表/播种由一次性 db-init.yaml Job 完成；本 Deployment 的 Pod【只读】已供给的库。
+#   每个 Pod 用 initContainer 阻塞等待「库已供给」后再启动主容器（未供给时主容器会 fail-fast）。
+#
 # 环境变量来自两个资源：
-#   - realtalk-api-secret：数据库连接串、JWT 密钥、AI/微信/支付密钥
-#   - realtalk-api-config：区域、功能开关等非敏感配置
+#   - realtalk-api-secret：DATABASE_URL、REDIS_URL、JWT_SECRET（仅供 db-init 首次播种入库），
+#                          以及首次装库要入库的 AI/微信/支付/SMTP/Apple 凭据【初值】。
+#   - realtalk-api-config：REALTALK_REGION、每节点 dev/prod 开关等非敏感配置。
+#   注：AI/支付/微信/SMTP/Apple 凭据、会话策略等【多活共用参数】运行期只读数据库（由 db-init 入库、
+#       管理台维护）；Secret 里的这些值仅是首次装库的播种初值，API 运行期不再读取。
 #
 # REDIS_URL 指向 redis-master Service（只有 Master 接受写入）。
 ---
@@ -22,6 +28,31 @@ spec:
       labels:
         app: realtalk-api
     spec:
+      initContainers:
+        # 阻塞等待 db-init Job 把库供给完成后再启动 API（避免主容器因未供给而 fail-fast 反复重启）。
+        - name: wait-db-provisioned
+          image: your-registry/realtalk-api:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - |
+              import time
+              from app.storage import db
+              for _ in range(150):  # 最多等约 5 分钟
+                  try:
+                      if db.is_provisioned():
+                          print("db provisioned, starting api"); break
+                  except Exception as e:  # DB 尚未就绪
+                      print("waiting for db:", e)
+                  time.sleep(2)
+              else:
+                  raise SystemExit("数据库未供给：请确认 realtalk-db-init Job 已成功执行")
+          envFrom:
+            - secretRef:
+                name: realtalk-api-secret
+            - configMapRef:
+                name: realtalk-api-config
       containers:
         - name: api
           image: your-registry/realtalk-api:latest
