@@ -312,7 +312,7 @@ if $DEPLOY_BACKEND; then
   note "支付：默认开发模式（下单后可手动确认到账，便于联调）。正式收款需商户资质。"
   ask "现在配置正式支付参数吗？(yes/no)" "no"
   PAY_DEV_CONFIRM=true
-  WX_MCHID=""; WX_APIKEY=""; WX_NOTIFY=""
+  WX_MCHID=""; WX_APIKEY=""; WX_NOTIFY=""; WX_SERIAL=""; WX_CERT=""; WX_MERCH_CERT=""; WX_MERCH_KEY=""
   ALI_APPID=""; ALI_PRIV=""; ALI_PUB=""; ALI_NOTIFY=""
   RECV_NAME="RealTalk"; WX_RECV=""; ALI_RECV=""
   if [ "$REPLY_VALUE" = "yes" ]; then
@@ -326,17 +326,27 @@ if $DEPLOY_BACKEND; then
       ask_secret "微信支付 APIv3 密钥（回调验签解密用）"; WX_APIKEY="$REPLY_VALUE"
       ask "微信平台证书序列号（回调验签用，可留空稍后在管理台填）" ""; WX_SERIAL="$REPLY_VALUE"
       ask "微信平台证书 PEM 文件路径（回调验签用，可留空稍后在管理台粘贴）" ""; WX_CERT_PATH="$REPLY_VALUE"
-      WX_CERT=""
       if [ -n "$WX_CERT_PATH" ] && [ -f "$WX_CERT_PATH" ]; then
         # 多行 PEM → 字面 \n 单行写入 .env（后端 _multiline_env 还原）
         WX_CERT="$(sed ':a;N;$!ba;s/\n/\\n/g' "$WX_CERT_PATH")"
+      fi
+      ask "微信商户证书 apiclient_cert.pem 路径（下单签名用，可留空稍后在管理台粘贴）" ""; WX_MERCH_CERT_PATH="$REPLY_VALUE"
+      if [ -n "$WX_MERCH_CERT_PATH" ] && [ -f "$WX_MERCH_CERT_PATH" ]; then
+        WX_MERCH_CERT="$(sed ':a;N;$!ba;s/\n/\\n/g' "$WX_MERCH_CERT_PATH")"
+      fi
+      ask "微信商户私钥 apiclient_key.pem 路径（下单签名用，可留空稍后在管理台粘贴）" ""; WX_MERCH_KEY_PATH="$REPLY_VALUE"
+      if [ -n "$WX_MERCH_KEY_PATH" ] && [ -f "$WX_MERCH_KEY_PATH" ]; then
+        WX_MERCH_KEY="$(sed ':a;N;$!ba;s/\n/\\n/g' "$WX_MERCH_KEY_PATH")"
       fi
       ask "微信支付回调地址 NOTIFY_URL" "https://your-domain.com/payment/wechat/webhook"; WX_NOTIFY="$REPLY_VALUE"
     fi
     ask "配置支付宝当面付？(yes/no)" "no"
     if [ "$REPLY_VALUE" = "yes" ]; then
       ask "支付宝 AppID" ""; ALI_APPID="$REPLY_VALUE"
-      ask_secret "支付宝应用私钥"; ALI_PRIV="$REPLY_VALUE"
+      ask "支付宝应用私钥 PEM 文件路径（下单签名用，可留空稍后在管理台粘贴）" ""; ALI_PRIV_PATH="$REPLY_VALUE"
+      if [ -n "$ALI_PRIV_PATH" ] && [ -f "$ALI_PRIV_PATH" ]; then
+        ALI_PRIV="$(sed ':a;N;$!ba;s/\n/\\n/g' "$ALI_PRIV_PATH")"
+      fi
       ask_secret "支付宝公钥"; ALI_PUB="$REPLY_VALUE"
       ask "支付宝回调地址 NOTIFY_URL" "https://your-domain.com/payment/alipay/webhook"; ALI_NOTIFY="$REPLY_VALUE"
     fi
@@ -403,7 +413,8 @@ if $DEPLOY_BACKEND; then
     "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
     "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
     "WECHAT_CERT_SERIAL=$WX_SERIAL" "WECHAT_PLATFORM_CERT=$WX_CERT"
-    "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
+    "WECHAT_MERCHANT_CERT=$WX_MERCH_CERT" "WECHAT_MERCHANT_KEY=$WX_MERCH_KEY"
+    "ALIPAY_APP_ID=$ALI_APPID" "ALIPAY_MERCHANT_PRIVATE_KEY=$ALI_PRIV" "ALIPAY_PUBLIC_KEY=$ALI_PUB" "ALIPAY_NOTIFY_URL=$ALI_NOTIFY"
     "# 集成凭据（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台「集成凭据」维护）"
     "SMTP_HOST=$SMTP_HOST" "SMTP_USERNAME=$SMTP_USER" "SMTP_PASSWORD=$SMTP_PW" "SMTP_FROM=$SMTP_FROM_VAL"
     "WECHAT_APP_ID=$WX_LOGIN_APPID" "WECHAT_APP_SECRET=$WX_LOGIN_SECRET"

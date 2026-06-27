@@ -260,6 +260,9 @@ struct ScenarioSummary: Identifiable, Codable, Equatable {
     let createdAt: Date
     var lastScore: Int? = nil
     var lastPracticedAt: Date? = nil
+    var inProgress: Bool = false          // 有未完成对练可继续
+    var resumeSessionId: String? = nil    // 可继续的会话 id
+    var resumeProgress: Int = 0           // 已练用户句数
 
     enum CodingKeys: String, CodingKey {
         case sceneId = "scene_id"
@@ -272,6 +275,37 @@ struct ScenarioSummary: Identifiable, Codable, Equatable {
         case createdAt = "created_at"
         case lastScore = "last_score"
         case lastPracticedAt = "last_practiced_at"
+        case inProgress = "in_progress"
+        case resumeSessionId = "resume_session_id"
+        case resumeProgress = "resume_progress"
+    }
+
+    // 自定义构造保留（供代码内构造场景卡）；新字段带默认值，老响应缺字段也能解码。
+    init(sceneId: String, title: String, summary: String, roles: [ScenarioRole], lineCount: Int,
+         sourceStart: Date, sourceEnd: Date, createdAt: Date, lastScore: Int? = nil,
+         lastPracticedAt: Date? = nil, inProgress: Bool = false, resumeSessionId: String? = nil,
+         resumeProgress: Int = 0) {
+        self.sceneId = sceneId; self.title = title; self.summary = summary; self.roles = roles
+        self.lineCount = lineCount; self.sourceStart = sourceStart; self.sourceEnd = sourceEnd
+        self.createdAt = createdAt; self.lastScore = lastScore; self.lastPracticedAt = lastPracticedAt
+        self.inProgress = inProgress; self.resumeSessionId = resumeSessionId; self.resumeProgress = resumeProgress
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sceneId = try c.decode(String.self, forKey: .sceneId)
+        title = try c.decode(String.self, forKey: .title)
+        summary = try c.decode(String.self, forKey: .summary)
+        roles = try c.decode([ScenarioRole].self, forKey: .roles)
+        lineCount = try c.decode(Int.self, forKey: .lineCount)
+        sourceStart = try c.decode(Date.self, forKey: .sourceStart)
+        sourceEnd = try c.decode(Date.self, forKey: .sourceEnd)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lastScore = try c.decodeIfPresent(Int.self, forKey: .lastScore)
+        lastPracticedAt = try c.decodeIfPresent(Date.self, forKey: .lastPracticedAt)
+        inProgress = try c.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
+        resumeSessionId = try c.decodeIfPresent(String.self, forKey: .resumeSessionId)
+        resumeProgress = try c.decodeIfPresent(Int.self, forKey: .resumeProgress) ?? 0
     }
 }
 

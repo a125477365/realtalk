@@ -60,6 +60,7 @@ final class AppModel: ObservableObject {
     struct PendingPractice {
         let summary: ScenarioSummary
         let roleId: String
+        var resume: Bool = false
     }
 
     /// 外观主题：跟随系统 / 浅色 / 深色。
@@ -392,24 +393,26 @@ final class AppModel: ObservableObject {
             sourceEnd: now,
             createdAt: now,
             lastScore: scene.lastScore,
-            lastPracticedAt: scene.lastPracticedAt
+            lastPracticedAt: scene.lastPracticedAt,
+            inProgress: scene.inProgress,
+            resumeProgress: scene.resumeProgress
         )
     }
 
     /// 从「今日场景」卡片直接进入练习：拉取场景详情 → 选角色 → 开始对练
     /// 进入练习前：若指导/对话方式设为「每次询问」，先弹窗让用户选择（不可中途切换）。
-    func startScenarioPractice(_ summary: ScenarioSummary, roleId: String) async {
+    func startScenarioPractice(_ summary: ScenarioSummary, roleId: String, resume: Bool = false) async {
         guard auth.token != nil else {
             statusMessage = "请先登录"
             return
         }
         if guidancePreference == .ask || conversationPreference == .ask {
-            pendingPractice = PendingPractice(summary: summary, roleId: roleId)
+            pendingPractice = PendingPractice(summary: summary, roleId: roleId, resume: resume)
             return
         }
         conversationMode = resolvedConversationMode(conversationPreference)
         guidanceMode = guidancePreference == .final ? .final : .realtime
-        await beginPractice(summary, roleId: roleId)
+        await beginPractice(summary, roleId: roleId, resume: resume)
     }
 
     /// 「对话前询问」弹窗确认后：按所选模式开始，并按需记住偏好。
@@ -430,14 +433,14 @@ final class AppModel: ObservableObject {
         }
         savePracticePreferences()
         pendingPractice = nil
-        await beginPractice(pending.summary, roleId: pending.roleId)
+        await beginPractice(pending.summary, roleId: pending.roleId, resume: pending.resume)
     }
 
     func cancelPendingPractice() {
         pendingPractice = nil
     }
 
-    private func beginPractice(_ summary: ScenarioSummary, roleId: String) async {
+    private func beginPractice(_ summary: ScenarioSummary, roleId: String, resume: Bool = false) async {
         guard let token = auth.token else {
             statusMessage = "请先登录"
             return
@@ -448,11 +451,11 @@ final class AppModel: ObservableObject {
             scenario = detail
             selectedRoleID = roleId
             isWorking = false
-            appendChat(.user, "练习：\(summary.title)（扮演\(roleName(roleId))）")
+            appendChat(.user, "练习：\(summary.title)（扮演\(roleName(roleId))\(resume ? "·继续上次" : "")）")
             if shouldUseVoiceLLM {
-                await beginVoiceLLMPractice()
+                await beginVoiceLLMPractice(resume: resume)
             } else {
-                await startRoleplay()
+                await startRoleplay(resume: resume)
             }
         } catch {
             isWorking = false
@@ -462,7 +465,7 @@ final class AppModel: ObservableObject {
 
     /// 高级会员沉浸式 + 实时语音大模型：在后端建立 roleplay 会话拿 session_id，再用 WebSocket 直接语音对话。
     /// 不走文本逐句对练（不设置 roleplay 状态），结束后由语音模型给出评分与分析。
-    private func beginVoiceLLMPractice() async {
+    private func beginVoiceLLMPractice(resume: Bool = false) async {
         guard let token = auth.token, let scene = scenario, selectedRoleID.isEmpty == false else {
             statusMessage = "请先选择场景与角色"
             return
@@ -481,6 +484,7 @@ final class AppModel: ObservableObject {
                 selectedRole: selectedRoleID,
                 sceneId: scene.sceneId,
                 segments: [],
+                resume: resume,
                 token: token
             )
             isWorking = false
@@ -894,7 +898,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func startRoleplay() async {
+    func startRoleplay(resume: Bool = false) async {
         guard let token = auth.token else {
             statusMessage = "请先登录"
             return
@@ -929,6 +933,7 @@ final class AppModel: ObservableObject {
                 selectedRole: selectedRoleID,
                 sceneId: scenario?.sceneId,
                 segments: Array(selected),
+                resume: resume,
                 token: token
             )
             scenario = state.scenario

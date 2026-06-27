@@ -192,16 +192,17 @@ class Settings:
     wechat_api_key: str | None = os.getenv("WECHAT_API_KEY")           # APIv3 密钥（回调验签解密用）
     wechat_platform_cert: str | None = _multiline_env("WECHAT_PLATFORM_CERT")  # 微信支付平台证书 PEM（验回调签名）
     wechat_cert_serial: str | None = os.getenv("WECHAT_CERT_SERIAL")      # 平台证书序列号（与回调 Wechatpay-Serial 比对）
-    wechat_ssl_cert_path: str | None = os.getenv("WECHAT_SSL_CERT_PATH")
-    wechat_ssl_key_path: str | None = os.getenv("WECHAT_SSL_KEY_PATH")
-    wechat_notify_url: str | None = os.getenv("WECHAT_NOTIFY_URL")
+    # 商户「下单签名」凭据：改存 DB（多活共用、运行期只读 DB）。这里只作首装播种来源（内容，非文件路径）。
+    wechat_merchant_cert: str | None = _multiline_env("WECHAT_MERCHANT_CERT")          # 商户证书 PEM（取序列号）
+    wechat_merchant_private_key: str | None = _multiline_env("WECHAT_MERCHANT_KEY")    # 商户私钥 PEM（下单签名）
+    wechat_notify_url: str | None = os.getenv("WECHAT_NOTIFY_URL")        # 仅首装播种；运行期只读 DB
 
     # Alipay (当面付)
     alipay_app_id: str | None = os.getenv("ALIPAY_APP_ID")
-    alipay_private_key: str | None = os.getenv("ALIPAY_PRIVATE_KEY")
+    alipay_merchant_private_key: str | None = _multiline_env("ALIPAY_MERCHANT_PRIVATE_KEY")  # 应用私钥 PEM（下单签名）；首装播种
     alipay_public_key: str | None = _multiline_env("ALIPAY_PUBLIC_KEY")
     alipay_sandbox: bool = _bool_env("ALIPAY_SANDBOX", False)
-    alipay_notify_url: str | None = os.getenv("ALIPAY_NOTIFY_URL")
+    alipay_notify_url: str | None = os.getenv("ALIPAY_NOTIFY_URL")        # 仅首装播种；运行期只读 DB
 
     # Base URL for email links
     app_base_url: str = os.getenv("APP_BASE_URL", "https://realtalk.app")

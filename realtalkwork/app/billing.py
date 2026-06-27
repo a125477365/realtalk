@@ -27,8 +27,6 @@ class WeChatPayClient:
     def __init__(self):
         # 注：本对象是模块级单例，import 期实例化。凭据走 DB（管理台可改），故用 property 延迟读取——
         # 既不在 import/未供给时碰库，又能在管理员改库后即时生效（不会缓存成旧值）。
-        self.cert_path = settings.wechat_ssl_cert_path   # 商户私钥/证书是每节点本地文件路径（部署项，env）
-        self.key_path = settings.wechat_ssl_key_path
         self.base_url = "https://api.mch.weixin.qq.com"
 
     @property
@@ -46,49 +44,29 @@ class WeChatPayClient:
         from .payments import resolve_payment_config
         return resolve_payment_config()["wechat_apiv3_key"]
 
+    @property
+    def _merchant_cert(self):   # 商户证书内容，只读 DB（用于取序列号）
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["wechat_merchant_cert"]
+
+    @property
+    def _merchant_key(self):    # 商户私钥内容，只读 DB（用于下单签名）
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["wechat_merchant_private_key"]
+
     def _get_serial_no(self) -> str:
-        """Get certificate serial number from PEM file."""
-        if not self.cert_path:
-            return ""
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["openssl", "x509", "-in", self.cert_path, "-serial", "-noout"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0:
-                # Output is like "serial=DEADBEEF1234"
-                hex_part = result.stdout.strip().split("=")[-1]
-                return hex_part.upper()
-        except Exception:
-            pass
-        return ""
+        """商户证书序列号：进程内解析 DB 中的证书内容（不再 openssl 读本地文件）。"""
+        from .payments import cert_serial_no
+        return cert_serial_no(self._merchant_cert)
 
     def _sign_v3(self, sign_str: str) -> str:
-        """Create WeChat Pay v3 signature."""
-        import os
-        if not self.key_path or not os.path.exists(self.key_path):
-            # Fallback to API key signing for v2 compatibility
-            sign_str_with_key = sign_str + f"&key={self.api_key}"
-            return hashlib.md5(sign_str_with_key.encode("utf-8")).hexdigest().upper()
-        
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["openssl", "dgst", "-sha256", "-sign", self.key_path],
-                input=sign_str.encode("utf-8"),
-                capture_output=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                import base64
-                return base64.b64encode(result.stdout).decode("utf-8")
-        except Exception:
-            pass
-        
-        # Fallback
-        sign_str_with_key = sign_str + f"&key={self.api_key}"
-        return hashlib.md5(sign_str_with_key.encode("utf-8")).hexdigest().upper()
+        """微信支付 v3 签名：进程内用商户私钥（只读 DB）做 SHA256-RSA；无私钥则回退 v2 MD5。"""
+        from .payments import rsa_sign_base64
+        sig = rsa_sign_base64(self._merchant_key, sign_str)
+        if sig:
+            return sig
+        # 无商户私钥：回退 v2 API 密钥 MD5（与原行为一致）
+        return hashlib.md5((sign_str + f"&key={self.api_key}").encode("utf-8")).hexdigest().upper()
 
     async def create_unified_order(
         self,
@@ -220,8 +198,7 @@ class AlipayClient:
     """Alipay Alipay+ /当面付 integration."""
 
     def __init__(self):
-        # 模块级单例：appid/支付宝公钥走 DB（管理台可改），用 property 延迟读取，避免 import 期碰库、且改库即时生效。
-        self.private_key = settings.alipay_private_key   # 商户私钥是每节点本地文件路径（部署项，env）
+        # 模块级单例：appid/公钥/商户私钥走 DB（管理台可改），用 property 延迟读取，避免 import 期碰库、且改库即时生效。
         self.notify_url = None  # Set per-request
         self.gateway = "https://openapi.alipaydev.com" if settings.alipay_sandbox else "https://openapi.alipay.com"
 
@@ -235,28 +212,16 @@ class AlipayClient:
         from .payments import resolve_payment_config
         return resolve_payment_config()["alipay_public_key"]
 
+    @property
+    def private_key(self):   # 商户应用私钥内容，只读 DB（下单签名用）
+        from .payments import resolve_payment_config
+        return resolve_payment_config()["alipay_merchant_private_key"]
+
     def _sign(self, params: dict) -> str:
-        """Sign parameters with RSA2."""
-        sorted_params = sorted(params.items())
-        sign_string = "&".join(f"{k}={v}" for k, v in sorted_params)
-        
-        if not self.private_key:
-            return ""
-        
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["openssl", "dgst", "-sha256", "-sign", self.private_key],
-                input=sign_string.encode("utf-8"),
-                capture_output=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                import base64
-                return base64.b64encode(result.stdout).decode("utf-8")
-        except Exception:
-            pass
-        return ""
+        """支付宝 RSA2 签名：进程内用商户私钥（只读 DB）做 SHA256-RSA。"""
+        from .payments import rsa_sign_base64
+        sign_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+        return rsa_sign_base64(self.private_key, sign_string)
 
     async def create_trade_precreate(
         self,

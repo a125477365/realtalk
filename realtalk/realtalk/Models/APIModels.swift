@@ -104,6 +104,8 @@ struct PresetSceneItem: Identifiable, Codable, Equatable {
     let roles: [ScenarioRole]
     let lastScore: Int?
     let lastPracticedAt: Date?
+    let inProgress: Bool
+    let resumeProgress: Int
 
     enum CodingKeys: String, CodingKey {
         case sceneId = "scene_id"
@@ -112,6 +114,20 @@ struct PresetSceneItem: Identifiable, Codable, Equatable {
         case roles
         case lastScore = "last_score"
         case lastPracticedAt = "last_practiced_at"
+        case inProgress = "in_progress"
+        case resumeProgress = "resume_progress"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sceneId = try c.decode(String.self, forKey: .sceneId)
+        title = try c.decode(String.self, forKey: .title)
+        lineCount = try c.decode(Int.self, forKey: .lineCount)
+        roles = try c.decode([ScenarioRole].self, forKey: .roles)
+        lastScore = try c.decodeIfPresent(Int.self, forKey: .lastScore)
+        lastPracticedAt = try c.decodeIfPresent(Date.self, forKey: .lastPracticedAt)
+        inProgress = try c.decodeIfPresent(Bool.self, forKey: .inProgress) ?? false
+        resumeProgress = try c.decodeIfPresent(Int.self, forKey: .resumeProgress) ?? 0
     }
 }
 
@@ -411,6 +427,8 @@ struct RoleplayStartRequest: Codable {
     let selectedRole: String
     let sceneId: String?
     let items: [TranscriptUploadItem]
+    /// true=继续上次未完成的进度；false（默认）=从头重新开始（旧的未完成会话作废）。
+    let resume: Bool
 
     enum CodingKeys: String, CodingKey {
         case start
@@ -418,6 +436,7 @@ struct RoleplayStartRequest: Codable {
         case selectedRole = "selected_role"
         case sceneId = "scene_id"
         case items
+        case resume
     }
 }
 

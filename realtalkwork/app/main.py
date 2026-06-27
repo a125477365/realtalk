@@ -1010,11 +1010,16 @@ def admin_get_payment(admin: dict = Depends(current_admin)) -> dict:
     return {
         "wechat_mchid": c["wechat_mchid"] or "",
         "wechat_cert_serial": c["wechat_cert_serial"] or "",
+        "wechat_notify_url": c["wechat_notify_url"] or "",
         "wechat_apiv3_key_configured": bool(c["wechat_apiv3_key"]),
         "wechat_platform_cert_configured": bool(c["wechat_platform_cert"]),
+        "wechat_merchant_cert_configured": bool(c["wechat_merchant_cert"]),
+        "wechat_merchant_key_configured": bool(c["wechat_merchant_private_key"]),
         "wechat_verify_ready": payments.wechat_configured(c),
         "alipay_app_id": c["alipay_app_id"] or "",
+        "alipay_notify_url": c["alipay_notify_url"] or "",
         "alipay_public_key_configured": bool(c["alipay_public_key"]),
+        "alipay_merchant_key_configured": bool(c["alipay_merchant_private_key"]),
         "alipay_verify_ready": payments.alipay_configured(c),
     }
 
@@ -1031,14 +1036,24 @@ def admin_set_payment(
         db.set_app_setting("wechat_mchid", request.wechat_mchid.strip())
     if request.wechat_cert_serial is not None:
         db.set_app_setting("wechat_cert_serial", request.wechat_cert_serial.strip())
+    if request.wechat_notify_url is not None:
+        db.set_app_setting("wechat_notify_url", request.wechat_notify_url.strip())
     if request.wechat_apiv3_key:
         db.set_app_setting("wechat_apiv3_key", request.wechat_apiv3_key.strip())
     if request.wechat_platform_cert:
         db.set_app_setting("wechat_platform_cert", request.wechat_platform_cert.strip())
+    if request.wechat_merchant_cert:
+        db.set_app_setting("wechat_merchant_cert", request.wechat_merchant_cert.strip())
+    if request.wechat_merchant_private_key:
+        db.set_app_setting("wechat_merchant_private_key", request.wechat_merchant_private_key.strip())
     if request.alipay_app_id is not None:
         db.set_app_setting("alipay_app_id", request.alipay_app_id.strip())
+    if request.alipay_notify_url is not None:
+        db.set_app_setting("alipay_notify_url", request.alipay_notify_url.strip())
     if request.alipay_public_key:
         db.set_app_setting("alipay_public_key", request.alipay_public_key.strip())
+    if request.alipay_merchant_private_key:
+        db.set_app_setting("alipay_merchant_private_key", request.alipay_merchant_private_key.strip())
     return admin_get_payment(admin)
 
 
@@ -1620,8 +1635,8 @@ async def create_recharge(
 
     # 三种到账方式（按优先级）：官方支付（商户号）→ 收款码人工确认 → 开发模式自动确认。
     _pay_cfg = payments.resolve_payment_config()   # 单一来源：商户号/支付宝 appid 只读 DB
-    wechat_official = bool(_pay_cfg["wechat_mchid"] and settings.wechat_notify_url)
-    alipay_official = bool(_pay_cfg["alipay_app_id"] and settings.alipay_notify_url)
+    wechat_official = bool(_pay_cfg["wechat_mchid"] and _pay_cfg["wechat_notify_url"])
+    alipay_official = bool(_pay_cfg["alipay_app_id"] and _pay_cfg["alipay_notify_url"])
     manual_fallback = settings.payment_dev_auto_confirm or bool(
         settings.wechat_receiver_account
         or settings.alipay_receiver_account
@@ -1641,7 +1656,7 @@ async def create_recharge(
                 out_trade_no=str(uuid.uuid4()),
                 total_fee=amount_cents,
                 description=order_desc,
-                notify_url=settings.wechat_notify_url,
+                notify_url=_pay_cfg["wechat_notify_url"],
                 client_ip=client_ip,
             )
             
@@ -1677,7 +1692,7 @@ async def create_recharge(
                 out_trade_no=str(uuid.uuid4()),
                 total_amount=amount_cents / 100.0,
                 subject=order_desc,
-                notify_url=settings.alipay_notify_url,
+                notify_url=_pay_cfg["alipay_notify_url"],
             )
             
             order = db.create_recharge_order(
@@ -2354,7 +2369,14 @@ def _summaries_with_last_score(user_id: str, items: list[dict]) -> list[Scenario
     out: list[ScenarioSummary] = []
     for it in items:
         info = last.get(it["scene_id"]) or {}
-        out.append(ScenarioSummary(**it, last_score=info.get("score"), last_practiced_at=info.get("at")))
+        out.append(ScenarioSummary(
+            **it,
+            last_score=info.get("score"),
+            last_practiced_at=info.get("at"),
+            in_progress=bool(info.get("in_progress")),
+            resume_session_id=info.get("resume_session_id"),
+            resume_progress=int(info.get("resume_progress") or 0),
+        ))
     return out
 
 
@@ -2470,6 +2492,15 @@ async def roleplay_start(
     if request.selected_role not in role_ids:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请选择可扮演的角色")
 
+    # 继续上次进度：找该场景+角色最近一个未完成会话，直接回放其历史与进度（不新建、不重复推送 AI 台词）。
+    if request.resume:
+        existing = db.get_resumable_roleplay_session(user.id, scenario.scene_id, request.selected_role)
+        if existing is not None:
+            return roleplay_state_response(user.id, existing, scenario)
+        # 没有可继续的会话则退化为从头开始（首次进入或上次已完成）。
+
+    # 从头重新开始：作废该场景+角色旧的未完成会话，保证「可继续」只指向这次新建的。
+    db.abandon_active_roleplay_sessions(user.id, scenario.scene_id, request.selected_role)
     ai_role = next((role.id for role in scenario.roles if role.id != request.selected_role), request.selected_role)
     session = db.create_roleplay_session(user.id, scenario.scene_id, request.selected_role, ai_role)
     session = push_ai_lines_until_user_turn(user.id, session, scenario)

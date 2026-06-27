@@ -220,6 +220,8 @@ class RoleplayStartRequest(BaseModel):
     selected_role: str
     scene_id: str | None = None
     items: list[TranscriptItem] = Field(default_factory=list)
+    # 同一场景：resume=True 继续上次未完成的进度；False（默认）从头重新开始（旧的未完成会话作废）。
+    resume: bool = False
 
 
 class RoleplayMessageRequest(BaseModel):
@@ -483,13 +485,18 @@ class TtsVoiceRequest(BaseModel):
 
 
 class PaymentSettingsRequest(BaseModel):
-    # 支付回调验签/解密凭证（管理台维护、存 DB 系统参数表；多活后端共用）
+    # 支付回调验签/解密凭证 + 商户下单签名凭证 + 回调地址（管理台维护、存 DB；多活后端共用）
     wechat_mchid: str | None = Field(default=None, max_length=64)
     wechat_apiv3_key: str | None = Field(default=None, max_length=128)      # 留空=不改
-    wechat_platform_cert: str | None = Field(default=None, max_length=8000)  # 平台证书 PEM
+    wechat_platform_cert: str | None = Field(default=None, max_length=8000)  # 平台证书 PEM（验回调）
     wechat_cert_serial: str | None = Field(default=None, max_length=128)
+    wechat_notify_url: str | None = Field(default=None, max_length=500)
+    wechat_merchant_cert: str | None = Field(default=None, max_length=8000)       # 商户证书 PEM（取序列号）；留空=不改
+    wechat_merchant_private_key: str | None = Field(default=None, max_length=8000)  # 商户私钥 PEM（下单签名）；留空=不改
     alipay_app_id: str | None = Field(default=None, max_length=64)
     alipay_public_key: str | None = Field(default=None, max_length=8000)
+    alipay_notify_url: str | None = Field(default=None, max_length=500)
+    alipay_merchant_private_key: str | None = Field(default=None, max_length=8000)  # 应用私钥 PEM（下单签名）；留空=不改
 
 
 class IntegrationSettingsRequest(BaseModel):
@@ -755,6 +762,9 @@ class ScenarioSummary(BaseModel):
     created_at: datetime
     last_score: int | None = None              # 上一次对练得分(0-100)，没练过则空
     last_practiced_at: datetime | None = None  # 上一次对练时间
+    in_progress: bool = False                  # 是否有「未完成」的对练可继续
+    resume_session_id: str | None = None       # 可继续的会话 id（in_progress 时有值）
+    resume_progress: int = 0                   # 已完成的用户句数（继续时展示「已练 N 句」）
 
 
 class ScenarioListResponse(BaseModel):

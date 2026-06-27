@@ -153,6 +153,9 @@ data class ScenarioSummary(
     @SerialName("created_at") val createdAt: String,
     @SerialName("last_score") val lastScore: Int? = null,
     @SerialName("last_practiced_at") val lastPracticedAt: String? = null,
+    @SerialName("in_progress") val inProgress: Boolean = false,
+    @SerialName("resume_session_id") val resumeSessionId: String? = null,
+    @SerialName("resume_progress") val resumeProgress: Int = 0,
 )
 
 @Serializable
@@ -165,6 +168,8 @@ data class RoleplayStartRequest(
     @SerialName("selected_role") val selectedRole: String,
     @SerialName("scene_id") val sceneId: String? = null,
     val items: List<TranscriptItem> = emptyList(),
+    // true=继续上次未完成进度；false（默认）=从头重新开始（旧未完成会话作废）。
+    val resume: Boolean = false,
 )
 
 @Serializable
@@ -334,6 +339,8 @@ data class PresetSceneItem(
     val roles: List<ScenarioRole> = emptyList(),
     @SerialName("last_score") val lastScore: Int? = null,
     @SerialName("last_practiced_at") val lastPracticedAt: String? = null,
+    @SerialName("in_progress") val inProgress: Boolean = false,
+    @SerialName("resume_progress") val resumeProgress: Int = 0,
 )
 
 @Serializable

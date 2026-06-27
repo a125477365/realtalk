@@ -1,6 +1,13 @@
 import SwiftUI
 import UIKit
 
+/// 「继续 / 重新开始」二选一弹窗的载荷。
+private struct ResumeChoice: Identifiable {
+    let id = UUID()
+    let summary: ScenarioSummary
+    let roleId: String
+}
+
 /// Claude 风格的对话主界面：内容区背景跟随外观主题（浅色/深色/系统），
 /// 助手消息纯文本、用户消息浅色气泡、系统提示居中胶囊；字幕随对话自动向上滚动。
 enum RTTheme {
@@ -48,6 +55,8 @@ struct MainChatView: View {
 
     @State private var showingAccount = false
     @State private var roleDialogScenario: ScenarioSummary?
+    /// 选完角色后、若该场景有未完成进度，弹「继续 / 重新开始」二选一。
+    @State private var resumeChoice: ResumeChoice?
     @State private var showImmersive = false
     @State private var scenarioScope = "today"
     @State private var expandedPresetGroupID: String?
@@ -110,10 +119,35 @@ struct MainChatView: View {
                     ForEach(summary.roles.filter(\.isUserCandidate)) { role in
                         Button("\(role.name)（\(role.description)）") {
                             roleDialogScenario = nil
-                            Task { await model.startScenarioPractice(summary, roleId: role.id) }
+                            if summary.inProgress {
+                                // 有未完成进度：先问继续还是重新开始
+                                resumeChoice = ResumeChoice(summary: summary, roleId: role.id)
+                            } else {
+                                Task { await model.startScenarioPractice(summary, roleId: role.id) }
+                            }
                         }
                     }
                     Button("取消", role: .cancel) { roleDialogScenario = nil }
+                }
+            }
+            .confirmationDialog(
+                resumeChoice.map { "「\($0.summary.title)」上次练到第 \($0.summary.resumeProgress) 句" } ?? "继续上次",
+                isPresented: Binding(
+                    get: { resumeChoice != nil },
+                    set: { if $0 == false { resumeChoice = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let choice = resumeChoice {
+                    Button("继续上次进度") {
+                        resumeChoice = nil
+                        Task { await model.startScenarioPractice(choice.summary, roleId: choice.roleId, resume: true) }
+                    }
+                    Button("从头重新开始") {
+                        resumeChoice = nil
+                        Task { await model.startScenarioPractice(choice.summary, roleId: choice.roleId, resume: false) }
+                    }
+                    Button("取消", role: .cancel) { resumeChoice = nil }
                 }
             }
             .confirmationDialog(
@@ -448,6 +482,7 @@ struct MainChatView: View {
                                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                                 }
                                 Spacer()
+                                resumeBadge(scene.inProgress, scene.resumeProgress)
                                 lastScoreBadge(scene.lastScore)
                                 Image(systemName: "chevron.right")
                                     .font(.caption2)
@@ -481,6 +516,18 @@ struct MainChatView: View {
         }
     }
 
+    /// 「未完成可继续」小标签：有进度时在场景卡上提示「继续 N」。
+    @ViewBuilder
+    private func resumeBadge(_ inProgress: Bool, _ progress: Int) -> some View {
+        if inProgress {
+            Text("继续 \(progress)")
+                .font(.system(size: 11 * model.fontScale, weight: .semibold))
+                .foregroundStyle(RTTheme.accent)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(RTTheme.accent.opacity(0.12), in: Capsule())
+        }
+    }
+
     @ViewBuilder
     private func scenarioCard(_ summary: ScenarioSummary) -> some View {
         Button {
@@ -501,6 +548,7 @@ struct MainChatView: View {
                         .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary.opacity(0.8))
                 }
+                resumeBadge(summary.inProgress, summary.resumeProgress)
                 lastScoreBadge(summary.lastScore)
                 Image(systemName: "chevron.right")
                     .font(.footnote)

@@ -217,6 +217,7 @@ final class APIClient {
         selectedRole: String,
         sceneId: String?,
         segments: [TranscriptSegment],
+        resume: Bool = false,
         token: String
     ) async throws -> RoleplayStateResponse {
         let items = segments.map { TranscriptUploadItem(id: $0.id, timestamp: $0.timestamp, text: $0.text) }
@@ -227,7 +228,8 @@ final class APIClient {
                 end: end,
                 selectedRole: selectedRole,
                 sceneId: sceneId,
-                items: items
+                items: items,
+                resume: resume
             ),
             token: token
         )

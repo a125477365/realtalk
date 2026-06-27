@@ -24,14 +24,16 @@ from .settings import settings
 _PAYMENT_KEYS = [
     "wechat_mchid", "wechat_apiv3_key", "wechat_platform_cert", "wechat_cert_serial",
     "alipay_app_id", "alipay_public_key",
+    # 多活共用、改为只读 DB：回调地址 + 商户「下单签名」凭据（证书/私钥内容入库，不再每节点放文件）
+    "wechat_notify_url", "alipay_notify_url",
+    "wechat_merchant_cert", "wechat_merchant_private_key", "alipay_merchant_private_key",
 ]
 
 
 def resolve_payment_config() -> dict[str, str | None]:
-    """DB 系统参数为准，env 仅兜底（首装由 seed 播种）。"""
+    """支付相关参数单一来源：只读 DB（装库时由 db_init 入库），不回退 env。"""
     from .storage import db
 
-    # 单一来源：只读 DB（装库时由 db_init 入库）。不再回退 env，避免一个参数两处取值。
     ov = db.get_app_settings_map(_PAYMENT_KEYS)
     return {
         "wechat_mchid": ov.get("wechat_mchid"),
@@ -40,7 +42,33 @@ def resolve_payment_config() -> dict[str, str | None]:
         "wechat_cert_serial": ov.get("wechat_cert_serial"),
         "alipay_app_id": ov.get("alipay_app_id"),
         "alipay_public_key": ov.get("alipay_public_key"),
+        "wechat_notify_url": ov.get("wechat_notify_url"),
+        "alipay_notify_url": ov.get("alipay_notify_url"),
+        "wechat_merchant_cert": ov.get("wechat_merchant_cert"),
+        "wechat_merchant_private_key": ov.get("wechat_merchant_private_key"),
+        "alipay_merchant_private_key": ov.get("alipay_merchant_private_key"),
     }
+
+
+def rsa_sign_base64(private_key_pem: str | None, message: str) -> str:
+    """商户 RSA 私钥对待签名串做 SHA256 签名，返回 base64（微信支付 v3 / 支付宝 RSA2 同此算法）。
+    进程内用 cryptography 完成（私钥内容只读 DB），不再 openssl 读本地文件、不在节点落盘私钥。"""
+    if not private_key_pem:
+        return ""
+    key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+    signature = key.sign(message.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(signature).decode("ascii")
+
+
+def cert_serial_no(cert_pem: str | None) -> str:
+    """从商户证书 PEM 解析序列号（大写十六进制），用于微信支付 v3 Authorization 头。"""
+    if not cert_pem:
+        return ""
+    try:
+        cert = load_pem_x509_certificate(cert_pem.encode("utf-8"))
+        return format(cert.serial_number, "X")
+    except (ValueError, Exception):  # noqa: BLE001
+        return ""
 
 
 # ---- 微信支付 v3 ----

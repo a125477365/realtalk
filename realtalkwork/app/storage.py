@@ -1352,6 +1352,12 @@ class Database:
             "wechat_cert_serial": getattr(s, "wechat_cert_serial", None),
             "alipay_app_id": getattr(s, "alipay_app_id", None),
             "alipay_public_key": getattr(s, "alipay_public_key", None),
+            # 回调地址 + 商户下单签名凭据（多活共用，DB 为准；env/setup.sh 仅首装播种）
+            "wechat_notify_url": getattr(s, "wechat_notify_url", None),
+            "alipay_notify_url": getattr(s, "alipay_notify_url", None),
+            "wechat_merchant_cert": getattr(s, "wechat_merchant_cert", None),
+            "wechat_merchant_private_key": getattr(s, "wechat_merchant_private_key", None),
+            "alipay_merchant_private_key": getattr(s, "alipay_merchant_private_key", None),
             # A：多活共用凭据（DB 为准，env/setup.sh 仅首装播种）——SMTP / 微信登录 / Apple IAP
             "smtp_host": getattr(s, "smtp_host", None),
             "smtp_port": str(getattr(s, "smtp_port", "") or ""),
@@ -2060,12 +2066,15 @@ class Database:
         return items
 
     def last_practice_scores(self, user_id: str, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
-        """各场景该用户「最近一次对练」的得分(0-100)、是否完成、时间，用于场景卡展示上次成绩。"""
+        """各场景该用户的：①「最近一次有得分的对练」分数/是否完成/时间（场景卡展示上次成绩）；
+        ②「最近一个未完成(active)会话」是否可继续 + 会话 id + 已练句数（场景卡展示「继续/重新开始」）。
+        两者分别取，互不覆盖：刚新建尚无得分的会话不会把历史成绩清零。"""
         if not scene_ids:
             return {}
         stmt = (
             select(
                 roleplay_sessions.c.scene_id,
+                roleplay_sessions.c.session_id,
                 roleplay_sessions.c.score_total,
                 roleplay_sessions.c.turns,
                 roleplay_sessions.c.status,
@@ -2074,24 +2083,70 @@ class Database:
             .where(
                 roleplay_sessions.c.user_id == user_id,
                 roleplay_sessions.c.scene_id.in_(scene_ids),
-                roleplay_sessions.c.turns > 0,
             )
             .order_by(roleplay_sessions.c.updated_at.desc())
         )
-        result: dict[str, dict[str, Any]] = {}
+        scored: dict[str, dict[str, Any]] = {}   # 最近一次有得分（turns>0）
+        resume: dict[str, dict[str, Any]] = {}   # 最近一个未完成（active）
         with self.engine.connect() as conn:
             for row in conn.execute(stmt).mappings():
                 sid = row["scene_id"]
-                if sid in result:
-                    continue  # 已取到该场景最近一次（按 updated_at desc）
                 turns = int(row["turns"] or 0)
-                score = round((float(row["score_total"]) / turns) * 100) if turns else 0
-                result[sid] = {
-                    "score": score,
-                    "completed": row["status"] == "completed",
-                    "at": _parse_dt(row["updated_at"]),
-                }
+                if turns > 0 and sid not in scored:
+                    scored[sid] = {
+                        "score": round((float(row["score_total"]) / turns) * 100),
+                        "completed": row["status"] == "completed",
+                        "at": _parse_dt(row["updated_at"]),
+                    }
+                if row["status"] == "active" and sid not in resume:
+                    resume[sid] = {"resume_session_id": row["session_id"], "resume_progress": turns}
+        result: dict[str, dict[str, Any]] = {}
+        for sid in set(scored) | set(resume):
+            entry = dict(scored.get(sid, {}))
+            if sid in resume:
+                entry["in_progress"] = True
+                entry.update(resume[sid])
+            result[sid] = entry
         return result
+
+    def get_resumable_roleplay_session(
+        self, user_id: str, scene_id: str, selected_role: str
+    ) -> RoleplaySessionRecord | None:
+        """同场景+同角色「最近一个未完成(active)」会话，用于「继续上次进度」。"""
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(roleplay_sessions)
+                    .where(
+                        roleplay_sessions.c.user_id == user_id,
+                        roleplay_sessions.c.scene_id == scene_id,
+                        roleplay_sessions.c.selected_role == selected_role,
+                        roleplay_sessions.c.status == "active",
+                    )
+                    .order_by(roleplay_sessions.c.updated_at.desc())
+                    .limit(1)
+                )
+                .mappings()
+                .fetchone()
+            )
+        return _roleplay_session_from_row(row) if row else None
+
+    def abandon_active_roleplay_sessions(
+        self, user_id: str, scene_id: str, selected_role: str, except_session_id: str | None = None
+    ) -> int:
+        """「重新开始」时把该场景+角色旧的未完成会话置为 abandoned，
+        保证「可继续」只指向最新那一个（旧进度仍按场景留存期随级联清理）。"""
+        stmt = update(roleplay_sessions).where(
+            roleplay_sessions.c.user_id == user_id,
+            roleplay_sessions.c.scene_id == scene_id,
+            roleplay_sessions.c.selected_role == selected_role,
+            roleplay_sessions.c.status == "active",
+        )
+        if except_session_id:
+            stmt = stmt.where(roleplay_sessions.c.session_id != except_session_id)
+        with self.engine.begin() as conn:
+            result = conn.execute(stmt.values(status="abandoned", updated_at=_iso(_now())))
+        return result.rowcount or 0
 
     def find_scenario_by_source_hash(self, user_id: str, source_hash: str) -> ScenarioResponse | None:
         """按采集内容哈希查已生成的未过期场景，用于幂等去重（重复上传不再重复生成）。"""

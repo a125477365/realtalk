@@ -1024,11 +1024,19 @@ function renderPlanQuotaCards() {
     '    <div class="form-group"><label>微信平台证书序列号</label><input type="text" id="pay-wx-serial" placeholder="可留空" /></div>',
     '    <div class="form-group" style="grid-column:1/-1"><label>微信 APIv3 密钥 <span class="hint" id="pay-wx-key-st"></span></label>',
     '      <input type="password" id="pay-wx-apiv3" placeholder="留空保持不变" autocomplete="new-password" /></div>',
-    '    <div class="form-group" style="grid-column:1/-1"><label>微信支付平台证书 PEM <span class="hint" id="pay-wx-cert-st"></span></label>',
+    '    <div class="form-group"><label>微信支付回调地址</label><input type="text" id="pay-wx-notify" placeholder="https://域名/payment/wechat/webhook" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>微信支付平台证书 PEM（验回调） <span class="hint" id="pay-wx-cert-st"></span></label>',
     '      <textarea id="pay-wx-cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----...（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>微信商户证书 apiclient_cert.pem（下单签名取序列号） <span class="hint" id="pay-wx-merch-cert-st"></span></label>',
+    '      <textarea id="pay-wx-merch-cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----...（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>微信商户私钥 apiclient_key.pem（下单签名） <span class="hint" id="pay-wx-merch-key-st"></span></label>',
+    '      <textarea id="pay-wx-merch-key" rows="4" placeholder="-----BEGIN PRIVATE KEY-----...（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
     '    <div class="form-group"><label>支付宝 app_id</label><input type="text" id="pay-ali-appid" /></div>',
-    '    <div class="form-group" style="grid-column:1/-1"><label>支付宝公钥 <span class="hint" id="pay-ali-key-st"></span></label>',
+    '    <div class="form-group"><label>支付宝回调地址</label><input type="text" id="pay-ali-notify" placeholder="https://域名/payment/alipay/webhook" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>支付宝公钥（验回调） <span class="hint" id="pay-ali-key-st"></span></label>',
     '      <textarea id="pay-ali-pub" rows="3" placeholder="支付宝公钥（base64 或 PEM；留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>支付宝应用私钥（下单签名） <span class="hint" id="pay-ali-merch-key-st"></span></label>',
+    '      <textarea id="pay-ali-merch-key" rows="3" placeholder="应用私钥 PEM（留空保持不变）" style="width:100%;font-family:monospace;font-size:12px"></textarea></div>',
     "  </div>",
     '  <button class="btn btn-primary" style="margin-top:8px" onclick="savePayment()">保存支付配置</button>',
     "</div>",
@@ -1192,10 +1200,15 @@ function loadPlanQuotaAsr() {
     r.json().then(function(d) {
       if (getEl("pay-wx-mchid")) getEl("pay-wx-mchid").value = d.wechat_mchid || "";
       if (getEl("pay-wx-serial")) getEl("pay-wx-serial").value = d.wechat_cert_serial || "";
+      if (getEl("pay-wx-notify")) getEl("pay-wx-notify").value = d.wechat_notify_url || "";
       if (getEl("pay-ali-appid")) getEl("pay-ali-appid").value = d.alipay_app_id || "";
+      if (getEl("pay-ali-notify")) getEl("pay-ali-notify").value = d.alipay_notify_url || "";
       if (getEl("pay-wx-key-st")) getEl("pay-wx-key-st").textContent = d.wechat_apiv3_key_configured ? "（已配置）" : "（未配置）";
       if (getEl("pay-wx-cert-st")) getEl("pay-wx-cert-st").textContent = d.wechat_platform_cert_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-wx-merch-cert-st")) getEl("pay-wx-merch-cert-st").textContent = d.wechat_merchant_cert_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-wx-merch-key-st")) getEl("pay-wx-merch-key-st").textContent = d.wechat_merchant_key_configured ? "（已配置）" : "（未配置）";
       if (getEl("pay-ali-key-st")) getEl("pay-ali-key-st").textContent = d.alipay_public_key_configured ? "（已配置）" : "（未配置）";
+      if (getEl("pay-ali-merch-key-st")) getEl("pay-ali-merch-key-st").textContent = d.alipay_merchant_key_configured ? "（已配置）" : "（未配置）";
       var st = getEl("pay-status");
       if (st) {
         st.innerHTML =
@@ -1298,14 +1311,22 @@ function savePayment() {
   var body = {
     wechat_mchid: (getEl("pay-wx-mchid") || { value: "" }).value.trim(),
     wechat_cert_serial: (getEl("pay-wx-serial") || { value: "" }).value.trim(),
+    wechat_notify_url: (getEl("pay-wx-notify") || { value: "" }).value.trim(),
     alipay_app_id: (getEl("pay-ali-appid") || { value: "" }).value.trim(),
+    alipay_notify_url: (getEl("pay-ali-notify") || { value: "" }).value.trim(),
   };
   var k = (getEl("pay-wx-apiv3") || { value: "" }).value.trim();
   if (k) body.wechat_apiv3_key = k;
   var c = (getEl("pay-wx-cert") || { value: "" }).value.trim();
   if (c) body.wechat_platform_cert = c;
+  var mc = (getEl("pay-wx-merch-cert") || { value: "" }).value.trim();
+  if (mc) body.wechat_merchant_cert = mc;
+  var mk = (getEl("pay-wx-merch-key") || { value: "" }).value.trim();
+  if (mk) body.wechat_merchant_private_key = mk;
   var ap = (getEl("pay-ali-pub") || { value: "" }).value.trim();
   if (ap) body.alipay_public_key = ap;
+  var amk = (getEl("pay-ali-merch-key") || { value: "" }).value.trim();
+  if (amk) body.alipay_merchant_private_key = amk;
   apiPost("/admin/api/settings/payment", body).then(function(r) {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
