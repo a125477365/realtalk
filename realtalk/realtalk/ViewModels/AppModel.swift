@@ -1098,7 +1098,10 @@ final class AppModel: ObservableObject {
             if guidanceMode == .realtime || state.completed {
                 appendChat(.assistant, feedback)
             }
-            handleRoleplayState(state, spokenPreface: feedback)
+            // 说对了(accepted)：指导只是「参考说法」，上屏展示即可、不朗读，避免夹在 AI 下一句前念出来；
+            // 说错了(rejected)：纠正要朗读，让用户听到怎么改。
+            let preface = state.latestAccepted == true ? nil : feedback
+            handleRoleplayState(state, spokenPreface: preface)
         } else {
             statusMessage = "继续对话"
             handleRoleplayState(state)
@@ -1180,7 +1183,10 @@ final class AppModel: ObservableObject {
             if let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
                feedback.isEmpty == false {
                 appendChat(.assistant, feedback)
-                voice.speak(feedback, cache: false)   // 指导内容不入 Redis
+                // 说对了只展示「参考说法」不朗读；说错了纠正要朗读
+                if state.latestAccepted != true {
+                    voice.speak(feedback, cache: false)   // 指导内容不入 Redis
+                }
             }
         } catch {
             presentFailure(error.localizedDescription, title: "评分获取失败")

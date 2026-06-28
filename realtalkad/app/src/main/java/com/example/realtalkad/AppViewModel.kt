@@ -616,7 +616,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     roleplayState.value = state
                     state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
                         appendChat(ChatMessage.Sender.ASSISTANT, it)
-                        voice.speak(it, cache = false) {}   // 指导内容不入 Redis
+                        // 说对了只展示「参考说法」不朗读；说错了纠正要朗读
+                        if (state.latestAccepted != true) voice.speak(it, cache = false) {}
                     }
                 }
                 .onFailure { presentFailure(it.message, title = "评分获取失败") }
@@ -825,7 +826,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         // 自动朗读 AI 台词为固定行为。指导(spokenPreface)实时合成、不缓存(cache=false)；
         // AI 台词走缓存(命中预生成,cache 默认 true)。故先念指导、再念台词、最后聆听。
-        val preface = spokenPreface?.takeIf { it.isNotBlank() }
+        // 说对了(accepted)的指导是「参考说法」，上屏展示即可、不朗读(避免夹在 AI 下一句前念)；说错了纠正要朗读。
+        val preface = spokenPreface?.takeIf { it.isNotBlank() && state.latestAccepted != true }
         val aiTexts = newAiMessages.map { it.content }
         when {
             preface != null -> voice.speak(preface, cache = false) {
