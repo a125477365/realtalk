@@ -38,7 +38,20 @@ echo
 if [ -f .env ]; then
   ask "检测到已有 .env，是否覆盖重新生成？(yes/no)" "no"
   if [ "$REPLY_VALUE" != "yes" ]; then
-    say "已保留现有 .env。直接执行：docker compose up -d --build"
+    # 保留 .env 也要把完整部署跑完——尤其是【数据库供给(db_init)】这一步，
+    # 否则只 docker compose up 起来的 API 会因「库未供给」fail-fast 退出。
+    say "已保留现有 .env，按它重新部署…"
+    command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
+    docker compose up -d --build
+    if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
+      say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
+      if docker compose run --rm api python -m app.db_init; then
+        say "${GREEN}✔ 数据库已供给${RESET}"
+      else
+        say "数据库供给失败，请重试：docker compose run --rm api python -m app.db_init"
+      fi
+    fi
+    say "完成。常用命令：docker compose ps / logs -f api / down"
     exit 0
   fi
   cp .env ".env.bak.$(date +%Y%m%d%H%M%S)"
