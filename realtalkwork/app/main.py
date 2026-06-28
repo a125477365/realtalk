@@ -2511,6 +2511,8 @@ async def roleplay_start(
     if request.resume:
         existing = db.get_resumable_roleplay_session(user.id, scenario.scene_id, request.selected_role)
         if existing is not None:
+            # 继续上次：提前生成"用户说完当前句后 AI 的下一段"语音
+            _prewarm_tts(user.id, _ai_line_run(scenario, existing.selected_role, existing.target_index + 1))
             return roleplay_state_response(user.id, existing, scenario)
         # 没有可继续的会话则退化为从头开始（首次进入或上次已完成）。
 
@@ -2520,6 +2522,12 @@ async def roleplay_start(
     session = db.create_roleplay_session(user.id, scenario.scene_id, request.selected_role, ai_role)
     session = push_ai_lines_until_user_turn(user.id, session, scenario)
     db.update_roleplay_session(session)
+    # 提前生成：开场 AI 台词 + 用户说完第一句后 AI 的下一段
+    _prewarm_tts(
+        user.id,
+        _ai_line_run(scenario, session.selected_role, 0)
+        + _ai_line_run(scenario, session.selected_role, session.target_index + 1),
+    )
     return roleplay_state_response(user.id, session, scenario)
 
 
@@ -2603,6 +2611,12 @@ async def roleplay_message(
         session = push_ai_lines_until_user_turn(user.id, session, scenario)
         if next_user_line(session, scenario) is None:
             session.status = "completed"
+        # 提前生成：本轮刚推送的 AI 台词 + 用户下一句之后 AI 的下一段（下次取用即命中）
+        _prewarm_tts(
+            user.id,
+            _ai_line_run(scenario, session.selected_role, target_line.index + 1)
+            + _ai_line_run(scenario, session.selected_role, session.target_index + 1),
+        )
     db.update_roleplay_session(session)
     latest_feedback = feedback or None
     # 对话完成时无论实时/事后指导都给出最终评分与建议（本地计算、无额外模型调用）
@@ -2790,8 +2804,9 @@ async def roleplay_stream(
 
     async def _send_tts(text: str) -> None:
         try:
-            # 沉浸式 AI 回复随流推送一次、每句基本唯一，不进 Redis 缓存（避免动态语音撑大 Redis）
-            audio, ct = await voice_io.synthesize(text, voice, use_cache=False)
+            # 先查 Redis（多半已被 roleplay_start/roleplay_message 的「提前生成」预热过）→ 命中秒回；
+            # 未命中则现合成并写回缓存，再推流给 App。下一段在每轮 roleplay_message 里已提前生成。
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=True)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
@@ -3278,6 +3293,43 @@ def push_ai_lines_until_user_turn(
     if session.target_index >= len(scenario.lines):
         session.status = "completed"
     return session
+
+
+def _ai_line_run(scenario: ScenarioResponse, selected_role: str, start: int) -> list[str]:
+    """从 start 起一整段连续 AI 台词的英文（遇到用户角色的台词或结尾即止）= 一次"轮到 AI 说"的内容。"""
+    out: list[str] = []
+    i = start
+    while 0 <= i < len(scenario.lines):
+        line = scenario.lines[i]
+        if line.target_role == selected_role:
+            break
+        if line.english and line.english.strip():
+            out.append(line.english)
+        i += 1
+    return out
+
+
+def _prewarm_tts(user_id: str, texts: list[str]) -> None:
+    """后台异步把这些 AI 台词提前合成进 Redis（提前生成下一句语音）。失败不影响主流程。
+
+    用用户当前选定音色合成，与 /tts/speak 取用时的缓存键一致 → 取用即命中、秒回。
+    """
+    texts = [t for t in dict.fromkeys(t for t in texts if t and t.strip())]  # 去重保序
+    if not texts:
+        return
+    voice = db.get_user_tts_voice(user_id) or voice_io.default_voice()
+
+    async def _run() -> None:
+        for t in texts:
+            try:
+                await voice_io.synthesize(t, voice, use_cache=True)
+            except Exception:  # noqa: BLE001 — 预热失败静默
+                pass
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except RuntimeError:  # 无运行中的事件循环（理论上不会）
+        pass
 
 
 def next_user_line(session: RoleplaySessionRecord, scenario: ScenarioResponse) -> SceneLine | None:
