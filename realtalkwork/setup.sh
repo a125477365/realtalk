@@ -258,7 +258,6 @@ if $DEPLOY_BACKEND; then
     fi
     ENV_LINES+=(
       "WITH_LOCAL_ASR=$WITH_LOCAL_ASR"
-      "WHISPER_MODEL_DIR=./data/whisper-models"
       "ASR_MODE=$ASR_MODE_VAL"
       "ASR_BASE_URL=$ASR_BASE" "ASR_API_KEY=$ASR_KEY" "ASR_MODEL=$ASR_MODEL_VAL"
       "ASR_LOCAL_COMMAND=$ASR_LOCAL_CMD" "ASR_LOCAL_MODEL=$ASR_LOCAL_MODEL_VAL"
@@ -306,7 +305,6 @@ if $DEPLOY_BACKEND; then
     # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户
     ENV_LINES+=(
       "WITH_LOCAL_ASR=true"
-      "WHISPER_MODEL_DIR=./data/whisper-models"
       "ASR_MODE=cloud"
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
       "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=small"
@@ -340,6 +338,11 @@ if $DEPLOY_BACKEND; then
   note "注：场景对练时说的话不存这里——内存即时转写评分后立即丢弃，无需配置目录。"
   ask "采集录音上传目录" "./data/uploads"
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
+
+  # ---- 本地 ASR/TTS 模型目录（映射到容器 /app/models）----
+  note "本地 whisper(ASR) 与 Piper(TTS) 模型首次使用时下载到这，可达数 GB，建议放数据盘；纯云端方式则用不到。"
+  ask "本地 ASR/TTS 模型目录" "./data/whisper-models"
+  ENV_LINES+=("WHISPER_MODEL_DIR=$REPLY_VALUE")
 
   # ---- 微信登录（高级，可选）----
   echo
