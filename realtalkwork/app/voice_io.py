@@ -176,8 +176,13 @@ def _synthesize_local(config: dict[str, Any], text: str, voice: str) -> tuple[by
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
-    """把文本合成为音频，返回 (音频字节, content_type)。文本为空抛错。"""
+async def synthesize(text: str, voice: str | None = None, use_cache: bool = True) -> tuple[bytes, str]:
+    """把文本合成为音频，返回 (音频字节, content_type)。文本为空抛错。
+
+    use_cache：是否走 Redis 合成缓存。手工点读/试听同一句可能反复听 → 缓存(默认)；
+    沉浸式/实时回合的 AI 回复每句基本唯一、只随流推送一次、不会复用 → 传 False 不进 Redis，
+    避免动态语音把 Redis 撑大。
+    """
     text = (text or "").strip()
     if not text:
         raise RuntimeError("待合成文本为空")
@@ -192,10 +197,11 @@ async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
         return _silent_wav(), content_type_for("wav")   # dev：便宜，不缓存不限并发
 
     ct = content_type_for(fmt)
-    cache_key = _tts_cache_key(text, voice, fmt)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached, ct   # 命中缓存：秒回，不消耗合成资源（刷同一文本也只命中缓存）
+    cache_key = _tts_cache_key(text, voice, fmt) if use_cache else None
+    if cache_key is not None:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached, ct   # 命中缓存：秒回，不消耗合成资源（刷同一文本也只命中缓存）
 
     # 并发上限：合成位满则过载（调用方返回 429），避免突发把上游/CPU 打满
     try:
@@ -221,7 +227,8 @@ async def synthesize(text: str, voice: str | None = None) -> tuple[bytes, str]:
     finally:
         _synth_sem().release()
 
-    _cache_set(cache_key, audio)
+    if cache_key is not None:
+        _cache_set(cache_key, audio)
     return audio, ct
 
 

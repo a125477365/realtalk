@@ -2790,7 +2790,8 @@ async def roleplay_stream(
 
     async def _send_tts(text: str) -> None:
         try:
-            audio, ct = await voice_io.synthesize(text, voice)
+            # 沉浸式 AI 回复随流推送一次、每句基本唯一，不进 Redis 缓存（避免动态语音撑大 Redis）
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=False)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
