@@ -21,19 +21,16 @@ def _prefetch_asr() -> None:
         return
     size = os.getenv("ASR_LOCAL_MODEL", "small")
     model_dir = os.getenv("ASR_LOCAL_MODEL_DIR", "/app/models")
-    hf = os.getenv("HF_ENDPOINT")
+    base = os.getenv("HF_ENDPOINT") or "https://huggingface.co（未设 HF_ENDPOINT；国内建议设 hf-mirror.com）"
     try:
-        from faster_whisper import WhisperModel
+        # 直下模型文件(绕开 huggingface_hub 的 API,与 Piper 同法),镜像站对此可用
+        from app.asr_local import ensure_whisper_model
 
-        print(
-            f"[prefetch] 预拉 whisper «{size}» → {model_dir}"
-            f"（HF_ENDPOINT={hf or '未设置→直连 huggingface.co(国内常因 API 限流/不可达而失败)'}）…",
-            flush=True,
-        )
-        WhisperModel(size, device="cpu", compute_type="int8", download_root=model_dir)
+        print(f"[prefetch] 预拉 whisper «{size}» → {model_dir}（源 {base}）…", flush=True)
+        ensure_whisper_model(size, model_dir)
         print("[prefetch] whisper 就绪", flush=True)
     except Exception as exc:  # noqa: BLE001 — 预拉失败不阻断启动
-        hint = "" if hf else " ← 多半因未设 HF_ENDPOINT：在 .env 设 HF_ENDPOINT=https://hf-mirror.com 后重启即可。"
+        hint = "" if os.getenv("HF_ENDPOINT") else " ← 未设 HF_ENDPOINT：在 .env 设 HF_ENDPOINT=https://hf-mirror.com 后重启。"
         print(f"[prefetch] 警告：whisper 预拉失败（{exc}）。首次使用时会再试。{hint}", flush=True)
 
 

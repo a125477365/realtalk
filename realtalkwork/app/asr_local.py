@@ -6,11 +6,39 @@ ASR_LOCAL_COMMAND 设为  python /app/app/asr_local.py {input}
 
 模型大小由 ASR_LOCAL_MODEL 控制（tiny/base/small/medium，默认 small），
 首次运行会自动下载模型到 ASR_LOCAL_MODEL_DIR（建议挂载持久卷）。
+
+模型【直下文件】到本地目录后再加载（不走 huggingface_hub 的 API 解析）——因为镜像站(hf-mirror)
+对直连文件可用、但 huggingface_hub 的 metadata/API 路径常失败（与 Piper 同法绕开）。
 """
 from __future__ import annotations
 
 import os
 import sys
+import urllib.request
+
+# faster-whisper(ctranslate2 格式) 模型仓库根目录下需要的文件
+_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+
+
+def ensure_whisper_model(size: str, model_dir: str) -> str:
+    """把 Systran/faster-whisper-<size> 的模型文件直下到 <model_dir>/faster-whisper-<size>/ 并返回该目录。
+
+    走 HF_ENDPOINT（默认 huggingface.co）的 resolve/main 直连文件（urllib），绕开 huggingface_hub 的
+    API 解析（镜像站对后者常不可用）。已存在则跳过，不重复下载。
+    """
+    repo = f"Systran/faster-whisper-{size}"
+    base = (os.getenv("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
+    dest = os.path.join(model_dir, f"faster-whisper-{size}")
+    os.makedirs(dest, exist_ok=True)
+    for fn in _WHISPER_FILES:
+        target = os.path.join(dest, fn)
+        if os.path.exists(target) and os.path.getsize(target) > 0:
+            continue
+        url = f"{base}/{repo}/resolve/main/{fn}"
+        tmp = target + ".part"
+        urllib.request.urlretrieve(url, tmp)  # noqa: S310 — 固定可信仓库/镜像
+        os.replace(tmp, target)
+    return dest
 
 
 def main() -> int:
@@ -27,10 +55,11 @@ def main() -> int:
 
     model_size = os.getenv("ASR_LOCAL_MODEL", "small")
     model_dir = os.getenv("ASR_LOCAL_MODEL_DIR", "/app/models")
-    # CPU int8：体积小、速度快、无需 GPU。首次运行会从 HuggingFace 下载模型。
+    # CPU int8：体积小、速度快、无需 GPU。模型文件直下到本地目录后从本地加载。
     try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8", download_root=model_dir)
-    except Exception as exc:  # noqa: BLE001 — 多半是首次下载模型时网络受限
+        local_path = ensure_whisper_model(model_size, model_dir)
+        model = WhisperModel(local_path, device="cpu", compute_type="int8")
+    except Exception as exc:  # noqa: BLE001 — 多半是下载模型时网络受限
         print(
             f"whisper 模型加载/下载失败：{exc}. "
             "受限网络请在 .env 设 HF_ENDPOINT=https://hf-mirror.com 后重启，或改用云端 ASR(ASR_MODE=cloud)。",
