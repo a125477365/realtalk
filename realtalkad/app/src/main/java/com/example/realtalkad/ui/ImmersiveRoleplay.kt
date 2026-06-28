@@ -77,6 +77,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val isSpeaking by model.isSpeaking.collectAsState()
     val isWorking by model.isWorking.collectAsState()
     val showSubtitles by model.showSubtitles.collectAsState()
+    val showRefHint by model.showRefHint.collectAsState()
     val guidanceMode by model.guidanceMode.collectAsState()
     val conversationMode by model.conversationMode.collectAsState()
     val partial by model.partialSubtitle.collectAsState()
@@ -104,7 +105,8 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
         ?.takeIf { state?.completed == false && !isWorking && !isSpeaking }
         ?.let {
             val prefix = if (state?.latestAccepted == false) "请你用英文继续说" else "请你用英文说"
-            "$prefix：${it.sourceText}"
+            val ref = if (showRefHint && it.english.isNotBlank()) "\n参考提示：${it.english}" else ""
+            "$prefix：${it.sourceText}$ref"
         }
 
     Box(

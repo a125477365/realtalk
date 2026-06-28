@@ -352,7 +352,11 @@ struct ImmersiveRoleplayView: View {
     private var nextLineHint: String? {
         guard model.roleplay?.completed == false, let next = model.roleplay?.nextLine else { return nil }
         let prefix = model.roleplay?.latestAccepted == false ? "请你用英文继续说" : "请你用英文说"
-        return "\(prefix)：\(next.sourceText)"
+        var hint = "\(prefix)：\(next.sourceText)"
+        if model.showRefHint, next.english.isEmpty == false {   // 参考提示：开口前给参考英文，方便新手
+            hint += "\n参考提示：\(next.english)"
+        }
+        return hint
     }
 
     private var controlText: String {

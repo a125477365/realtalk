@@ -528,6 +528,7 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
 @Composable
 private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val showSubtitles by model.showSubtitles.collectAsState()
+    val showRefHint by model.showRefHint.collectAsState()
     val guidancePref by model.guidancePreference.collectAsState()
     val conversationPref by model.conversationPreference.collectAsState()
     val user by model.user.collectAsState()
@@ -558,6 +559,15 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                     Text("对话字幕中显示中文辅助内容", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = showSubtitles, onCheckedChange = { model.setShowSubtitles(it) })
+            }
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("参考提示", fontWeight = FontWeight.SemiBold)
+                    Text("开口前给出参考英文，方便新手；关则只在说错时纠正", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Switch(checked = showRefHint, onCheckedChange = { model.setShowRefHint(it) })
             }
         }
         if (ttsConfigured && ttsVoices.isNotEmpty()) {

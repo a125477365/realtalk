@@ -68,6 +68,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val ttsCurrentVoice = MutableStateFlow("")
     val ttsConfigured = MutableStateFlow(false)
     val showSubtitles = MutableStateFlow(auth.showSubtitles)
+    val showRefHint = MutableStateFlow(auth.showRefHint)
     val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
     val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
@@ -637,6 +638,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.conversationPreference = v
     }
 
+    fun setShowRefHint(value: Boolean) {
+        showRefHint.value = value
+        auth.showRefHint = value
+    }
+
     fun setShowSubtitles(value: Boolean) {
         showSubtitles.value = value
         auth.showSubtitles = value
@@ -816,7 +822,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         state.nextLine?.let { next ->
             // 轮到用户：先显示中文提示
-            appendChat(ChatMessage.Sender.SYSTEM, "轮到你：${next.sourceText}")
+            appendChat(
+                ChatMessage.Sender.SYSTEM,
+                "轮到你：${next.sourceText}" +
+                    (if (showRefHint.value && next.english.isNotBlank()) "\n参考提示：${next.english}" else ""),
+            )
         }
 
         // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听

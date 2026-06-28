@@ -3390,9 +3390,9 @@ def format_roleplay_feedback(
     feedback = feedback.strip()
     correction = correction.strip()
     if accepted:
-        # 说对了：字幕显示的是用户自己的整理版，这里在指导区给出「参考说法」(正确/更自然的答案)供学习。
-        # 用「参考说法」前缀，最终评分汇总会据此排除它(不算待改进点)。
-        return f"参考说法：{correction}" if correction else ""
+        # 说对了：不回头展示上一句的参考，直接推进到下一句的「请用英文说」提示。
+        # (要不要在开口前看到参考英文，由客户端「参考提示」开关控制；说错了才纠正。)
+        return ""
     prefix = "先别急，我们把这一句说准。"
     feedback = prefix + feedback
     if correction and correction not in feedback:
@@ -3418,7 +3418,7 @@ def format_final_roleplay_review(
         if has_correction:
             return False
         # 纯正向确认模式（中/英文）
-        positive_starts = ("正确", "回答正确", "很好", "非常好", "不错", "说得好", "参考说法",
+        positive_starts = ("正确", "回答正确", "很好", "非常好", "不错", "说得好",
                            "good", "great", "nice", "well done", "perfect", "excellent")
         positive_contains = ("已继续", "继续保持")
         return t.startswith(positive_starts) or any(p in t for p in positive_contains)

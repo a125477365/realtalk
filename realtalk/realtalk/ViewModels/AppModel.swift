@@ -126,6 +126,8 @@ final class AppModel: ObservableObject {
     @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
+    // 参考提示：开口前在「请用英文说」下面同时给出参考英文，方便新手；关则只在说错时纠正里给
+    @Published var showRefHint = true
     @Published var isVoiceConversationActive = false
     /// 超时未答时 AI 给出的「可以这样说」英文提示，显示在沉浸式指导区（不再只进不可见的主聊天流）。
     @Published var practiceHintText: String?
@@ -1384,7 +1386,7 @@ final class AppModel: ObservableObject {
                 appendChat(.assistant, "我正在扮演 \(roleName(message.role))。请听语音回应。")
             }
             if let next = state.nextLine, next.index == (line?.index ?? -1) + 1 {
-                appendChat(.system, "轮到你：\(next.sourceText)")
+                appendChat(.system, "轮到你：\(next.sourceText)" + (showRefHint && next.english.isEmpty == false ? "\n参考提示：\(next.english)" : ""))
             }
         }
         if let next = state.nextLine, newAIMessages.isEmpty {

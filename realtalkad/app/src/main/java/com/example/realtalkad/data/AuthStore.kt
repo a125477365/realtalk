@@ -23,6 +23,10 @@ class AuthStore(context: Context) {
         get() = prefs.getBoolean("show_subtitles", true)
         set(value) = prefs.edit().putBoolean("show_subtitles", value).apply()
 
+    var showRefHint: Boolean
+        get() = prefs.getBoolean("show_ref_hint", true)
+        set(value) = prefs.edit().putBoolean("show_ref_hint", value).apply()
+
     // 指导方式偏好：ask / realtime / final（默认 ask=每次询问）。对话中不可切换。
     var guidancePreference: String
         get() = prefs.getString("guidance_pref", "ask") ?: "ask"
