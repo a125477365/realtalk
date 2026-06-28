@@ -45,16 +45,25 @@ def _ensure_voice(voice: str) -> tuple[str, str]:
     return onnx, cfg
 
 
+def _pick_voice(requested: str, text: str) -> str:
+    """Piper 单音色=单语种：中文文本（如指导解说）自动改用中文音色，否则用请求的（英文场景台词）。
+    避免英文音色读中文出乱码。中文音色名由 PIPER_ZH_VOICE 配置，默认 zh_CN-huayan-medium。"""
+    zh = sum(1 for c in text if "一" <= c <= "鿿")
+    if zh >= 2 and zh >= len(text) * 0.15:   # 文本里有相当比例中文
+        return os.getenv("PIPER_ZH_VOICE", "zh_CN-huayan-medium")
+    return requested
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("usage: tts_local.py <voice> <out_wav>  (text via stdin)", file=sys.stderr)
         return 2
-    voice = sys.argv[1].strip()
     out_path = sys.argv[2]
     text = sys.stdin.read().strip()
     if not text:
         print("empty text on stdin", file=sys.stderr)
         return 2
+    voice = _pick_voice(sys.argv[1].strip(), text)
 
     if not os.path.exists(PIPER_BIN):
         print(f"未找到 Piper 二进制（{PIPER_BIN}）：镜像需以 WITH_LOCAL_TTS=true 构建", file=sys.stderr)

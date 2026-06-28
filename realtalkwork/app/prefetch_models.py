@@ -37,9 +37,12 @@ def _prefetch_asr() -> None:
 def _prefetch_tts() -> None:
     if os.getenv("TTS_MODE", "cloud").lower() != "local":
         return
-    # 预拉所有【已配置音色】（TTS_VOICES，逗号分隔）；管理台新增的音色不在此列，会在用户首次选用时自动下载
+    # 预拉所有【已配置音色】（TTS_VOICES，逗号分隔）+ 中文音色（指导解说用，自动切换）
     voices_env = os.getenv("TTS_VOICES") or os.getenv("TTS_DEFAULT_VOICE", "en_US-lessac-medium")
     voices = [v.strip() for v in voices_env.split(",") if v.strip()]
+    zh = os.getenv("PIPER_ZH_VOICE", "zh_CN-huayan-medium")
+    if zh and zh not in voices:
+        voices.append(zh)
     base = os.getenv("PIPER_VOICES_BASE", "huggingface.co(官方)")
     try:
         from app.tts_local import _ensure_voice
