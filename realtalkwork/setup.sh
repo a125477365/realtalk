@@ -287,20 +287,22 @@ if $DEPLOY_BACKEND; then
     TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
     TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
+    # 音色：用户在 App 里从「可选音色清单」自选(自选优先)，后端只提供清单 + 兜底默认。
+    # 清单是【引擎相关】的(云端 OpenAI=alloy… / 本地 Piper=en_US-lessac-medium…)，App 拉 /tts/voices 获取，
+    # 故由后端按引擎给合理默认即可，无需在此逐个询问；需要增删可到管理台「系统设置 → 语音合成」。
     if [ "$TTS_CHOICE" = "1" ]; then
       ask "TTS Base URL" "https://api.openai.com/v1"; TTS_BASE="$REPLY_VALUE"
       ask_secret "TTS API Key"; TTS_KEY="$REPLY_VALUE"
       ask "TTS 模型名称" "tts-1"; TTS_MODEL_VAL="$REPLY_VALUE"
-      ask "可选音色（逗号分隔）" "alloy,echo,fable,onyx,nova,shimmer"; TTS_VOICES_VAL="$REPLY_VALUE"
-      ask "默认音色" "alloy"; TTS_DEFAULT_VOICE_VAL="$REPLY_VALUE"
+      # 云端清单/兜底默认用 OpenAI 标准音色（即上面 init 值）
     elif [ "$TTS_CHOICE" = "2" ]; then
-      note "将自动在镜像中安装 piper-tts（CPU）；音色模型首次合成自动下载到 ./data/whisper-models（与本地 ASR 共用卷）。"
-      note "RealTalk 朗读英文，默认英文音色；可填多个 Piper 音色名（逗号分隔），列表见 rhasspy/piper。"
+      note "将自动在镜像中安装 piper-tts（CPU）；音色模型启动时预拉到模型目录（与本地 ASR 共用卷）。"
       WITH_LOCAL_TTS=true
       TTS_MODE_VAL="local"; TTS_FORMAT_VAL="wav"
       TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
-      ask "可选 Piper 音色（逗号分隔）" "en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"; TTS_VOICES_VAL="$REPLY_VALUE"
-      ask "默认音色" "en_US-lessac-medium"; TTS_DEFAULT_VOICE_VAL="$REPLY_VALUE"
+      # 本地清单/兜底默认用一组英文 Piper 音色（管理台可增删；更多见 rhasspy/piper）
+      TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
+      TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium"
     fi
     ENV_LINES+=(
       "WITH_LOCAL_TTS=$WITH_LOCAL_TTS"
