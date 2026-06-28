@@ -1388,25 +1388,27 @@ final class AppModel: ObservableObject {
         // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听（避免退到主界面后又冒出对话/语音）
         guard conversationExited == false else { return }
 
-        guard newAIMessages.isEmpty == false else {
-            if let spokenPreface {
-                voice.speak(spokenPreface) { [weak self] in
-                    Task { @MainActor in
-                        await self?.listenForNextRoleplayTurn()
+        // 指导(spokenPreface)实时合成、不缓存(cache:false)；AI 台词走缓存(命中预生成,cache 默认 true)。
+        // 故分开念：先念指导，再念 AI 台词，最后聆听下一轮。
+        let aiTexts = newAIMessages.map(\.content)
+        if let spokenPreface {
+            voice.speak(spokenPreface, cache: false) { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if aiTexts.isEmpty {
+                        await self.listenForNextRoleplayTurn()
+                    } else {
+                        self.voice.speak(aiTexts) { [weak self] in
+                            Task { @MainActor in await self?.listenForNextRoleplayTurn() }
+                        }
                     }
                 }
-            } else {
-                Task { @MainActor in
-                    await listenForNextRoleplayTurn()
-                }
             }
-            return
-        }
-
-        let spoken = [spokenPreface].compactMap { $0 } + newAIMessages.map(\.content)
-        voice.speak(spoken) { [weak self] in
-            Task { @MainActor in
-                await self?.listenForNextRoleplayTurn()
+        } else if aiTexts.isEmpty {
+            Task { @MainActor in await listenForNextRoleplayTurn() }
+        } else {
+            voice.speak(aiTexts) { [weak self] in
+                Task { @MainActor in await self?.listenForNextRoleplayTurn() }
             }
         }
     }

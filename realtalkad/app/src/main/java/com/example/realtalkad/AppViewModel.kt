@@ -823,12 +823,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 沉浸式后端语音流：识别/朗读/抢话都在流里，不本地朗读/聆听
         if (drivenByStream) return
 
-        // 自动朗读 AI 台词为固定行为：始终朗读新台词（无内容时直接进入聆听）
-        val toSpeak = listOfNotNull(spokenPreface?.takeIf { it.isNotBlank() }) + newAiMessages.map { it.content }
-        if (toSpeak.isEmpty()) {
-            listenForNextTurn()
-        } else {
-            speakSequence(toSpeak, 0)
+        // 自动朗读 AI 台词为固定行为。指导(spokenPreface)实时合成、不缓存(cache=false)；
+        // AI 台词走缓存(命中预生成,cache 默认 true)。故先念指导、再念台词、最后聆听。
+        val preface = spokenPreface?.takeIf { it.isNotBlank() }
+        val aiTexts = newAiMessages.map { it.content }
+        when {
+            preface != null -> voice.speak(preface, cache = false) {
+                if (aiTexts.isEmpty()) listenForNextTurn() else speakSequence(aiTexts, 0)
+            }
+            aiTexts.isEmpty() -> listenForNextTurn()
+            else -> speakSequence(aiTexts, 0)
         }
     }
 
