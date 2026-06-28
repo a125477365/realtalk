@@ -350,10 +350,18 @@ if $DEPLOY_BACKEND; then
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
 
   # ---- 本地 ASR/TTS 模型目录（映射到容器 /app/models）----
-  note "本地 whisper(ASR) 与 Piper(TTS) 模型【首次使用时自动下载】到这（无需手动下载），可达数 GB，建议放数据盘；纯云端方式则用不到。"
-  note "若服务器访问 HuggingFace 受限：在 .env 加 HF_ENDPOINT=https://hf-mirror.com（whisper）与 PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main（Piper）走镜像站。"
+  note "本地 whisper(ASR) 与 Piper(TTS) 模型【容器启动时预拉】到这（下到宿主目录，重启即用、不再重复下载），可达数 GB，建议放数据盘；纯云端方式则用不到。"
   ask "本地 ASR/TTS 模型目录" "./data/whisper-models"
   ENV_LINES+=("WHISPER_MODEL_DIR=$REPLY_VALUE")
+
+  # ---- HuggingFace 镜像站（受限网络下载本地模型用）----
+  note "本地模型从 HuggingFace 下载。服务器直连 HF 受限（国内常见）就走镜像站 hf-mirror.com（全球可用）。"
+  ask "用 HuggingFace 镜像站下本地模型？(yes=hf-mirror.com / no=官方直连)" "yes"
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com" "PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main")
+  else
+    ENV_LINES+=("HF_ENDPOINT=" "PIPER_VOICES_BASE=")
+  fi
 
   # ---- 微信登录（高级，可选）----
   echo
@@ -531,14 +539,14 @@ if [ "$REPLY_VALUE" = "yes" ]; then
     else
       say "数据库初始化失败，请检查后重试：docker compose run --rm api python -m app.db_init"
     fi
-    say "等待 API 就绪…"
-    for _ in $(seq 1 30); do
+    say "等待 API 就绪…（选了本地 ASR/TTS 时，首次启动会预拉模型，可能需要几分钟）"
+    for _ in $(seq 1 90); do   # 最长约 3 分钟，给首次预拉本地模型留时间
       curl -fs "http://127.0.0.1:${API_PORT:-8000}/health" >/dev/null 2>&1 && break
       sleep 2
     done
     curl -fs "http://127.0.0.1:${API_PORT:-8000}/health" >/dev/null 2>&1 \
       && say "${GREEN}✔ API 已就绪${RESET}" \
-      || say "API 尚未就绪：docker compose logs -f api"
+      || say "API 尚未就绪（可能仍在下载本地模型）：docker compose logs -f api 查看进度"
   fi
 fi
 

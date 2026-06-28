@@ -87,7 +87,7 @@ kubectl apply -f admin-frontend.yaml -f web-frontend.yaml
 ## 4. （可选）本地 ASR / TTS：env 与模型持久化
 
 镜像**默认已带本地引擎**（第 0 步），用本地只需把 `realtalk-api-config` 的 mode 改为 local 加命令；
-**模型首次使用时自动下载**到容器内 `/app/models`（无需手动下载）。受限网络走镜像站：
+**模型在 Pod 启动时预拉**（entrypoint 调 `app.prefetch_models`，仅本地模式、缺失时下载）到 `/app/models`（无需手动下载）；已配 `startupProbe` 给首次下载留足时间，不会被 liveness 误杀。受限网络走镜像站：
 `HF_ENDPOINT=https://hf-mirror.com`（whisper）、`PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main`（Piper），加到 `realtalk-api-config` 即可。
 
 ```bash
