@@ -335,9 +335,10 @@ if $DEPLOY_BACKEND; then
   fi
   ENV_LINES+=("VOICE_NODE_ADDR=$VOICE_NODE_ADDR_VAL")
 
-  # ---- 录音上传/处理的本机数据目录（映射到容器 /app/uploads）----
-  note "高级会员上传的录音及转写中间文件存这里（语音服务器尤其占空间，建议放数据盘）。容器会自动建好并赋权。"
-  ask "录音上传数据目录" "./data/uploads"
+  # ---- 采集功能：上传的真实对话录音存放目录（映射到容器 /app/uploads）----
+  note "【采集】高级会员上传的真实对话录音存这里（转写后生成练习场景，3 天自动清理）；语音服务器尤其占空间，建议放数据盘。"
+  note "注：场景对练时说的话不存这里——内存即时转写评分后立即丢弃，无需配置目录。"
+  ask "采集录音上传目录" "./data/uploads"
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
 
   # ---- 微信登录（高级，可选）----
