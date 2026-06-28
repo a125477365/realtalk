@@ -21,30 +21,36 @@ def _prefetch_asr() -> None:
         return
     size = os.getenv("ASR_LOCAL_MODEL", "small")
     model_dir = os.getenv("ASR_LOCAL_MODEL_DIR", "/app/models")
+    hf = os.getenv("HF_ENDPOINT")
     try:
         from faster_whisper import WhisperModel
 
-        print(f"[prefetch] 预拉 whisper «{size}» → {model_dir}（首次较久，下到宿主卷后重启即用）…", flush=True)
+        print(
+            f"[prefetch] 预拉 whisper «{size}» → {model_dir}"
+            f"（HF_ENDPOINT={hf or '未设置→直连 huggingface.co(国内常因 API 限流/不可达而失败)'}）…",
+            flush=True,
+        )
         WhisperModel(size, device="cpu", compute_type="int8", download_root=model_dir)
         print("[prefetch] whisper 就绪", flush=True)
     except Exception as exc:  # noqa: BLE001 — 预拉失败不阻断启动
-        print(
-            f"[prefetch] 警告：whisper 预拉失败（{exc}）。首次使用时会再试；"
-            "受限网络请在 .env 设 HF_ENDPOINT=https://hf-mirror.com。",
-            flush=True,
-        )
+        hint = "" if hf else " ← 多半因未设 HF_ENDPOINT：在 .env 设 HF_ENDPOINT=https://hf-mirror.com 后重启即可。"
+        print(f"[prefetch] 警告：whisper 预拉失败（{exc}）。首次使用时会再试。{hint}", flush=True)
 
 
 def _prefetch_tts() -> None:
     if os.getenv("TTS_MODE", "cloud").lower() != "local":
         return
-    voice = os.getenv("TTS_DEFAULT_VOICE", "en_US-lessac-medium")
+    # 预拉所有【已配置音色】（TTS_VOICES，逗号分隔）；管理台新增的音色不在此列，会在用户首次选用时自动下载
+    voices_env = os.getenv("TTS_VOICES") or os.getenv("TTS_DEFAULT_VOICE", "en_US-lessac-medium")
+    voices = [v.strip() for v in voices_env.split(",") if v.strip()]
+    base = os.getenv("PIPER_VOICES_BASE", "huggingface.co(官方)")
     try:
         from app.tts_local import _ensure_voice
 
-        print(f"[prefetch] 预拉 Piper 音色 «{voice}» …", flush=True)
-        _ensure_voice(voice)
-        print("[prefetch] Piper 音色就绪", flush=True)
+        for v in voices:
+            print(f"[prefetch] 预拉 Piper 音色 «{v}»（源 {base}）…", flush=True)
+            _ensure_voice(v)
+        print(f"[prefetch] Piper 音色就绪（{len(voices)} 个）", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(
             f"[prefetch] 警告：Piper 音色预拉失败（{exc}）。首次合成时会再试；"
