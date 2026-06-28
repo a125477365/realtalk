@@ -33,7 +33,8 @@ spec:
         - name: wait-db-provisioned
           image: your-registry/realtalk-api:latest
           imagePullPolicy: IfNotPresent
-          command:
+          # 用 args 保留镜像 ENTRYPOINT(修正挂载卷属主+降权)，只替换 CMD
+          args:
             - python
             - -c
             - |

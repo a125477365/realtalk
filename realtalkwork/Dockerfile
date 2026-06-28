@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ffmpeg：高级会员大音频文件分段转写需要
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# ffmpeg：高级会员大音频文件分段转写需要；gosu：入口脚本修正挂载卷属主后降权运行
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg gosu \
     && rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system realtalk && adduser --system --ingroup realtalk realtalk
@@ -41,11 +41,15 @@ RUN if [ "$WITH_LOCAL_TTS" = "true" ]; then \
 COPY app ./app
 COPY docs ./docs
 COPY web-frontend ./web-frontend
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /app/uploads /app/models && chown -R realtalk:realtalk /app/uploads /app/models
 
-USER realtalk
+# 不在此处 USER realtalk：入口脚本以 root 启动→chown 挂载卷→gosu 降权到 realtalk 运行。
 EXPOSE 8000
 
-# WEB_CONCURRENCY 控制 worker 进程数（建议 = CPU 核数）
-CMD uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers ${WEB_CONCURRENCY:-4}
+# WEB_CONCURRENCY 控制 worker 进程数（建议 = CPU 核数）。CMD 作为参数传给入口脚本，
+# 用 sh -c 让 ${WEB_CONCURRENCY} 在降权后展开。
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers ${WEB_CONCURRENCY:-4}"]
