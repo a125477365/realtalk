@@ -953,13 +953,14 @@ def _enforce_user_rate(user_id: str, name: str, limit: int, window: int = 60) ->
 @app.get("/tts/speak")
 async def tts_speak(
     text: str = Query(..., min_length=1, max_length=600),
+    cache: bool = Query(default=True),  # 指导性内容传 cache=false（不入 Redis，太杂且不复用）
     user: UserOut = Depends(current_user),
 ) -> Response:
     """用用户选定的音色朗读一段文本（练习时播放 AI 台词）。"""
     _enforce_user_rate(user.id, "tts", settings.tts_user_rate_per_min)
     voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
     try:
-        audio, content_type = await voice_io.synthesize(text, voice)
+        audio, content_type = await voice_io.synthesize(text, voice, use_cache=cache)
     except voice_io.TTSOverloaded as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     return Response(content=audio, media_type=content_type)

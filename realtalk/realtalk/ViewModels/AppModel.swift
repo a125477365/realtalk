@@ -236,9 +236,9 @@ final class AppModel: ObservableObject {
             }
         }
         // AI 台词改用后端 TTS（可选音色、口音更自然）；后端不可用时 VoicePromptPlayer 自动回退本机合成
-        voice.audioProvider = { [weak self] text in
+        voice.audioProvider = { [weak self] text, cache in
             guard let self else { return nil }
-            return await self.fetchTTSAudio(text)
+            return await self.fetchTTSAudio(text, cache: cache)
         }
         // 沉浸式后端语音流（WS）：整段对话由流驱动，结果回来直接刷新对练状态
         stream.onResultState = { [weak self] data in
@@ -1106,9 +1106,9 @@ final class AppModel: ObservableObject {
     }
 
     /// 供 VoicePromptPlayer 拉取后端 TTS 音频（主线程隔离，避免 actor 问题）。
-    func fetchTTSAudio(_ text: String) async -> Data? {
+    func fetchTTSAudio(_ text: String, cache: Bool = true) async -> Data? {
         guard let token = auth.token else { return nil }
-        return try? await api.ttsSpeak(text: text, token: token)
+        return try? await api.ttsSpeak(text: text, cache: cache, token: token)
     }
 
     /// 沉浸式是否走后端语音流（WebSocket：流式 + 抢话打断）。
@@ -1180,7 +1180,7 @@ final class AppModel: ObservableObject {
             if let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
                feedback.isEmpty == false {
                 appendChat(.assistant, feedback)
-                voice.speak(feedback)
+                voice.speak(feedback, cache: false)   // 指导内容不入 Redis
             }
         } catch {
             presentFailure(error.localizedDescription, title: "评分获取失败")

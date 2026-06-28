@@ -273,9 +273,12 @@ final class APIClient {
     }
 
     /// 后端 TTS 朗读一段文本（用用户选定音色），返回音频数据供播放。
-    func ttsSpeak(text: String, token: String) async throws -> Data {
+    func ttsSpeak(text: String, cache: Bool = true, token: String) async throws -> Data {
         var comps = URLComponents(url: url(for: "/tts/speak"), resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "text", value: text)]
+        comps?.queryItems = [
+            URLQueryItem(name: "text", value: text),
+            URLQueryItem(name: "cache", value: cache ? "true" : "false"),
+        ]
         guard let u = comps?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: u)
         request.httpMethod = "GET"

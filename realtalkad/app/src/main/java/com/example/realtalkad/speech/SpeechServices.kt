@@ -197,8 +197,8 @@ class VoicePlayer(private val context: Context) {
     var onStateChange: ((Boolean) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
 
-    /** 由 AppViewModel 注入：给定文本返回后端合成音频（调 /tts/speak）。为 null/返回 null 时回退本机 TTS。 */
-    var audioProvider: (suspend (String) -> ByteArray?)? = null
+    /** 由 AppViewModel 注入：给定(文本, 是否走缓存)返回后端合成音频（调 /tts/speak）。指导内容传 cache=false。 */
+    var audioProvider: (suspend (String, Boolean) -> ByteArray?)? = null
     var scope: CoroutineScope? = null
 
     private var pendingCompletion: (() -> Unit)? = null
@@ -226,7 +226,7 @@ class VoicePlayer(private val context: Context) {
         })
     }
 
-    fun speak(text: String, completion: (() -> Unit)? = null) {
+    fun speak(text: String, cache: Boolean = true, completion: (() -> Unit)? = null) {
         if (text.isBlank()) { completion?.invoke(); return }
         stopPlayback()
         val provider = audioProvider
@@ -235,7 +235,7 @@ class VoicePlayer(private val context: Context) {
             isSpeaking = true
             onStateChange?.invoke(true)
             fetchJob = sc.launch {
-                val bytes = runCatching { provider(text) }.getOrNull()
+                val bytes = runCatching { provider(text, cache) }.getOrNull()
                 if (bytes != null && playBytes(bytes, completion)) return@launch
                 withContext(Dispatchers.Main) { speakTts(text, completion) }   // 后端音频不可用 → 本机兜底
             }

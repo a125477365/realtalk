@@ -165,9 +165,9 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     }
 
     /** 后端 TTS 朗读一段文本（用用户选定音色），返回音频字节供播放。 */
-    suspend fun ttsSpeak(text: String, token: String): ByteArray = withContext(Dispatchers.IO) {
+    suspend fun ttsSpeak(text: String, token: String, cache: Boolean = true): ByteArray = withContext(Dispatchers.IO) {
         val q = java.net.URLEncoder.encode(text, "UTF-8")
-        val req = Request.Builder().url(url("/tts/speak?text=$q"))
+        val req = Request.Builder().url(url("/tts/speak?text=$q&cache=$cache"))
             .header("Authorization", "Bearer $token").get().build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw ApiException("语音合成失败 HTTP ${resp.code}")

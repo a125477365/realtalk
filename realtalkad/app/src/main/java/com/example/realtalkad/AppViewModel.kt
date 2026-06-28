@@ -131,7 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         voice.onLevel = { aiAudioLevel.value = it }
         // AI 台词改用后端 TTS（可选音色）；后端不可用 VoicePlayer 自动回退本机 TTS
         voice.scope = viewModelScope
-        voice.audioProvider = { text -> auth.token?.let { t -> runCatching { api.ttsSpeak(text, t) }.getOrNull() } }
+        voice.audioProvider = { text, cache -> auth.token?.let { t -> runCatching { api.ttsSpeak(text, t, cache) }.getOrNull() } }
         // 沉浸式后端语音流（WS）：复用现有音圈电平绑定，结果回来直接刷新对练状态
         stream.onUserLevel = { practiceAudioLevel.value = it }
         stream.onAiLevel = { aiAudioLevel.value = it }
@@ -616,7 +616,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     roleplayState.value = state
                     state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
                         appendChat(ChatMessage.Sender.ASSISTANT, it)
-                        voice.speak(it) {}
+                        voice.speak(it, cache = false) {}   // 指导内容不入 Redis
                     }
                 }
                 .onFailure { presentFailure(it.message, title = "评分获取失败") }
