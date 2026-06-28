@@ -335,6 +335,11 @@ if $DEPLOY_BACKEND; then
   fi
   ENV_LINES+=("VOICE_NODE_ADDR=$VOICE_NODE_ADDR_VAL")
 
+  # ---- 录音上传/处理的本机数据目录（映射到容器 /app/uploads）----
+  note "高级会员上传的录音及转写中间文件存这里（语音服务器尤其占空间，建议放数据盘）。容器会自动建好并赋权。"
+  ask "录音上传数据目录" "./data/uploads"
+  ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
+
   # ---- 微信登录（高级，可选）----
   echo
   note "微信登录：默认开发模拟模式（任意设备直接登录，便于联调）。"
@@ -439,7 +444,6 @@ if $DEPLOY_BACKEND; then
   EMAIL_DEV="true"; [ -n "$SMTP_HOST" ] && EMAIL_DEV="false"
   ENV_LINES+=(
     "REALTALK_REGION=prod"
-    "UPLOAD_DATA_DIR=./data/uploads"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"
