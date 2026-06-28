@@ -350,7 +350,8 @@ if $DEPLOY_BACKEND; then
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
 
   # ---- 本地 ASR/TTS 模型目录（映射到容器 /app/models）----
-  note "本地 whisper(ASR) 与 Piper(TTS) 模型首次使用时下载到这，可达数 GB，建议放数据盘；纯云端方式则用不到。"
+  note "本地 whisper(ASR) 与 Piper(TTS) 模型【首次使用时自动下载】到这（无需手动下载），可达数 GB，建议放数据盘；纯云端方式则用不到。"
+  note "若服务器访问 HuggingFace 受限：在 .env 加 HF_ENDPOINT=https://hf-mirror.com（whisper）与 PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main（Piper）走镜像站。"
   ask "本地 ASR/TTS 模型目录" "./data/whisper-models"
   ENV_LINES+=("WHISPER_MODEL_DIR=$REPLY_VALUE")
 

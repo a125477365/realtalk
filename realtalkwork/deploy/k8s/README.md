@@ -59,12 +59,19 @@ kubectl create secret generic realtalk-api-secret \
 ```bash
 kubectl create configmap realtalk-api-config \
   --from-literal=REALTALK_REGION='prod' \
+  --from-literal=ASR_MODE='cloud' --from-literal=TTS_MODE='cloud' \
+  `# —— 8 个联调旁路开关(对应 setup.sh「部署模式」)：生产全 false；本地联调可全 true ——` \
   --from-literal=WECHAT_AUTH_DEV_MODE='false' \
   --from-literal=PAYMENT_DEV_AUTO_CONFIRM='false' \
-  --from-literal=APPLE_IAP_DEV_BYPASS='false' \
   --from-literal=EMAIL_DEV_MODE='false' \
-  --from-literal=ASR_MODE='cloud' --from-literal=TTS_MODE='cloud'
+  --from-literal=APPLE_IAP_DEV_BYPASS='false' \
+  --from-literal=APPLE_USE_SANDBOX='false' \
+  --from-literal=ALIPAY_SANDBOX='false' \
+  --from-literal=ASR_DEV_MODE='false' \
+  --from-literal=TTS_DEV_MODE='false'
 ```
+> 这 8 个就是全部「联调旁路」开关，与 docker-compose 的 `setup.sh「部署模式 prod/dev」`等价：
+> **生产全 `false`**（真实登录/验签/内购校验、正式端点、未配置即报错）；本地联调全 `true`（任意登录、自动到账、内购旁路、沙箱、ASR/TTS 占位）。
 
 > 凭据初值放 Secret 还是只在管理台填，二选一即可；无论哪种，运行期都只读数据库（单一来源）。
 
@@ -79,7 +86,11 @@ kubectl apply -f admin-frontend.yaml -f web-frontend.yaml
 
 ## 4. （可选）本地 ASR / TTS：env 与模型持久化
 
-仅当第 0 步构建镜像带了 `WITH_LOCAL_ASR/TTS=true` 时才用本地。把 `realtalk-api-config` 的 mode 改为 local 并加命令：
+镜像**默认已带本地引擎**（第 0 步），用本地只需把 `realtalk-api-config` 的 mode 改为 local 加命令；
+**模型首次使用时自动下载**到容器内 `/app/models`（无需手动下载）。受限网络走镜像站：
+`HF_ENDPOINT=https://hf-mirror.com`（whisper）、`PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main`（Piper），加到 `realtalk-api-config` 即可。
+
+```bash
 ```bash
 # 本地 ASR（faster-whisper）
 ASR_MODE=local
@@ -111,6 +122,13 @@ TTS_DEFAULT_VOICE=en_US-lessac-medium
       mountPath: /app/models
   ```
 - **最稳：把模型烤进镜像**：自定义 Dockerfile 在构建期预下载模型，Pod 启动即用、无需联网、无需挂卷。
+
+## 5. （采集功能）/app/uploads 录音目录
+
+仅当本集群启用「采集」（用户上传真实对话录音→转写生成场景）时需要。采集文件按 MD5 路由到处理它的节点，
+多副本下要让处理节点都能读到同一份 → 给 `/app/uploads` 挂一个 `ReadWriteMany` PVC（同 `/app/models` 的写法，
+`mountPath: /app/uploads`）。**对练语音不落盘**（内存即转即弃），无需为它配卷。
+> 容器入口脚本会自动把 `/app/uploads`、`/app/models` 属主修正给运行用户，PVC 不必预设属主。
 
 ## 为什么这样多副本才安全
 3 个 API 副本共享同一个已供给的数据库：JWT 密钥、AI/支付/微信/SMTP 凭据、会话策略全在库里，
