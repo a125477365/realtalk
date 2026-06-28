@@ -2588,8 +2588,9 @@ async def roleplay_message(
             session.session_id,
             speaker="user",
             role=session.selected_role,
-            # 字幕显示场景里已有的正确、带标点的英文（而非用户语音识别原文），中文用场景原句
-            content=target_line.english,
+            # 字幕显示「用户实际想表达」的整理版英文（去口头语/重复后），而非场景正确答案；
+            # 正确答案只在指导区(correction/feedback)展示。中文仍用本句意图(场景原句)。
+            content=(evaluation.user_said or request.message).strip() or target_line.english,
             translation=target_line.source_text,
             feedback=(stored_feedback if final_guidance else feedback or None),
         )
@@ -3388,9 +3389,9 @@ def format_roleplay_feedback(
     feedback = feedback.strip()
     correction = correction.strip()
     if accepted:
-        # 说对了不再返回啰嗦的确认语：进入下一句/给出评分本身就是反馈，
-        # 也避免它被当成「待翻译的中文提示」显示在指导区或混进最终评分的「优先改」。
-        return ""
+        # 说对了：字幕显示的是用户自己的整理版，这里在指导区给出「参考说法」(正确/更自然的答案)供学习。
+        # 用「参考说法」前缀，最终评分汇总会据此排除它(不算待改进点)。
+        return f"参考说法：{correction}" if correction else ""
     prefix = "先别急，我们把这一句说准。"
     feedback = prefix + feedback
     if correction and correction not in feedback:
@@ -3416,7 +3417,7 @@ def format_final_roleplay_review(
         if has_correction:
             return False
         # 纯正向确认模式（中/英文）
-        positive_starts = ("正确", "回答正确", "很好", "非常好", "不错", "说得好",
+        positive_starts = ("正确", "回答正确", "很好", "非常好", "不错", "说得好", "参考说法",
                            "good", "great", "nice", "well done", "perfect", "excellent")
         positive_contains = ("已继续", "继续保持")
         return t.startswith(positive_starts) or any(p in t for p in positive_contains)

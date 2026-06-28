@@ -563,9 +563,11 @@ async def _evaluate_roleplay_turn_with_model(
   "score": 0.0到1.0之间的小数,
   "accepted": true/false,
   "feedback": "中文短反馈，包含最关键错误或优点",
-  "correction": "更自然、可直接跟读的英文句子"
+  "correction": "更自然、可直接跟读的英文句子",
+  "user_said": "把用户识别文本整理成他【实际想表达】的简洁英文：去掉口头语/语气词/卡顿重复/无意义内容、补全大小写标点，保留用户自己的说法与用词，不要强行改写成目标英文或 correction"
 }}
-要求 feedback 不超过 60 个中文字符；correction 优先贴近目标英文，但可更地道。
+要求 feedback 不超过 60 个中文字符；correction 优先贴近目标英文，但可更地道；
+user_said 是「用户自己说的整理版」（用于字幕），与 correction（理想答案）不同，不得直接照搬 correction。
 """
     content = await _chat_completion(
         [
@@ -578,7 +580,7 @@ async def _evaluate_roleplay_turn_with_model(
         config=config,
     )
     evaluation = RoleplayEvaluation.model_validate(_extract_json(content))
-    return _repair_roleplay_evaluation(evaluation, target_line)
+    return _repair_roleplay_evaluation(evaluation, target_line, user_text)
 
 
 def _extract_json(content: str) -> dict[str, Any]:
@@ -730,18 +732,24 @@ def _fallback_roleplay_evaluation(user_text: str, target_line: SceneLine) -> Rol
         accepted=score >= 0.45,
         feedback=feedback,
         correction=target_line.english,
+        user_said=user_text.strip(),
     )
 
 
-def _repair_roleplay_evaluation(evaluation: RoleplayEvaluation, target_line: SceneLine) -> RoleplayEvaluation:
+def _repair_roleplay_evaluation(
+    evaluation: RoleplayEvaluation, target_line: SceneLine, user_text: str = ""
+) -> RoleplayEvaluation:
     score = min(max(float(evaluation.score), 0), 1)
     feedback = evaluation.feedback.strip() or _fallback_roleplay_evaluation("", target_line).feedback
     correction = evaluation.correction.strip() or target_line.english
+    # 字幕用「用户实际想表达」的整理版；模型没给则退回用户识别原文（仍是用户自己说的，不用正确答案）
+    user_said = (evaluation.user_said or "").strip() or user_text.strip()
     return RoleplayEvaluation(
         score=round(score, 3),
         accepted=bool(evaluation.accepted),
         feedback=feedback,
         correction=correction,
+        user_said=user_said,
     )
 
 

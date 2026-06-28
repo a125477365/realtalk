@@ -240,6 +240,9 @@ class RoleplayEvaluation(BaseModel):
     feedback: str
     correction: str
     accepted: bool = True
+    # 用户本句「实际想表达」的简洁英文（去口头语/重复/无意义内容后），用于字幕显示——
+    # 不是场景正确答案(correction 才是)，而是用户自己表达的整理版。
+    user_said: str = ""
 
 
 class RoleplayMessageOut(BaseModel):
