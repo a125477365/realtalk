@@ -22,7 +22,9 @@ RUN pip install python-multipart
 # 想要更小的「纯云端」镜像可在构建时传 --build-arg WITH_LOCAL_ASR=false / WITH_LOCAL_TTS=false。
 # 模型文件首次使用时才下载到 /app/models（不烤进镜像；建议挂持久卷）。
 ARG WITH_LOCAL_ASR=true
-RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3; fi
+# requests 是 faster-whisper(经 huggingface_hub)的运行依赖；slim 镜像不一定带，显式装上，
+# 否则 import faster_whisper 报 No module named 'requests' → 本地转写 500。
+RUN if [ "$WITH_LOCAL_ASR" = "true" ]; then pip install faster-whisper==1.0.3 requests; fi
 
 # 用 Piper 官方独立二进制（pip 的 piper-tts 依赖 piper-phonemize，无 py3.12 wheel）。
 # 二进制小(~20MB)、自带 espeak-ng 数据;音色模型与 whisper 一样在运行期下载到 /app/models。

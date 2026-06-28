@@ -62,7 +62,10 @@ def _cache_get(key: str) -> bytes | None:
         return None
     try:
         val = r.get(key)  # capture_store 客户端 decode_responses=True → 取回 base64 字符串
-        return base64.b64decode(val) if val else None
+        if not val:
+            return None
+        r.expire(key, settings.tts_cache_ttl_seconds)  # 滑动过期：被取用就续期
+        return base64.b64decode(val)
     except Exception:  # noqa: BLE001 — 缓存失败不影响主流程
         return None
 

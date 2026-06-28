@@ -106,10 +106,9 @@ class Settings:
     tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND", "python /app/app/tts_local.py {voice} {out}")
     tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
     tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
-    # 防滥用：TTS 结果缓存 TTL、合成并发上限、贵接口每用户每分钟上限
-    # 仅手工点读(HTTP)走缓存(沉浸式 WS 不缓存)；app 生成后即播、取不到就跳过，
-    # 缓存只是「跨服务器重试」的短暂兜底 → 默认 5 分钟即过期，不让动态语音堆在 Redis。
-    tts_cache_ttl_seconds: int = int(os.getenv("TTS_CACHE_TTL_SECONDS", "300"))
+    # TTS 结果缓存：作为「提前生成下一句」的暂存。滑动过期——每次被取用就续期，
+    # 默认 30 分钟内没再被用到就删除，下次重新合成。合成并发上限、每用户每分钟上限同段。
+    tts_cache_ttl_seconds: int = int(os.getenv("TTS_CACHE_TTL_SECONDS", "1800"))
     tts_max_concurrency: int = int(os.getenv("TTS_MAX_CONCURRENCY", "8"))
     tts_user_rate_per_min: int = int(os.getenv("TTS_USER_RATE_PER_MIN", "30"))
     audio_user_rate_per_min: int = int(os.getenv("AUDIO_USER_RATE_PER_MIN", "30"))

@@ -830,6 +830,9 @@ async def _generate_preset_scenario_with_model(
 请围绕该主题虚构大约 16 句（14-20 句之间）的自然口语对话，输出严格 JSON。（控制篇幅，便于快速生成；运维可在管理台继续增补。）
 index 从 0 起连续编号；roles 至少 2 个，且每句的 target_role 都必须是 roles 中存在的 id；
 roles 中至少要有 2 个 is_user_candidate=true 的角色，供用户自由选择扮演。
+【角色定位·重要】self（我）必须是本主题里「主动发起/当事的那一方」，即主题动作的执行者；counterpart（对方）是与其互动的服务/应答方。
+例如「购买汉堡」self=顾客(买方)、counterpart=店员；「面试」self=应聘者、counterpart=面试官；「问路」self=问路人、counterpart=路人。
+切勿把 self 设成服务提供方/卖方；通常第 0 句由 self（我）主动发起。
 source_text 为口语化中文，english 为对应的地道英文。
 
 JSON schema:

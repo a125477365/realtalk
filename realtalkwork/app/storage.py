@@ -1533,6 +1533,8 @@ class Database:
                 conn.execute(
                     select(billing_ledger)
                     .where(billing_ledger.c.user_id == user_id)
+                    # 账单明细只列与「支付/计费」相关的流水；注册欢迎条(welcome,无支付)不显示
+                    .where(billing_ledger.c.type != "welcome")
                     .order_by(billing_ledger.c.created_at.desc())
                     .limit(limit)
                 )
@@ -2663,7 +2665,8 @@ class Database:
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def admin_list_users(self, limit: int = 100, query: str | None = None) -> list[dict[str, Any]]:
-        stmt = select(users).order_by(users.c.created_at.desc()).limit(limit)
+        # 排除预置场景归属的系统占位用户（__preset_system__），它不是真实用户
+        stmt = select(users).where(users.c.id != self.PRESET_OWNER_ID).order_by(users.c.created_at.desc()).limit(limit)
         if query:
             pattern = f"%{query.strip()}%"
             stmt = stmt.where(
