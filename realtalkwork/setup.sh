@@ -197,6 +197,16 @@ if $DEPLOY_BACKEND; then
   ADMIN_PW_VALUE="$REPLY_VALUE"
   ENV_LINES+=("ADMIN_PASSWORD=$ADMIN_PW_VALUE")
 
+  # ---- 部署模式：一键决定所有「联调旁路」开关 ----
+  echo
+  note "部署模式（决定下列每节点联调开关，运行期只读 .env）："
+  note "  prod 生产：关闭全部旁路——微信需真实登录、支付须验签到账、Apple 内购真校验(走正式端点)、"
+  note "             ASR/TTS 未配置即报错、邮件按 SMTP 真发。正式上线必须 prod。"
+  note "  dev 联调：任意设备直接登录、支付下单自动到账、内购校验旁路、ASR/TTS 未配置返回占位、"
+  note "             邮件不外发、Apple/支付宝走沙箱。便于本地联调，切勿用于线上。"
+  ask "部署模式 (prod / dev)" "prod"
+  DEV=false; [ "$REPLY_VALUE" = "dev" ] && DEV=true
+
   # 以下「AI 模型 / 实时语音」属于保存在数据库（app_settings）的参数：
   # 仅在新建数据库时询问并写入（首次启动会落库）；连接已有库时库里已有，跳过询问，可在管理台改。
   if $FRESH_DB; then
@@ -241,7 +251,7 @@ if $DEPLOY_BACKEND; then
     WITH_LOCAL_ASR=true   # 本地引擎随镜像默认装好（与 API 同容器）；菜单只决定用云端还是本地
     ASR_MODE_VAL="cloud"; ASR_BASE=""; ASR_KEY=""; ASR_MODEL_VAL="whisper-1"
     # 命令始终写入（内置脚本，引擎默认随镜像装好）→ 以后切 ASR_MODE=local 即生效，无需重建/重配
-    ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="false"
+    ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="$DEV"
     if [ "$ASR_CHOICE" = "1" ]; then
       ask "ASR Base URL" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
       ask_secret "ASR API Key"; ASR_KEY="$REPLY_VALUE"
@@ -254,7 +264,7 @@ if $DEPLOY_BACKEND; then
       ASR_MODE_VAL="local"
       ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"
     else
-      ASR_DEV="false"
+      ASR_DEV="$DEV"
     fi
     ENV_LINES+=(
       "WITH_LOCAL_ASR=$WITH_LOCAL_ASR"
@@ -294,7 +304,7 @@ if $DEPLOY_BACKEND; then
     fi
     ENV_LINES+=(
       "WITH_LOCAL_TTS=$WITH_LOCAL_TTS"
-      "TTS_MODE=$TTS_MODE_VAL" "TTS_FORMAT=$TTS_FORMAT_VAL" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND=$TTS_LOCAL_CMD"
+      "TTS_MODE=$TTS_MODE_VAL" "TTS_FORMAT=$TTS_FORMAT_VAL" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND=$TTS_LOCAL_CMD"
       "TTS_BASE_URL=$TTS_BASE" "TTS_API_KEY=$TTS_KEY" "TTS_MODEL=$TTS_MODEL_VAL"
       "TTS_VOICES=$TTS_VOICES_VAL" "TTS_DEFAULT_VOICE=$TTS_DEFAULT_VOICE_VAL"
     )
@@ -310,7 +320,7 @@ if $DEPLOY_BACKEND; then
       "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=small"
       "ASR_DEV_MODE=false"
       "WITH_LOCAL_TTS=true"
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=false" "TTS_LOCAL_COMMAND=python /app/app/tts_local.py {voice} {out}"
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND=python /app/app/tts_local.py {voice} {out}"
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
     )
@@ -347,7 +357,7 @@ if $DEPLOY_BACKEND; then
   # ---- 微信登录（高级，可选）----
   echo
   note "微信登录：默认开发模拟模式（任意设备直接登录，便于联调）。"
-  ask "现在配置正式微信登录凭据吗？(yes/no)" "no"
+  if $DEV; then REPLY_VALUE="no"; else ask "现在配置正式微信登录凭据吗？(yes/no)" "no"; fi
   if [ "$REPLY_VALUE" = "yes" ]; then
     ask "移动应用 AppID（微信开放平台 · 移动应用）" ""
     WX_APPID="$REPLY_VALUE"
@@ -372,7 +382,7 @@ if $DEPLOY_BACKEND; then
   # ---- 支付（高级，可选）----
   echo
   note "支付：默认开发模式（下单后可手动确认到账，便于联调）。正式收款需商户资质。"
-  ask "现在配置正式支付参数吗？(yes/no)" "no"
+  if $DEV; then REPLY_VALUE="no"; else ask "现在配置正式支付参数吗？(yes/no)" "no"; fi
   PAY_DEV_CONFIRM=true
   WX_MCHID=""; WX_APIKEY=""; WX_NOTIFY=""; WX_SERIAL=""; WX_CERT=""; WX_MERCH_CERT=""; WX_MERCH_KEY=""
   ALI_APPID=""; ALI_PRIV=""; ALI_PUB=""; ALI_NOTIFY=""
@@ -422,7 +432,7 @@ if $DEPLOY_BACKEND; then
   note "以下凭据多活后端共用，装库时入库（DB 为唯一来源）。可全部留空，稍后在管理台「集成凭据」填。"
   SMTP_HOST=""; SMTP_USER=""; SMTP_PW=""; SMTP_FROM_VAL="RealTalk <noreply@realtalk.local>"
   AP_PRODUCT="realtalk.pro.monthly"; AP_BUNDLE="com.realtalk.app"; AP_ISSUER=""; AP_KEYID=""; AP_PRIV=""
-  ask "现在配置集成凭据（邮件 SMTP / Apple 内购）吗？(yes/no)" "no"
+  if $DEV; then REPLY_VALUE="no"; else ask "现在配置集成凭据（邮件 SMTP / Apple 内购）吗？(yes/no)" "no"; fi
   if [ "$REPLY_VALUE" = "yes" ]; then
     ask "配置邮件 SMTP？(yes/no)" "no"
     if [ "$REPLY_VALUE" = "yes" ]; then
@@ -451,8 +461,10 @@ if $DEPLOY_BACKEND; then
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"
-    "# 安全：生产默认关闭内购校验旁路（接 Apple 内购前保持 false）"
-    "APPLE_IAP_DEV_BYPASS=false"
+    "# —— 联调旁路开关：随上面「部署模式」prod=false / dev=true（运行期只读 .env）——"
+    "APPLE_IAP_DEV_BYPASS=$DEV"
+    "APPLE_USE_SANDBOX=$DEV"
+    "ALIPAY_SANDBOX=$DEV"
     "# 邮箱注册默认关闭，仅微信认证；配了 SMTP 自动关开发模式以真正发信"
     "EMAIL_AUTH_ENABLED=false"
     "EMAIL_DEV_MODE=$EMAIL_DEV"
