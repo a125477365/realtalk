@@ -110,7 +110,9 @@ def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path) -> str:
     cmd = template.replace("{input}", str(path)).replace("{dir}", str(workdir))
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=settings.audio_max_seconds + 600)
     if proc.returncode != 0:
-        raise RuntimeError(f"本地转写命令失败（{proc.returncode}）：{(proc.stderr or proc.stdout)[:300]}")
+        # 取 stderr 末尾：Python 回溯的真正错误在最后，开头常是 HF 下载告警等噪音
+        detail = (proc.stderr or proc.stdout or "").strip()[-800:]
+        raise RuntimeError(f"本地转写命令失败（{proc.returncode}）：{detail}")
     text = proc.stdout.strip()
     if text:
         return text

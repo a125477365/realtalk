@@ -2657,7 +2657,13 @@ async def roleplay_message_audio(
     audio = await file.read()
     if not audio:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="录音为空")
-    recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference)).strip()
+    try:
+        recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference)).strip()
+    except Exception as exc:  # noqa: BLE001 — ASR 故障(如本地模型未就绪)返回可读 503，不要 500
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"语音识别暂时不可用：{str(exc)[-160:]}",
+        ) from exc
     if not recognized:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="没听清，请再说一次")
     gm = "final" if guidance_mode == "final" else "realtime"
@@ -2883,7 +2889,7 @@ async def roleplay_stream(
                     audio, suffix=data.get("format", ".m4a"), reference_text=reference
                 )).strip()
             except Exception as exc:  # noqa: BLE001
-                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[:120]}"})
+                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[-200:]}"})
                 continue
             if not recognized:
                 await _sj({"type": "result", "accepted": False, "recognized_text": "",
