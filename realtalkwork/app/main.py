@@ -3421,15 +3421,16 @@ def format_final_roleplay_review(
         positive_contains = ("已继续", "继续保持")
         return t.startswith(positive_starts) or any(p in t for p in positive_contains)
 
-    weak_points = [
+    # 结束后一次性汇总【全部】待改进点（不再截断到 3 条），逐句去重保序
+    weak_points = list(dict.fromkeys(
         fb
         for message in user_messages
         if (fb := getattr(message, "feedback", "") or "") and not _is_positive_ack(fb)
-    ][:3]
+    ))
     if not weak_points:
         return f"最终评分 {score}/100。整体表达能完成交流，接下来重点练自然停顿和更口语的连接词。"
     joined = "\n".join(f"- {point}" for point in weak_points)
-    return f"最终评分 {score}/100。本轮优先改这几处：\n{joined}"
+    return f"最终评分 {score}/100。本轮共 {len(weak_points)} 处可改进：\n{joined}"
 
 
 async def _cleanup_loop() -> None:

@@ -528,7 +528,6 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
 @Composable
 private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val showSubtitles by model.showSubtitles.collectAsState()
-    val continuousVoice by model.continuousVoice.collectAsState()
     val guidancePref by model.guidancePreference.collectAsState()
     val conversationPref by model.conversationPreference.collectAsState()
     val user by model.user.collectAsState()
@@ -581,15 +580,6 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                         }
                     }
                 }
-            }
-        }
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("连续语音对话", fontWeight = FontWeight.SemiBold)
-                    Text("一句结束后自动继续听你说下一句", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
-                }
-                Switch(checked = continuousVoice, onCheckedChange = { model.setContinuousVoice(it) })
             }
         }
         item {

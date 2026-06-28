@@ -39,7 +39,6 @@ struct SettingsView: View {
                             Task { await model.setTtsVoice(newValue) }
                         }
                     }
-                    Toggle("连续语音对话", isOn: $model.continuousVoiceMode)
                     Slider(value: $model.fontScale, in: 0.85...1.35, step: 0.05) {
                         Text("字体大小")
                     } minimumValueLabel: {

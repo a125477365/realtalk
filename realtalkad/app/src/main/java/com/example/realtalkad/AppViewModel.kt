@@ -75,7 +75,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val pendingPractice = MutableStateFlow<Triple<ScenarioSummary, String, Boolean>?>(null) // (场景, 角色, 是否继续上次)；非空时弹「对话前询问」
     val showVoiceLLM = MutableStateFlow(false)                          // 控制实时语音沉浸式界面呈现
     val fontScale = MutableStateFlow(auth.fontScale)
-    val continuousVoice = MutableStateFlow(auth.continuousVoice)
     val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
     // 多个自动采集时段（"HH:mm" 起止对）
     val captureWindows = MutableStateFlow(parseCaptureWindows(auth.captureWindows))
@@ -648,11 +647,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.fontScale = normalized
     }
 
-    fun setContinuousVoice(value: Boolean) {
-        continuousVoice.value = value
-        auth.continuousVoice = value
-    }
-
     fun setAutoCaptureEnabled(value: Boolean) {
         autoCaptureEnabled.value = value
         auth.autoCaptureEnabled = value
@@ -847,7 +841,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!isVoiceActive.value) return
         // 手工触发式：不自动开麦，等用户长按说话
         if (conversationMode.value != "immersive") return
-        if (!continuousVoice.value) return
         val next = roleplay?.nextLine ?: return
         if (roleplay?.completed != false) return
         practice.expectedPhrases = listOf(next.english)   // 用目标台词偏置识别，提升转写准确度

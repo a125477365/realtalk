@@ -126,7 +126,6 @@ final class AppModel: ObservableObject {
     @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
-    @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
     /// 超时未答时 AI 给出的「可以这样说」英文提示，显示在沉浸式指导区（不再只进不可见的主聊天流）。
     @Published var practiceHintText: String?
@@ -1416,7 +1415,6 @@ final class AppModel: ObservableObject {
         guard isVoiceConversationActive else { return }
         // 手工触发式：不自动开麦，等用户长按说话
         guard conversationMode == .immersive else { return }
-        guard continuousVoiceMode else { return }
         guard roleplay?.completed == false, let next = roleplay?.nextLine else { return }
         guard practiceSpeech.isListening == false, voice.isSpeaking == false else { return }
         practiceSpeech.expectedPhrases = [next.english]   // 用目标台词偏置识别，提升转写准确度
