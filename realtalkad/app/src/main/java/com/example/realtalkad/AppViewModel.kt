@@ -75,7 +75,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val pendingPractice = MutableStateFlow<Triple<ScenarioSummary, String, Boolean>?>(null) // (场景, 角色, 是否继续上次)；非空时弹「对话前询问」
     val showVoiceLLM = MutableStateFlow(false)                          // 控制实时语音沉浸式界面呈现
     val fontScale = MutableStateFlow(auth.fontScale)
-    val autoSpeakAI = MutableStateFlow(auth.autoSpeakAI)
     val continuousVoice = MutableStateFlow(auth.continuousVoice)
     val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
     // 多个自动采集时段（"HH:mm" 起止对）
@@ -618,7 +617,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     roleplayState.value = state
                     state.latestFeedback?.takeIf { it.isNotBlank() }?.let {
                         appendChat(ChatMessage.Sender.ASSISTANT, it)
-                        if (autoSpeakAI.value) voice.speak(it) {}
+                        voice.speak(it) {}
                     }
                 }
                 .onFailure { presentFailure(it.message, title = "评分获取失败") }
@@ -647,11 +646,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val normalized = value.coerceIn(0.85f, 1.35f)
         fontScale.value = normalized
         auth.fontScale = normalized
-    }
-
-    fun setAutoSpeakAI(value: Boolean) {
-        autoSpeakAI.value = value
-        auth.autoSpeakAI = value
     }
 
     fun setContinuousVoice(value: Boolean) {
@@ -835,12 +829,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 沉浸式后端语音流：识别/朗读/抢话都在流里，不本地朗读/聆听
         if (drivenByStream) return
 
-        // 「自动朗读 AI 台词」关闭时不朗读，直接进入聆听
-        val toSpeak = if (autoSpeakAI.value) {
-            listOfNotNull(spokenPreface?.takeIf { it.isNotBlank() }) + newAiMessages.map { it.content }
-        } else {
-            emptyList()
-        }
+        // 自动朗读 AI 台词为固定行为：始终朗读新台词（无内容时直接进入聆听）
+        val toSpeak = listOfNotNull(spokenPreface?.takeIf { it.isNotBlank() }) + newAiMessages.map { it.content }
         if (toSpeak.isEmpty()) {
             listenForNextTurn()
         } else {

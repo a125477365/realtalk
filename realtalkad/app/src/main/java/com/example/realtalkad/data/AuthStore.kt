@@ -33,10 +33,6 @@ class AuthStore(context: Context) {
         get() = prefs.getString("conversation_pref", "ask") ?: "ask"
         set(value) = prefs.edit().putString("conversation_pref", value).apply()
 
-    var autoSpeakAI: Boolean
-        get() = prefs.getBoolean("auto_speak_ai", true)
-        set(value) = prefs.edit().putBoolean("auto_speak_ai", value).apply()
-
     var continuousVoice: Boolean
         get() = prefs.getBoolean("continuous_voice", true)
         set(value) = prefs.edit().putBoolean("continuous_voice", value).apply()

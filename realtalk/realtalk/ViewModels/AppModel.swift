@@ -126,7 +126,6 @@ final class AppModel: ObservableObject {
     @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
-    @Published var autoSpeakAI = true
     @Published var continuousVoiceMode = true
     @Published var isVoiceConversationActive = false
     /// 超时未答时 AI 给出的「可以这样说」英文提示，显示在沉浸式指导区（不再只进不可见的主聊天流）。
@@ -916,7 +915,6 @@ final class AppModel: ObservableObject {
         stream.stop()
         conversationExited = false
         isVoiceConversationActive = true
-        autoSpeakAI = true
         lastSpokenAnswer = ""
         spokenMessageIDs.removeAll()
 
@@ -1183,7 +1181,7 @@ final class AppModel: ObservableObject {
             if let feedback = state.latestFeedback?.trimmingCharacters(in: .whitespacesAndNewlines),
                feedback.isEmpty == false {
                 appendChat(.assistant, feedback)
-                if autoSpeakAI { voice.speak(feedback) }
+                voice.speak(feedback)
             }
         } catch {
             presentFailure(error.localizedDescription, title: "评分获取失败")
@@ -1391,7 +1389,7 @@ final class AppModel: ObservableObject {
         // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听（避免退到主界面后又冒出对话/语音）
         guard conversationExited == false else { return }
 
-        guard autoSpeakAI, newAIMessages.isEmpty == false else {
+        guard newAIMessages.isEmpty == false else {
             if let spokenPreface {
                 voice.speak(spokenPreface) { [weak self] in
                     Task { @MainActor in
