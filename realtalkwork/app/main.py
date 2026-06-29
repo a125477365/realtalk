@@ -24,6 +24,7 @@ from starlette.requests import Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import (
+    ai_timeout_policy,
     evaluate_roleplay_turn,
     generate_ai_chat_reply,
     generate_learning,
@@ -527,10 +528,11 @@ async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict
         "provider": config.provider,
         "base_url": config.base_url,
         "api_key_masked": _masked_key(config.api_key),
-        "api_key_configured": config.enabled,
+        "api_key_configured": bool(config.api_key),
         "model": config.model,
         "bot_id": config.bot_id,
         "timeout_seconds": config.timeout_seconds,
+        "effective_timeouts": ai_timeout_policy(config),
         "input_price_per_1m_cents": config.input_price_per_1m_cents,
         "output_price_per_1m_cents": config.output_price_per_1m_cents,
     }
@@ -726,7 +728,7 @@ async def admin_generate_preset_draft(
     except httpx.TimeoutException:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="AI 生成草稿超时：大模型生成约 40 句较慢，请重试；如反复超时，请在「系统设置 · 模型」调大超时时间(AI_TIMEOUT_SECONDS)。",
+            detail="AI 生成草稿超时：大模型生成较慢，请重试；如反复超时，请在「系统设置 · 模型」调大超时时间。",
         )
     except httpx.HTTPStatusError as exc:
         body = ""

@@ -6,8 +6,8 @@ import re
 import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from math import isfinite
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -44,7 +44,7 @@ class AIRuntimeConfig:
         return bool(self.api_key and self.base_url and (self.bot_id or self.model))
 
 
-# 管理台可写入 app_settings 覆盖这些键；未配置时回退到环境变量。
+# 文字 AI 运行配置只读 app_settings；首装时由 db_init 用环境变量播种，之后由管理台维护。
 _DB_CONFIG_KEYS = [
     "ai_provider",
     "ai_base_url",
@@ -60,8 +60,6 @@ _DB_CONFIG_KEYS = [
 _shared_client: httpx.AsyncClient | None = None
 
 
-_ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
-_ZHIPU_DEFAULT_MODEL = "glm-4.7-flash"
 _TRANSIENT_MODEL_STATUS = {429, 500, 502, 503, 504}
 _TRANSIENT_RETRY_DELAYS = (2.0, 5.0, 10.0)
 _ZHIPU_MAX_TOKENS_BY_KIND = {
@@ -74,6 +72,22 @@ _ZHIPU_MAX_TOKENS_BY_KIND = {
     "preset_scenario": 24576,
 }
 _ZHIPU_THINKING_KINDS = {"learning", "scenario", "preset_scenario"}
+_MODEL_TIMEOUT_MIN_SECONDS_BY_KIND = {
+    "connection_test": 120.0,
+    "evaluate": 90.0,
+    "chat": 90.0,
+    "voice_score": 180.0,
+    "learning": 600.0,
+    "preset_scenario": 900.0,
+    "scenario": 1800.0,
+}
+_MODEL_TIMEOUT_CAP_SECONDS_BY_KIND = {
+    # 快路径不应被管理台的长任务超时拖到几十分钟。
+    "connection_test": 120.0,
+    "evaluate": 300.0,
+    "chat": 300.0,
+    "voice_score": 600.0,
+}
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -100,34 +114,30 @@ def resolve_ai_config() -> AIRuntimeConfig:
         if raw is None:
             return fallback
         try:
-            return float(raw)
+            parsed = float(raw)
+            return parsed if isfinite(parsed) and parsed > 0 else fallback
         except ValueError:
             return fallback
 
-    provider = _normalize_provider(overrides.get("ai_provider") or "ark")
+    provider = _normalize_provider(overrides.get("ai_provider"))
     raw_base_url = overrides.get("ai_base_url") or ""
-    model = (overrides.get("ai_model") or _default_model(provider)).strip()
-
-    timeout_seconds = _float("ai_timeout_seconds", settings.ai_timeout_seconds)
-    if provider == "zhipu":
-        # GLM 4.7 常见首 token 延迟明显高于普通兼容模型，40s 对场景生成与管理台测试都偏紧。
-        timeout_seconds = max(timeout_seconds, 90)
+    model = (overrides.get("ai_model") or "").strip()
 
     return AIRuntimeConfig(
         provider=provider,
         # 系统共享凭据：只读 DB（装库时入库）。不再回退 env，单一来源。
-        base_url=_normalize_base_url(raw_base_url, provider),
+        base_url=_normalize_base_url(raw_base_url),
         api_key=overrides.get("ai_api_key"),
         model=model,
         bot_id=overrides.get("ai_bot_id"),
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=_float("ai_timeout_seconds", settings.ai_timeout_seconds),
         input_price_per_1m_cents=_float("ai_input_price_per_1m_cents", settings.ai_input_price_per_1m_cents),
         output_price_per_1m_cents=_float("ai_output_price_per_1m_cents", settings.ai_output_price_per_1m_cents),
     )
 
 
 def _normalize_provider(provider: str | None) -> str:
-    value = (provider or "custom").strip().lower()
+    value = (provider or "").strip().lower()
     aliases = {
         "glm": "zhipu",
         "bigmodel": "zhipu",
@@ -138,19 +148,11 @@ def _normalize_provider(provider: str | None) -> str:
         "doubao": "ark",
         "openai-compatible": "custom",
     }
-    return aliases.get(value, value or "custom")
+    return aliases.get(value, value)
 
 
-def _default_model(provider: str) -> str:
-    if provider == "zhipu":
-        return _ZHIPU_DEFAULT_MODEL
-    return settings.ai_model
-
-
-def _normalize_base_url(base_url: str | None, provider: str) -> str:
+def _normalize_base_url(base_url: str | None) -> str:
     value = (base_url or "").strip().rstrip("/")
-    if not value and provider == "zhipu":
-        return _ZHIPU_DEFAULT_BASE_URL
     if not value:
         return value
     if not re.match(r"^https?://", value, flags=re.I):
@@ -161,21 +163,34 @@ def _normalize_base_url(base_url: str | None, provider: str) -> str:
             value = value[: -len(suffix)].rstrip("/")
             lowered = value.lower()
             break
-    if provider == "zhipu":
-        parsed = urlparse(value)
-        host = (parsed.netloc or "").lower()
-        # zai-sdk 新平台默认走 api.z.ai；旧 open.bigmodel.cn 在部分部署网络中 443 会被拒绝。
-        if host in {"open.bigmodel.cn", "www.open.bigmodel.cn"}:
-            return _ZHIPU_DEFAULT_BASE_URL
-        if host == "api.z.ai" and parsed.path.rstrip("/") in {"", "/"}:
-            return _ZHIPU_DEFAULT_BASE_URL
-        if host == "api.z.ai" and "/api/paas/v4" not in parsed.path:
-            return urlunparse(parsed._replace(path="/api/paas/v4")).rstrip("/")
     return value
 
 
 def _is_zhipu_config(config: AIRuntimeConfig) -> bool:
     return config.provider == "zhipu" or "api.z.ai" in config.base_url or "bigmodel.cn" in config.base_url
+
+
+def timeout_seconds_for_kind(config: AIRuntimeConfig, kind: str) -> float:
+    """按业务类型决定本次文本模型请求超时。
+
+    管理台的 ai_timeout_seconds 是普通任务默认值；场景生成/学习材料这类长任务会自动放宽，
+    连接测试/逐轮评分/聊天则保留快路径上限，避免一次配置把所有轻量请求拖慢。
+    """
+    configured = config.timeout_seconds if isfinite(config.timeout_seconds) and config.timeout_seconds > 0 else 40.0
+    timeout = max(configured, _MODEL_TIMEOUT_MIN_SECONDS_BY_KIND.get(kind, configured))
+    cap = _MODEL_TIMEOUT_CAP_SECONDS_BY_KIND.get(kind)
+    if cap is not None:
+        timeout = min(timeout, cap)
+    return timeout
+
+
+def ai_timeout_policy(config: AIRuntimeConfig | None = None) -> dict[str, float]:
+    cfg = config or resolve_ai_config()
+    kinds = sorted(
+        set(_MODEL_TIMEOUT_MIN_SECONDS_BY_KIND)
+        | {"connection_test", "evaluate", "chat", "learning", "scenario"}
+    )
+    return {kind: timeout_seconds_for_kind(cfg, kind) for kind in kinds}
 
 
 def _chat_endpoint(config: AIRuntimeConfig) -> str:
@@ -219,6 +234,7 @@ async def _chat_completion(
     payload = _completion_payload(messages, temperature, config, kind)
     model = str(payload["model"])
     url = config.base_url.rstrip("/") + endpoint
+    timeout_seconds = timeout_seconds_for_kind(config, kind)
     started = time.monotonic()
     response: httpx.Response | None = None
     max_attempts = len(_TRANSIENT_RETRY_DELAYS) + 1
@@ -230,7 +246,7 @@ async def _chat_completion(
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=config.timeout_seconds,
+            timeout=httpx.Timeout(timeout_seconds, connect=min(30.0, timeout_seconds)),
         )
         if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(_TRANSIENT_RETRY_DELAYS):
             await asyncio.sleep(_TRANSIENT_RETRY_DELAYS[attempt])
@@ -376,7 +392,14 @@ async def test_ai_connection() -> dict[str, Any]:
     """管理台「测试连接」：发送一条极小请求验证配置可用。"""
     config = resolve_ai_config()
     if not config.enabled:
-        return {"ok": False, "message": "未配置 API Key"}
+        missing = []
+        if not config.base_url:
+            missing.append("Base URL")
+        if not config.api_key:
+            missing.append("API Key")
+        if not (config.bot_id or config.model):
+            missing.append("模型名称/Bot ID")
+        return {"ok": False, "message": "AI 模型配置不完整：" + "、".join(missing)}
     started = time.monotonic()
     try:
         content = await _chat_completion(
@@ -402,6 +425,9 @@ async def test_ai_connection() -> dict[str, Any]:
         if config.provider == "zhipu":
             hint = "；智谱 GLM 新平台请使用 https://api.z.ai/api/paas/v4"
         return {"ok": False, "message": f"连接失败：{exc}{hint}"}
+    except httpx.TimeoutException:
+        timeout_seconds = int(timeout_seconds_for_kind(config, "connection_test"))
+        return {"ok": False, "message": f"连接测试超时（{timeout_seconds}s）：请检查模型服务是否可用，或稍后重试"}
     except httpx.RequestError as exc:
         detail = str(exc) or repr(exc)
         return {"ok": False, "message": f"请求失败（{exc.__class__.__name__}）：{detail[:160]}"}

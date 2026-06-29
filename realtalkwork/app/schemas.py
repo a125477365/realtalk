@@ -741,7 +741,7 @@ class ModelSettingsUpdateRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=200)
     bot_id: str | None = Field(default=None, max_length=200)
-    timeout_seconds: float | None = Field(default=None, ge=5, le=300)
+    timeout_seconds: float | None = Field(default=None, ge=5, le=3600)
     input_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
 
