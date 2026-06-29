@@ -63,6 +63,7 @@ _shared_client: httpx.AsyncClient | None = None
 _ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 _ZHIPU_DEFAULT_MODEL = "glm-4.7-flash"
 _TRANSIENT_MODEL_STATUS = {429, 500, 502, 503, 504}
+_TRANSIENT_RETRY_DELAYS = (2.0, 5.0, 10.0)
 _ZHIPU_MAX_TOKENS_BY_KIND = {
     "connection_test": 16,
     "evaluate": 1200,
@@ -107,6 +108,11 @@ def resolve_ai_config() -> AIRuntimeConfig:
     raw_base_url = overrides.get("ai_base_url") or ""
     model = (overrides.get("ai_model") or _default_model(provider)).strip()
 
+    timeout_seconds = _float("ai_timeout_seconds", settings.ai_timeout_seconds)
+    if provider == "zhipu":
+        # GLM 4.7 常见首 token 延迟明显高于普通兼容模型，40s 对场景生成与管理台测试都偏紧。
+        timeout_seconds = max(timeout_seconds, 90)
+
     return AIRuntimeConfig(
         provider=provider,
         # 系统共享凭据：只读 DB（装库时入库）。不再回退 env，单一来源。
@@ -114,7 +120,7 @@ def resolve_ai_config() -> AIRuntimeConfig:
         api_key=overrides.get("ai_api_key"),
         model=model,
         bot_id=overrides.get("ai_bot_id"),
-        timeout_seconds=_float("ai_timeout_seconds", settings.ai_timeout_seconds),
+        timeout_seconds=timeout_seconds,
         input_price_per_1m_cents=_float("ai_input_price_per_1m_cents", settings.ai_input_price_per_1m_cents),
         output_price_per_1m_cents=_float("ai_output_price_per_1m_cents", settings.ai_output_price_per_1m_cents),
     )
@@ -215,7 +221,8 @@ async def _chat_completion(
     url = config.base_url.rstrip("/") + endpoint
     started = time.monotonic()
     response: httpx.Response | None = None
-    for attempt in range(3):
+    max_attempts = len(_TRANSIENT_RETRY_DELAYS) + 1
+    for attempt in range(max_attempts):
         response = await _http_client().post(
             url,
             headers={
@@ -225,8 +232,8 @@ async def _chat_completion(
             json=payload,
             timeout=config.timeout_seconds,
         )
-        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < 2:
-            await asyncio.sleep(0.8 * (attempt + 1))
+        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(_TRANSIENT_RETRY_DELAYS):
+            await asyncio.sleep(_TRANSIENT_RETRY_DELAYS[attempt])
             continue
         break
     assert response is not None
@@ -387,6 +394,8 @@ async def test_ai_connection() -> dict[str, Any]:
             "reply": content.strip()[:80],
         }
     except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            return {"ok": False, "message": f"模型服务繁忙或限流（429）：{exc.response.text[:160]}"}
         return {"ok": False, "message": f"模型服务返回 {exc.response.status_code}：{exc.response.text[:160]}"}
     except httpx.ConnectError as exc:
         hint = ""
@@ -394,7 +403,8 @@ async def test_ai_connection() -> dict[str, Any]:
             hint = "；智谱 GLM 新平台请使用 https://api.z.ai/api/paas/v4"
         return {"ok": False, "message": f"连接失败：{exc}{hint}"}
     except httpx.RequestError as exc:
-        return {"ok": False, "message": f"请求失败：{exc}"}
+        detail = str(exc) or repr(exc)
+        return {"ok": False, "message": f"请求失败（{exc.__class__.__name__}）：{detail[:160]}"}
     except Exception as exc:
         return {"ok": False, "message": f"连接失败：{str(exc)[:160]}"}
 
