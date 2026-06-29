@@ -115,7 +115,7 @@ docker compose up --build
 
 ## 模型配置
 
-文字模型配置保存在共享数据库 `app_settings` 中，管理台「系统设置 → AI 模型对接」保存后立即生效。后端兼容 OpenAI 风格 `/chat/completions` 服务；火山方舟 Bot 会走 `/bots/chat/completions`；智谱 GLM / Z.ai 使用 `https://api.z.ai/api/paas/v4`，`glm-4.7-flash` 会自动带上 `thinking` 与长输出上限。
+文字模型配置保存在共享数据库 `app_settings` 中，管理台「系统设置 → AI 模型对接」保存后立即生效。后端兼容 OpenAI 风格 `/chat/completions` 服务；火山方舟 Bot 会走 `/bots/chat/completions`；智谱 GLM / Z.ai 使用 `https://api.z.ai/api/paas/v4`，`glm-4.7-flash` 会按业务类型自动设置输出上限，场景生成类请求启用 `thinking`，轻量纠错/连接测试保持快速响应。
 
 ## 模型会话隔离和指令安全
 

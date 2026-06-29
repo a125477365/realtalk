@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -61,7 +62,17 @@ _shared_client: httpx.AsyncClient | None = None
 
 _ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
 _ZHIPU_DEFAULT_MODEL = "glm-4.7-flash"
-_GLM_LONG_OUTPUT_TOKENS = 65536
+_TRANSIENT_MODEL_STATUS = {429, 500, 502, 503, 504}
+_ZHIPU_MAX_TOKENS_BY_KIND = {
+    "connection_test": 16,
+    "evaluate": 1200,
+    "chat": 2400,
+    "voice_score": 2400,
+    "learning": 8192,
+    "scenario": 24576,
+    "preset_scenario": 24576,
+}
+_ZHIPU_THINKING_KINDS = {"learning", "scenario", "preset_scenario"}
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -171,6 +182,7 @@ def _completion_payload(
     messages: list[dict[str, str]],
     temperature: float,
     config: AIRuntimeConfig,
+    kind: str,
 ) -> dict[str, Any]:
     model = config.bot_id if config.bot_id and config.provider == "ark" else config.model
     payload: dict[str, Any] = {
@@ -180,13 +192,10 @@ def _completion_payload(
     }
     if _is_zhipu_config(config):
         model_name = (model or "").lower()
-        if model_name.startswith("glm-4.7"):
-            # 与 zai-sdk 示例保持一致：GLM 4.7 支持深度思考和超长输出上限。
+        payload["max_tokens"] = _ZHIPU_MAX_TOKENS_BY_KIND.get(kind, 8192)
+        if model_name.startswith("glm-4.7") and kind in _ZHIPU_THINKING_KINDS:
+            # 场景生成类任务需要更强推理；轻量纠错/连接测试不启用，避免响应变慢或触发过载。
             payload["thinking"] = {"type": "enabled"}
-            payload["max_tokens"] = _GLM_LONG_OUTPUT_TOKENS
-        else:
-            # 旧 GLM 模型可能不支持 thinking，但仍给足 JSON 场景生成空间。
-            payload["max_tokens"] = 8192
     return payload
 
 
@@ -201,19 +210,26 @@ async def _chat_completion(
     if not config.enabled:
         raise RuntimeError("AI 模型配置不完整：请检查 Base URL、API Key 与模型名称")
     endpoint = _chat_endpoint(config)
-    payload = _completion_payload(messages, temperature, config)
+    payload = _completion_payload(messages, temperature, config, kind)
     model = str(payload["model"])
     url = config.base_url.rstrip("/") + endpoint
     started = time.monotonic()
-    response = await _http_client().post(
-        url,
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=config.timeout_seconds,
-    )
+    response: httpx.Response | None = None
+    for attempt in range(3):
+        response = await _http_client().post(
+            url,
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=config.timeout_seconds,
+        )
+        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < 2:
+            await asyncio.sleep(0.8 * (attempt + 1))
+            continue
+        break
+    assert response is not None
     response.raise_for_status()
     latency_ms = int((time.monotonic() - started) * 1000)
     data = response.json()
