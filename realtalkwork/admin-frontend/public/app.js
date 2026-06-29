@@ -1508,7 +1508,7 @@ var MODEL_PRESETS = {
   deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
   qwen: { label: "\u901a\u4e49\u5343\u95ee\uff08\u963f\u91cc\uff09", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   moonshot: { label: "Kimi\uff08\u6708\u4e4b\u6697\u9762\uff09", base_url: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
-  zhipu: { label: "\u667a\u8c31 GLM", base_url: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+  zhipu: { label: "\u667a\u8c31 GLM / Z.ai", base_url: "https://api.z.ai/api/paas/v4", model: "glm-4.7-flash" },
   custom: { label: "\u81ea\u5b9a\u4e49\uff08OpenAI \u517c\u5bb9\uff09", base_url: "", model: "" },
 };
 

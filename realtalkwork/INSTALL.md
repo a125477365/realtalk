@@ -143,7 +143,12 @@ AI_API_KEY=sk-...
 AI_BASE_URL=https://api.openai.com/v1
 AI_MODEL=gpt-4o-mini
 
-# 方式 B：火山方舟（优先级低于 AI_*，未配置 AI_* 时生效）
+# 方式 B：智谱 GLM / Z.ai
+# AI_API_KEY=...
+# AI_BASE_URL=https://api.z.ai/api/paas/v4
+# AI_MODEL=glm-4.7-flash
+
+# 方式 C：火山方舟
 # ARK_API_KEY=...
 # ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 # ARK_MODEL=doubao-seed-1-6-251015

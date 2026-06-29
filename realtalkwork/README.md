@@ -115,7 +115,7 @@ docker compose up --build
 
 ## 模型配置
 
-后端优先读取 `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL`，兼容任意 OpenAI 风格 `/chat/completions` 服务。未配置 `AI_*` 时自动使用 `ARK_*`；如果配置了 `ARK_BOT_ID`，会调用火山方舟 Bot 的 `/bots/chat/completions`。
+文字模型配置保存在共享数据库 `app_settings` 中，管理台「系统设置 → AI 模型对接」保存后立即生效。后端兼容 OpenAI 风格 `/chat/completions` 服务；火山方舟 Bot 会走 `/bots/chat/completions`；智谱 GLM / Z.ai 使用 `https://api.z.ai/api/paas/v4`，`glm-4.7-flash` 会自动带上 `thinking` 与长输出上限。
 
 ## 模型会话隔离和指令安全
 

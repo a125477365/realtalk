@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
@@ -39,7 +40,7 @@ class AIRuntimeConfig:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key and self.base_url and (self.bot_id or self.model))
 
 
 # 管理台可写入 app_settings 覆盖这些键；未配置时回退到环境变量。
@@ -56,6 +57,11 @@ _DB_CONFIG_KEYS = [
 
 
 _shared_client: httpx.AsyncClient | None = None
+
+
+_ZHIPU_DEFAULT_BASE_URL = "https://api.z.ai/api/paas/v4"
+_ZHIPU_DEFAULT_MODEL = "glm-4.7-flash"
+_GLM_LONG_OUTPUT_TOKENS = 65536
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -86,17 +92,102 @@ def resolve_ai_config() -> AIRuntimeConfig:
         except ValueError:
             return fallback
 
+    provider = _normalize_provider(overrides.get("ai_provider") or "ark")
+    raw_base_url = overrides.get("ai_base_url") or ""
+    model = (overrides.get("ai_model") or _default_model(provider)).strip()
+
     return AIRuntimeConfig(
-        provider=overrides.get("ai_provider") or "ark",
+        provider=provider,
         # 系统共享凭据：只读 DB（装库时入库）。不再回退 env，单一来源。
-        base_url=overrides.get("ai_base_url"),
+        base_url=_normalize_base_url(raw_base_url, provider),
         api_key=overrides.get("ai_api_key"),
-        model=overrides.get("ai_model"),
+        model=model,
         bot_id=overrides.get("ai_bot_id"),
         timeout_seconds=_float("ai_timeout_seconds", settings.ai_timeout_seconds),
         input_price_per_1m_cents=_float("ai_input_price_per_1m_cents", settings.ai_input_price_per_1m_cents),
         output_price_per_1m_cents=_float("ai_output_price_per_1m_cents", settings.ai_output_price_per_1m_cents),
     )
+
+
+def _normalize_provider(provider: str | None) -> str:
+    value = (provider or "custom").strip().lower()
+    aliases = {
+        "glm": "zhipu",
+        "bigmodel": "zhipu",
+        "zai": "zhipu",
+        "z.ai": "zhipu",
+        "zhipuai": "zhipu",
+        "volcengine": "ark",
+        "doubao": "ark",
+        "openai-compatible": "custom",
+    }
+    return aliases.get(value, value or "custom")
+
+
+def _default_model(provider: str) -> str:
+    if provider == "zhipu":
+        return _ZHIPU_DEFAULT_MODEL
+    return settings.ai_model
+
+
+def _normalize_base_url(base_url: str | None, provider: str) -> str:
+    value = (base_url or "").strip().rstrip("/")
+    if not value and provider == "zhipu":
+        return _ZHIPU_DEFAULT_BASE_URL
+    if not value:
+        return value
+    if not re.match(r"^https?://", value, flags=re.I):
+        value = f"https://{value}"
+    lowered = value.lower().rstrip("/")
+    for suffix in ("/chat/completions", "/bots/chat/completions"):
+        if lowered.endswith(suffix):
+            value = value[: -len(suffix)].rstrip("/")
+            lowered = value.lower()
+            break
+    if provider == "zhipu":
+        parsed = urlparse(value)
+        host = (parsed.netloc or "").lower()
+        # zai-sdk 新平台默认走 api.z.ai；旧 open.bigmodel.cn 在部分部署网络中 443 会被拒绝。
+        if host in {"open.bigmodel.cn", "www.open.bigmodel.cn"}:
+            return _ZHIPU_DEFAULT_BASE_URL
+        if host == "api.z.ai" and parsed.path.rstrip("/") in {"", "/"}:
+            return _ZHIPU_DEFAULT_BASE_URL
+        if host == "api.z.ai" and "/api/paas/v4" not in parsed.path:
+            return urlunparse(parsed._replace(path="/api/paas/v4")).rstrip("/")
+    return value
+
+
+def _is_zhipu_config(config: AIRuntimeConfig) -> bool:
+    return config.provider == "zhipu" or "api.z.ai" in config.base_url or "bigmodel.cn" in config.base_url
+
+
+def _chat_endpoint(config: AIRuntimeConfig) -> str:
+    if config.bot_id and config.provider == "ark":
+        return "/bots/chat/completions"
+    return "/chat/completions"
+
+
+def _completion_payload(
+    messages: list[dict[str, str]],
+    temperature: float,
+    config: AIRuntimeConfig,
+) -> dict[str, Any]:
+    model = config.bot_id if config.bot_id and config.provider == "ark" else config.model
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if _is_zhipu_config(config):
+        model_name = (model or "").lower()
+        if model_name.startswith("glm-4.7"):
+            # 与 zai-sdk 示例保持一致：GLM 4.7 支持深度思考和超长输出上限。
+            payload["thinking"] = {"type": "enabled"}
+            payload["max_tokens"] = _GLM_LONG_OUTPUT_TOKENS
+        else:
+            # 旧 GLM 模型可能不支持 thinking，但仍给足 JSON 场景生成空间。
+            payload["max_tokens"] = 8192
+    return payload
 
 
 async def _chat_completion(
@@ -107,16 +198,15 @@ async def _chat_completion(
     config: AIRuntimeConfig | None = None,
 ) -> str:
     config = config or resolve_ai_config()
-    endpoint = "/bots/chat/completions" if config.bot_id else "/chat/completions"
-    model = config.bot_id or config.model
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-    }
+    if not config.enabled:
+        raise RuntimeError("AI 模型配置不完整：请检查 Base URL、API Key 与模型名称")
+    endpoint = _chat_endpoint(config)
+    payload = _completion_payload(messages, temperature, config)
+    model = str(payload["model"])
+    url = config.base_url.rstrip("/") + endpoint
     started = time.monotonic()
     response = await _http_client().post(
-        config.base_url.rstrip("/") + endpoint,
+        url,
         headers={
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json",
@@ -128,7 +218,10 @@ async def _chat_completion(
     latency_ms = int((time.monotonic() - started) * 1000)
     data = response.json()
     _record_usage(data, kind, model, user_id, latency_ms, config)
-    return data["choices"][0]["message"]["content"]
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"模型响应格式异常：{json.dumps(data, ensure_ascii=False)[:300]}") from exc
 
 
 def _record_usage(
@@ -279,6 +372,13 @@ async def test_ai_connection() -> dict[str, Any]:
         }
     except httpx.HTTPStatusError as exc:
         return {"ok": False, "message": f"模型服务返回 {exc.response.status_code}：{exc.response.text[:160]}"}
+    except httpx.ConnectError as exc:
+        hint = ""
+        if config.provider == "zhipu":
+            hint = "；智谱 GLM 新平台请使用 https://api.z.ai/api/paas/v4"
+        return {"ok": False, "message": f"连接失败：{exc}{hint}"}
+    except httpx.RequestError as exc:
+        return {"ok": False, "message": f"请求失败：{exc}"}
     except Exception as exc:
         return {"ok": False, "message": f"连接失败：{str(exc)[:160]}"}
 
