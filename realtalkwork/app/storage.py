@@ -1908,6 +1908,18 @@ class Database:
         expires_at = now + timedelta(days=self.get_history_retention_days())
         saved = scenario.model_copy(update={"scene_id": scene_id})
         with self.engine.begin() as conn:
+            if source_hash:
+                # 事务内再查一次：并发/重复提交（双路径或客户端重试）下若已有相同内容的未过期场景，
+                # 直接返回它、不再重复插入——修复「一次采集生成两个场景」及连带的「要删两次」。
+                dup = conn.execute(
+                    select(scenarios).where(
+                        scenarios.c.user_id == user_id,
+                        scenarios.c.source_hash == source_hash,
+                        scenarios.c.expires_at > _iso(now),
+                    ).order_by(scenarios.c.created_at.desc())
+                ).mappings().fetchone()
+                if dup is not None:
+                    return _scenario_from_row(dup)
             conn.execute(
                 insert(scenarios).values(
                     scene_id=scene_id,
