@@ -35,13 +35,24 @@ class AIRuntimeConfig:
     api_key: str | None
     model: str
     bot_id: str | None
-    timeout_seconds: float
+    timeout_seconds: float          # 普通任务(对话/评分/连接测试)超时
+    timeout_long_seconds: float     # 长任务(采集/语音文件→场景生成、学习材料)超时
+    max_tokens_normal: int          # 普通任务输出上限
+    max_tokens_long: int            # 长任务输出上限
     input_price_per_1m_cents: float
     output_price_per_1m_cents: float
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key and self.base_url and (self.bot_id or self.model))
+
+
+# 任务分两档：长任务 = 场景生成（采集文字→场景、上传语音转写后→场景）+ 学习材料；其余（对话/评分/连接测试）= 普通任务。
+_LONG_KINDS = {"scenario", "preset_scenario", "learning"}
+
+
+def _is_long_kind(kind: str) -> bool:
+    return kind in _LONG_KINDS
 
 
 # 文字 AI 运行配置只读 app_settings；首装时由 db_init 用环境变量播种，之后由管理台维护。
@@ -52,6 +63,9 @@ _DB_CONFIG_KEYS = [
     "ai_model",
     "ai_bot_id",
     "ai_timeout_seconds",
+    "ai_timeout_long_seconds",
+    "ai_max_tokens_normal",
+    "ai_max_tokens_long",
     "ai_input_price_per_1m_cents",
     "ai_output_price_per_1m_cents",
 ]
@@ -62,32 +76,7 @@ _shared_client: httpx.AsyncClient | None = None
 
 _TRANSIENT_MODEL_STATUS = {429, 500, 502, 503, 504}
 _TRANSIENT_RETRY_DELAYS = (2.0, 5.0, 10.0)
-_ZHIPU_MAX_TOKENS_BY_KIND = {
-    "connection_test": 16,
-    "evaluate": 1200,
-    "chat": 2400,
-    "voice_score": 2400,
-    "learning": 8192,
-    "scenario": 24576,
-    "preset_scenario": 24576,
-}
 _ZHIPU_THINKING_KINDS = {"learning", "scenario", "preset_scenario"}
-_MODEL_TIMEOUT_MIN_SECONDS_BY_KIND = {
-    "connection_test": 120.0,
-    "evaluate": 90.0,
-    "chat": 90.0,
-    "voice_score": 180.0,
-    "learning": 600.0,
-    "preset_scenario": 900.0,
-    "scenario": 1800.0,
-}
-_MODEL_TIMEOUT_CAP_SECONDS_BY_KIND = {
-    # 快路径不应被管理台的长任务超时拖到几十分钟。
-    "connection_test": 120.0,
-    "evaluate": 300.0,
-    "chat": 300.0,
-    "voice_score": 600.0,
-}
 
 
 def _http_client() -> httpx.AsyncClient:
@@ -119,6 +108,16 @@ def resolve_ai_config() -> AIRuntimeConfig:
         except ValueError:
             return fallback
 
+    def _int(key: str, fallback: int) -> int:
+        raw = overrides.get(key)
+        if raw is None:
+            return fallback
+        try:
+            parsed = int(float(raw))
+            return parsed if parsed > 0 else fallback
+        except ValueError:
+            return fallback
+
     provider = _normalize_provider(overrides.get("ai_provider"))
     raw_base_url = overrides.get("ai_base_url") or ""
     model = (overrides.get("ai_model") or "").strip()
@@ -131,6 +130,9 @@ def resolve_ai_config() -> AIRuntimeConfig:
         model=model,
         bot_id=overrides.get("ai_bot_id"),
         timeout_seconds=_float("ai_timeout_seconds", settings.ai_timeout_seconds),
+        timeout_long_seconds=_float("ai_timeout_long_seconds", settings.ai_timeout_long_seconds),
+        max_tokens_normal=_int("ai_max_tokens_normal", settings.ai_max_tokens_normal),
+        max_tokens_long=_int("ai_max_tokens_long", settings.ai_max_tokens_long),
         input_price_per_1m_cents=_float("ai_input_price_per_1m_cents", settings.ai_input_price_per_1m_cents),
         output_price_per_1m_cents=_float("ai_output_price_per_1m_cents", settings.ai_output_price_per_1m_cents),
     )
@@ -171,26 +173,16 @@ def _is_zhipu_config(config: AIRuntimeConfig) -> bool:
 
 
 def timeout_seconds_for_kind(config: AIRuntimeConfig, kind: str) -> float:
-    """按业务类型决定本次文本模型请求超时。
-
-    管理台的 ai_timeout_seconds 是普通任务默认值；场景生成/学习材料这类长任务会自动放宽，
-    连接测试/逐轮评分/聊天则保留快路径上限，避免一次配置把所有轻量请求拖慢。
-    """
-    configured = config.timeout_seconds if isfinite(config.timeout_seconds) and config.timeout_seconds > 0 else 40.0
-    timeout = max(configured, _MODEL_TIMEOUT_MIN_SECONDS_BY_KIND.get(kind, configured))
-    cap = _MODEL_TIMEOUT_CAP_SECONDS_BY_KIND.get(kind)
-    if cap is not None:
-        timeout = min(timeout, cap)
-    return timeout
+    """按业务分两档取超时：长任务(场景生成/学习材料)用 timeout_long_seconds，其余(对话/评分/连接测试)用 timeout_seconds。
+    两档均由管理台配置、存 DB、每次调用现读生效。"""
+    base = config.timeout_long_seconds if _is_long_kind(kind) else config.timeout_seconds
+    return base if isfinite(base) and base > 0 else (1800.0 if _is_long_kind(kind) else 120.0)
 
 
 def ai_timeout_policy(config: AIRuntimeConfig | None = None) -> dict[str, float]:
     cfg = config or resolve_ai_config()
-    kinds = sorted(
-        set(_MODEL_TIMEOUT_MIN_SECONDS_BY_KIND)
-        | {"connection_test", "evaluate", "chat", "learning", "scenario"}
-    )
-    return {kind: timeout_seconds_for_kind(cfg, kind) for kind in kinds}
+    kinds = {"connection_test", "evaluate", "chat", "voice_score", "learning", "scenario", "preset_scenario"}
+    return {kind: timeout_seconds_for_kind(cfg, kind) for kind in sorted(kinds)}
 
 
 def _chat_endpoint(config: AIRuntimeConfig) -> str:
@@ -211,9 +203,14 @@ def _completion_payload(
         "messages": messages,
         "temperature": temperature,
     }
+    # 输出上限分两档（管理台可配、存 DB、现读生效）：长任务用 max_tokens_long，其余用 max_tokens_normal；
+    # 连接测试只需极短回包，固定 16。对所有 provider 都下发（不再只对 zhipu）。
+    if kind == "connection_test":
+        payload["max_tokens"] = 16
+    else:
+        payload["max_tokens"] = config.max_tokens_long if _is_long_kind(kind) else config.max_tokens_normal
     if _is_zhipu_config(config):
         model_name = (model or "").lower()
-        payload["max_tokens"] = _ZHIPU_MAX_TOKENS_BY_KIND.get(kind, 8192)
         if model_name.startswith("glm-4.7") and kind in _ZHIPU_THINKING_KINDS:
             # 场景生成类任务需要更强推理；轻量纠错/连接测试不启用，避免响应变慢或触发过载。
             payload["thinking"] = {"type": "enabled"}

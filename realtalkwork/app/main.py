@@ -532,6 +532,9 @@ async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict
         "model": config.model,
         "bot_id": config.bot_id,
         "timeout_seconds": config.timeout_seconds,
+        "timeout_long_seconds": config.timeout_long_seconds,
+        "max_tokens_normal": config.max_tokens_normal,
+        "max_tokens_long": config.max_tokens_long,
         "effective_timeouts": ai_timeout_policy(config),
         "input_price_per_1m_cents": config.input_price_per_1m_cents,
         "output_price_per_1m_cents": config.output_price_per_1m_cents,
@@ -558,6 +561,12 @@ async def admin_update_model_settings(
         updates["ai_bot_id"] = request.bot_id.strip()
     if request.timeout_seconds is not None:
         updates["ai_timeout_seconds"] = str(request.timeout_seconds)
+    if request.timeout_long_seconds is not None:
+        updates["ai_timeout_long_seconds"] = str(request.timeout_long_seconds)
+    if request.max_tokens_normal is not None:
+        updates["ai_max_tokens_normal"] = str(request.max_tokens_normal)
+    if request.max_tokens_long is not None:
+        updates["ai_max_tokens_long"] = str(request.max_tokens_long)
     if request.input_price_per_1m_cents is not None:
         updates["ai_input_price_per_1m_cents"] = str(request.input_price_per_1m_cents)
     if request.output_price_per_1m_cents is not None:

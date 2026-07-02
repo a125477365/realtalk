@@ -149,7 +149,11 @@ class Settings:
     ai_api_key: str | None = os.getenv("AI_API_KEY") or os.getenv("ARK_API_KEY")
     ai_base_url: str | None = os.getenv("AI_BASE_URL") or os.getenv("ARK_BASE_URL")
     ai_model: str | None = os.getenv("AI_MODEL") or os.getenv("ARK_MODEL")
-    ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "40"))
+    ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "120"))
+    # 两档任务参数（管理台可配、存 DB）：长任务=场景生成(采集文字/语音文件→场景)+学习材料；其余(对话/评分)=普通任务。
+    ai_timeout_long_seconds: float = float(os.getenv("AI_TIMEOUT_LONG_SECONDS", "1800"))
+    ai_max_tokens_normal: int = int(os.getenv("AI_MAX_TOKENS_NORMAL", "4096"))
+    ai_max_tokens_long: int = int(os.getenv("AI_MAX_TOKENS_LONG", "16384"))
     # 成本估算：每百万 token 的价格（分）。用于管理台支出统计，可在管理台覆盖。
     ai_input_price_per_1m_cents: float = float(os.getenv("AI_INPUT_PRICE_PER_1M_CENTS", "80"))
     ai_output_price_per_1m_cents: float = float(os.getenv("AI_OUTPUT_PRICE_PER_1M_CENTS", "200"))

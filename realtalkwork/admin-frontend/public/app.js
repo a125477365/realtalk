@@ -1528,7 +1528,10 @@ function renderSettingsPage() {
     '    <div class="form-group"><label>API Key <span class="hint" id="ms-key-status"></span></label>',
     '      <input type="password" id="ms-api-key" placeholder="\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8" autocomplete="new-password" /></div>',
     '    <div class="form-group"><label>Bot/\u667a\u80fd\u4f53 ID\uff08\u4ec5\u65b9\u821f\u5e94\u7528\u9700\u8981\uff09</label><input type="text" id="ms-bot-id" placeholder="\u9009\u586b" /></div>',
-    '    <div class="form-group"><label>\u666e\u901a\u8d85\u65f6\uff08\u79d2\uff09</label><input type="number" id="ms-timeout" min="5" max="3600" step="1" /></div>',
+    '    <div class="form-group"><label>\u666e\u901a\u4efb\u52a1\u00b7\u8d85\u65f6\uff08\u79d2\uff09<span class="subtitle">\u5bf9\u8bdd/\u8bc4\u5206/\u8fde\u63a5\u6d4b\u8bd5</span></label><input type="number" id="ms-timeout" min="5" max="3600" step="1" /></div>',
+    '    <div class="form-group"><label>\u957f\u4efb\u52a1\u00b7\u8d85\u65f6\uff08\u79d2\uff09<span class="subtitle">\u573a\u666f\u751f\u6210(\u91c7\u96c6/\u8bed\u97f3\u6587\u4ef6)+\u5b66\u4e60\u6750\u6599</span></label><input type="number" id="ms-timeout-long" min="30" max="7200" step="1" /></div>',
+    '    <div class="form-group"><label>\u666e\u901a\u4efb\u52a1\u00b7\u8f93\u51fa\u4e0a\u9650 max_tokens</label><input type="number" id="ms-maxtok" min="64" max="200000" step="1" /></div>',
+    '    <div class="form-group"><label>\u957f\u4efb\u52a1\u00b7\u8f93\u51fa\u4e0a\u9650 max_tokens</label><input type="number" id="ms-maxtok-long" min="256" max="1000000" step="1" /></div>',
     '    <div class="form-group"><label>\u8f93\u5165\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-in-price" min="0" step="0.01" /></div>',
     '    <div class="form-group"><label>\u8f93\u51fa\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-out-price" min="0" step="0.01" /></div>',
     "  </div>",
@@ -1645,7 +1648,10 @@ function loadModelSettings() {
       if (getEl("ms-base-url")) getEl("ms-base-url").value = d.base_url || "";
       if (getEl("ms-model")) getEl("ms-model").value = d.model || "";
       if (getEl("ms-bot-id")) getEl("ms-bot-id").value = d.bot_id || "";
-      if (getEl("ms-timeout")) getEl("ms-timeout").value = d.timeout_seconds || 40;
+      if (getEl("ms-timeout")) getEl("ms-timeout").value = d.timeout_seconds || 120;
+      if (getEl("ms-timeout-long")) getEl("ms-timeout-long").value = d.timeout_long_seconds || 1800;
+      if (getEl("ms-maxtok")) getEl("ms-maxtok").value = d.max_tokens_normal || 4096;
+      if (getEl("ms-maxtok-long")) getEl("ms-maxtok-long").value = d.max_tokens_long || 16384;
       if (getEl("ms-in-price")) getEl("ms-in-price").value = d.input_price_per_1m_cents;
       if (getEl("ms-out-price")) getEl("ms-out-price").value = d.output_price_per_1m_cents;
       var keyStatus = getEl("ms-key-status");
@@ -1669,6 +1675,12 @@ function saveModelSettings() {
   if (apiKey) body.api_key = apiKey;
   var timeout = parseFloat((getEl("ms-timeout") || { value: "" }).value);
   if (!isNaN(timeout)) body.timeout_seconds = timeout;
+  var timeoutLong = parseFloat((getEl("ms-timeout-long") || { value: "" }).value);
+  if (!isNaN(timeoutLong)) body.timeout_long_seconds = timeoutLong;
+  var maxTok = parseInt((getEl("ms-maxtok") || { value: "" }).value, 10);
+  if (!isNaN(maxTok)) body.max_tokens_normal = maxTok;
+  var maxTokLong = parseInt((getEl("ms-maxtok-long") || { value: "" }).value, 10);
+  if (!isNaN(maxTokLong)) body.max_tokens_long = maxTokLong;
   var inPrice = parseFloat((getEl("ms-in-price") || { value: "" }).value);
   if (!isNaN(inPrice)) body.input_price_per_1m_cents = inPrice;
   var outPrice = parseFloat((getEl("ms-out-price") || { value: "" }).value);

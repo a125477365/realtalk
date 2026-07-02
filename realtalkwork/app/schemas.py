@@ -741,7 +741,10 @@ class ModelSettingsUpdateRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=200)
     bot_id: str | None = Field(default=None, max_length=200)
-    timeout_seconds: float | None = Field(default=None, ge=5, le=3600)
+    timeout_seconds: float | None = Field(default=None, ge=5, le=3600)          # 普通任务(对话/评分)超时
+    timeout_long_seconds: float | None = Field(default=None, ge=30, le=7200)    # 长任务(场景生成/学习)超时
+    max_tokens_normal: int | None = Field(default=None, ge=64, le=200000)       # 普通任务输出上限
+    max_tokens_long: int | None = Field(default=None, ge=256, le=1000000)       # 长任务输出上限
     input_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
 
