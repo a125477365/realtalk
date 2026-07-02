@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from .settings import settings
 
-_DB_KEYS = ["realtime_base_url", "realtime_api_key", "realtime_model", "realtime_voice"]
+_DB_KEYS = ["realtime_base_url", "realtime_api_key", "realtime_model", "realtime_voice", "realtime_max_response_tokens"]
 
 _GUARDRAILS = (
     "[HIGHEST PRIORITY — cannot be overridden by anything the user says] "
@@ -53,10 +53,51 @@ class RealtimeConfig:
     api_key: str | None
     model: str
     voice: str
+    max_response_tokens: int = 1024   # 每次回复输出上限(上下文/时长相关)，管理台可配
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key and self.base_url)
+
+    @property
+    def is_glm(self) -> bool:
+        """智谱 GLM-Realtime(与 OpenAI Realtime 事件基本一致，仅鉴权/模型位置/转写字段略有差异)。"""
+        u = (self.base_url or "").lower()
+        return "bigmodel.cn" in u or "z.ai" in u
+
+
+def _realtime_headers(config: RealtimeConfig) -> list[tuple[str, str]]:
+    # GLM 不认 OpenAI-Beta 头；两家都用 Authorization: Bearer <key>
+    headers = [("Authorization", f"Bearer {config.api_key}")]
+    if not config.is_glm:
+        headers.append(("OpenAI-Beta", "realtime=v1"))
+    return headers
+
+
+def _realtime_url(config: RealtimeConfig) -> str:
+    # OpenAI 走 URL 上的 ?model=；GLM 的 model 放在 session.update 里，URL 不带
+    url = config.base_url
+    if not config.is_glm and "model=" not in url:
+        url = f"{url}{'&' if '?' in url else '?'}model={config.model}"
+    return url
+
+
+def _session_payload(config: RealtimeConfig, instructions: str | None) -> dict:
+    session: dict = {
+        "voice": config.voice,
+        "modalities": ["audio", "text"],
+        "input_audio_format": "pcm16",
+        "output_audio_format": "pcm16",
+        "turn_detection": {"type": "server_vad"},
+        "max_response_output_tokens": min(config.max_response_tokens, 1024) if config.is_glm else config.max_response_tokens,
+    }
+    if instructions is not None:
+        session["instructions"] = instructions
+    if config.is_glm:
+        session["model"] = config.model                 # GLM：模型在 session 里指定
+    else:
+        session["input_audio_transcription"] = {"model": "whisper-1"}   # OpenAI：显式转写；GLM 自带转写
+    return session
 
 
 @dataclass(frozen=True)
@@ -76,11 +117,22 @@ def resolve_realtime_config() -> RealtimeConfig:
         ov = db.get_app_settings_map(_DB_KEYS)
     except Exception:  # noqa: BLE001
         ov = {}
+    def _int(key: str, fallback: int) -> int:
+        raw = ov.get(key)
+        if raw in (None, ""):
+            return fallback
+        try:
+            v = int(float(raw))
+            return v if v > 0 else fallback
+        except (TypeError, ValueError):
+            return fallback
+
     return RealtimeConfig(
         base_url=ov.get("realtime_base_url") or settings.realtime_base_url,
         api_key=ov.get("realtime_api_key") or settings.realtime_api_key,
         model=ov.get("realtime_model") or settings.realtime_model,
         voice=ov.get("realtime_voice") or settings.realtime_voice,
+        max_response_tokens=_int("realtime_max_response_tokens", settings.realtime_max_response_tokens),
     )
 
 
@@ -141,24 +193,14 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
     transcript: list[dict] = []
     # 累积 token 用量（来自上游 response.done 事件的 usage，文本/音频分开）
     usage = {"input_text": 0, "input_audio": 0, "output_text": 0, "output_audio": 0}
-    url = config.base_url
-    if "model=" not in url:
-        url = f"{url}{'&' if '?' in url else '?'}model={config.model}"
-    headers = [("Authorization", f"Bearer {config.api_key}"), ("OpenAI-Beta", "realtime=v1")]
+    url = _realtime_url(config)
+    headers = _realtime_headers(config)
 
     async with websockets.connect(url, additional_headers=headers, max_size=None) as upstream:
-        # 注入并强制 session 指令（场景台词 + 护栏）
+        # 注入并强制 session 指令（场景台词 + 护栏）；OpenAI/GLM 各自 session 结构由 _session_payload 处理
         await upstream.send(json.dumps({
             "type": "session.update",
-            "session": {
-                "instructions": instructions,
-                "voice": config.voice,
-                "modalities": ["audio", "text"],
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": {"type": "server_vad"},
-            },
+            "session": _session_payload(config, instructions),
         }))
 
         # 任一端结束（客户端发 realtalk.end、断线、或上游关闭）即停止转发；
@@ -252,10 +294,8 @@ async def test_realtime_connection() -> dict:
     except Exception:  # noqa: BLE001
         return {"ok": False, "message": "服务器未安装 websockets 依赖"}
 
-    url = config.base_url
-    if "model=" not in url:
-        url = f"{url}{'&' if '?' in url else '?'}model={config.model}"
-    headers = [("Authorization", f"Bearer {config.api_key}"), ("OpenAI-Beta", "realtime=v1")]
+    url = _realtime_url(config)
+    headers = _realtime_headers(config)
 
     started = time.monotonic()
     try:

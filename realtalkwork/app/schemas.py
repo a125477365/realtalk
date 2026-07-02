@@ -756,6 +756,7 @@ class RealtimeSettingsRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=200)
     voice: str | None = Field(default=None, max_length=40)
+    max_response_tokens: int | None = Field(default=None, ge=64, le=200000)   # 每次回复输出上限(GLM≤1024)
     # 计费单价（分/百万 token），文本/音频分开
     input_text_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     input_audio_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)

@@ -380,8 +380,11 @@ async def evaluate_roleplay_turn(
     if config.enabled:
         try:
             return await _evaluate_roleplay_turn_with_model(user_text, target_line, scenario, recent_messages, user_id, config)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # 模型调用失败 → 回退离线相似度评分(对话不中断但降级)。打印日志便于确认"配错参数仍在评分=走了兜底"。
+            print(f"[ai] 逐轮评分回退离线（模型不可用）：{str(exc)[:200]}", flush=True)
             return _fallback_roleplay_evaluation(user_text, target_line)
+    print("[ai] 逐轮评分回退离线：AI 未配置(Base URL/Key/模型缺失)", flush=True)
     return _fallback_roleplay_evaluation(user_text, target_line)
 
 

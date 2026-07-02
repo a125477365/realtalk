@@ -1545,11 +1545,12 @@ function renderSettingsPage() {
     "</div>",
 
     '<div class="card">',
-    '  <h2>高级会员实时语音大模型 <span class="subtitle">OpenAI 兼容 Realtime API（WebSocket）；后端只转发音频并注入场景/护栏，结束评分</span></h2>',
+    '  <h2>高级会员实时语音大模型 <span class="subtitle">支持 OpenAI 兼容 Realtime 与 智谱 GLM-Realtime（按 Base URL 自动识别）；后端只转发+注入场景/护栏，结束评分</span></h2>',
     '  <div class="form-grid">',
-    '    <div class="form-group"><label>Base URL（wss://）</label><input type="text" id="rt-base-url" placeholder="wss://api.openai.com/v1/realtime" /></div>',
-    '    <div class="form-group"><label>模型</label><input type="text" id="rt-model" placeholder="gpt-4o-realtime-preview" /></div>',
-    '    <div class="form-group"><label>音色</label><input type="text" id="rt-voice" placeholder="alloy" /></div>',
+    '    <div class="form-group"><label>Base URL（wss://）<span class="subtitle">GLM: wss://open.bigmodel.cn/api/paas/v4/realtime</span></label><input type="text" id="rt-base-url" placeholder="wss://api.openai.com/v1/realtime" /></div>',
+    '    <div class="form-group"><label>模型 <span class="subtitle">GLM: glm-realtime</span></label><input type="text" id="rt-model" placeholder="gpt-4o-realtime-preview" /></div>',
+    '    <div class="form-group"><label>音色 <span class="subtitle">OpenAI: alloy… / GLM: tongtong,xiaochen…</span></label><input type="text" id="rt-voice" placeholder="alloy" /></div>',
+    '    <div class="form-group"><label>每次回复输出上限 max_tokens <span class="subtitle">GLM 上限 1024</span></label><input type="number" id="rt-max-tok" min="64" max="200000" step="1" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="rt-key-status"></span></label>',
     '      <input type="password" id="rt-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
     '    <div class="form-group"><label>输入·文本（分/百万token）</label><input type="number" id="rt-price-in-text" min="0" step="0.01" /></div>',
@@ -1576,6 +1577,7 @@ function loadRealtimeSettings() {
       if (getEl("rt-base-url")) getEl("rt-base-url").value = d.base_url || "";
       if (getEl("rt-model")) getEl("rt-model").value = d.model || "";
       if (getEl("rt-voice")) getEl("rt-voice").value = d.voice || "";
+      if (getEl("rt-max-tok")) getEl("rt-max-tok").value = d.max_response_tokens || 1024;
       if (getEl("rt-price-in-text")) getEl("rt-price-in-text").value = d.input_text_price_per_1m_cents;
       if (getEl("rt-price-in-audio")) getEl("rt-price-in-audio").value = d.input_audio_price_per_1m_cents;
       if (getEl("rt-price-out-text")) getEl("rt-price-out-text").value = d.output_text_price_per_1m_cents;
@@ -1594,6 +1596,8 @@ function saveRealtimeSettings() {
   };
   var apiKey = (getEl("rt-api-key") || { value: "" }).value.trim();
   if (apiKey) body.api_key = apiKey;
+  var rtMaxTok = parseInt((getEl("rt-max-tok") || { value: "" }).value, 10);
+  if (!isNaN(rtMaxTok)) body.max_response_tokens = rtMaxTok;
   var priceFields = [
     ["rt-price-in-text", "input_text_price_per_1m_cents"],
     ["rt-price-in-audio", "input_audio_price_per_1m_cents"],

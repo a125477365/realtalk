@@ -1304,6 +1304,7 @@ class Database:
             "realtime_input_audio_price_per_1m_cents": s.realtime_input_audio_price_per_1m_cents,
             "realtime_output_text_price_per_1m_cents": s.realtime_output_text_price_per_1m_cents,
             "realtime_output_audio_price_per_1m_cents": s.realtime_output_audio_price_per_1m_cents,
+            "realtime_max_response_tokens": s.realtime_max_response_tokens,
             "daily_token_limit_free": s.daily_token_limit_free,
             "daily_token_limit_basic": s.daily_token_limit_basic,
             "daily_token_limit_premium": s.daily_token_limit_premium,

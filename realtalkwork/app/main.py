@@ -591,6 +591,8 @@ async def admin_get_realtime_settings(admin: dict = Depends(current_admin)) -> d
         "base_url": config.base_url,
         "model": config.model,
         "voice": config.voice,
+        "max_response_tokens": config.max_response_tokens,
+        "provider": "glm" if config.is_glm else "openai",
         "api_key_masked": _masked_key(config.api_key),
         "api_key_configured": config.enabled,
         "input_text_price_per_1m_cents": pricing.input_text,
@@ -615,6 +617,8 @@ async def admin_set_realtime_settings(
         db.set_app_setting("realtime_model", request.model.strip())
     if request.voice is not None:
         db.set_app_setting("realtime_voice", request.voice.strip())
+    if request.max_response_tokens is not None:
+        db.set_app_setting("realtime_max_response_tokens", str(request.max_response_tokens))
     for field, key in (
         ("input_text_price_per_1m_cents", "realtime_input_text_price_per_1m_cents"),
         ("input_audio_price_per_1m_cents", "realtime_input_audio_price_per_1m_cents"),
