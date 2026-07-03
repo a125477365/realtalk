@@ -200,21 +200,23 @@ struct MainChatView: View {
 
             Spacer()
 
-            // 主界面最右侧：AI英语私教（一对一语音老师，无场景无指导，只有字幕）——绿色电话按钮
+            // 主界面最右侧：AI英语私教。与左侧「圆形头像 + 文字」对称：文字无背景 + 场景色圆形电话图标
             Button {
                 model.startFreeTalk()
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "phone.fill")
-                        .font(.system(size: 14, weight: .semibold))
+                HStack(spacing: 8) {
                     Text("AI英语私教")
-                        .font(.system(size: 13 * model.fontScale, weight: .semibold))
+                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                    ZStack {
+                        Circle().fill(RTTheme.surface)
+                        Image(systemName: "phone.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(RTTheme.accent)
+                    }
+                    .frame(width: 34, height: 34)
+                    .shadow(color: .black.opacity(0.06), radius: 3, y: 1)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 9)
-                .background(RTTheme.success, in: Capsule())
-                .shadow(color: RTTheme.success.opacity(0.35), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
         }

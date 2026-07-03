@@ -9,8 +9,6 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -18,7 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.Locale
 import java.util.UUID
 
 /**
@@ -205,27 +202,8 @@ class VoicePlayer(private val context: Context) {
     private var visualizer: Visualizer? = null
     private var player: MediaPlayer? = null
     private var fetchJob: Job? = null
-    private val tts = TextToSpeech(context) { status ->
-        if (status == TextToSpeech.SUCCESS) ready = true
-    }
-    private var ready = false
 
-    init {
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) = finish()
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) = finish()
-
-            private fun finish() {
-                isSpeaking = false
-                stopMetering()
-                onStateChange?.invoke(false)
-                pendingCompletion?.let { done -> pendingCompletion = null; done() }
-            }
-        })
-    }
-
+    // 只用后端 TTS（统一音色、中英混读由后端 Piper 处理）；后端不可用则跳过该句（字幕仍在），不再本机合成
     fun speak(text: String, cache: Boolean = true, completion: (() -> Unit)? = null) {
         if (text.isBlank()) { completion?.invoke(); return }
         stopPlayback()
@@ -237,11 +215,18 @@ class VoicePlayer(private val context: Context) {
             fetchJob = sc.launch {
                 val bytes = runCatching { provider(text, cache) }.getOrNull()
                 if (bytes != null && playBytes(bytes, completion)) return@launch
-                withContext(Dispatchers.Main) { speakTts(text, completion) }   // 后端音频不可用 → 本机兜底
+                withContext(Dispatchers.Main) { skip(completion) }   // 后端音频不可用 → 跳过
             }
         } else {
-            speakTts(text, completion)
+            skip(completion)
         }
+    }
+
+    private fun skip(completion: (() -> Unit)?) {
+        isSpeaking = false
+        stopMetering()
+        onStateChange?.invoke(false)
+        completion?.invoke()
     }
 
     private fun playBytes(bytes: ByteArray, completion: (() -> Unit)?): Boolean {
@@ -272,26 +257,12 @@ class VoicePlayer(private val context: Context) {
         }
     }
 
-    private fun speakTts(text: String, completion: (() -> Unit)?) {
-        if (!ready) { completion?.invoke(); return }
-        val hasHan = text.any { it.code in 0x4E00..0x9FFF }
-        tts.language = if (hasHan) Locale.CHINESE else Locale.US
-        tts.setSpeechRate(0.92f)
-        tts.setPitch(1.0f)
-        isSpeaking = true
-        onStateChange?.invoke(true)
-        startMetering()
-        pendingCompletion = completion
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, UUID.randomUUID().toString())
-    }
-
     private fun stopPlayback() {
         fetchJob?.cancel()
         fetchJob = null
         runCatching { player?.stop() }
         runCatching { player?.release() }
         player = null
-        tts.stop()
     }
 
     fun stop() {
