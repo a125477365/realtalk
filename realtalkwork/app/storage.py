@@ -1200,21 +1200,21 @@ class Database:
         return {row[0]: row[1] for row in rows if row[1] not in (None, "")}
 
     def set_app_setting(self, key: str, value: str) -> None:
+        # 原「先查后插」在多 worker/多活并发下会撞主键(UniqueViolation→500)。改为原生 UPSERT：
+        # PostgreSQL / SQLite 均支持 ON CONFLICT DO UPDATE，单语句原子、无竞态。
         now = _iso(_now())
+        if self.backend == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            stmt = pg_insert(app_settings).values(key=key, value_text=value, updated_at=now)
+            stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value_text": value, "updated_at": now})
+        else:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            stmt = sqlite_insert(app_settings).values(key=key, value_text=value, updated_at=now)
+            stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value_text": value, "updated_at": now})
         with self.engine.begin() as conn:
-            existing = conn.execute(
-                select(app_settings.c.key).where(app_settings.c.key == key)
-            ).scalar_one_or_none()
-            if existing:
-                conn.execute(
-                    update(app_settings)
-                    .where(app_settings.c.key == key)
-                    .values(value_text=value, updated_at=now)
-                )
-            else:
-                conn.execute(
-                    insert(app_settings).values(key=key, value_text=value, updated_at=now)
-                )
+            conn.execute(stmt)
 
     # ===== A：多活共用凭据（只读 DB，单一来源；env/setup.sh 仅 db_init 首装播种）=====
 

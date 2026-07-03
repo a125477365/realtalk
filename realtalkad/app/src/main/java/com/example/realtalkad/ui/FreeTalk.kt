@@ -43,6 +43,8 @@ fun FreeTalkScreen(model: AppViewModel) {
     val status by model.freeTalkStatus.collectAsState()
     val aiSpeaking by model.freeTalkAiSpeaking.collectAsState()
     val level by model.freeTalkLevel.collectAsState()
+    val aiLevel by model.freeTalkAiLevel.collectAsState()
+    val paused by model.freeTalkPaused.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val listState = rememberLazyListState()
 
@@ -62,7 +64,7 @@ fun FreeTalkScreen(model: AppViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("自由对话", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp)
+                    Text("AI英语私教", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp)
                     Text(
                         "一对一语音老师 · 可以问语法、单词，或说「练一个打车场景」",
                         color = Color.White.copy(alpha = 0.55f), fontSize = (11 * fontScale).sp,
@@ -110,7 +112,7 @@ fun FreeTalkScreen(model: AppViewModel) {
                 }
             }
 
-            // 底部状态
+            // 底部：与沉浸式同款随音频电平跳动的状态圆钮；点按 = 临时暂停 / 恢复
             Column(
                 Modifier.fillMaxWidth().padding(bottom = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -119,19 +121,32 @@ fun FreeTalkScreen(model: AppViewModel) {
                     Text(status, color = Color(0xFFF3D268), fontSize = (12 * fontScale).sp)
                     Spacer(Modifier.height(6.dp))
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(10.dp).background(
-                            (if (aiSpeaking) RT.Accent else Color(0xFF39C26D)).copy(alpha = 0.5f + 0.5f * level),
-                            CircleShape,
-                        )
-                    )
-                    Spacer(Modifier.width(8.dp))
+                val circleColor = when {
+                    paused -> Color.White.copy(alpha = 0.25f)
+                    aiSpeaking -> RT.Accent
+                    else -> RT.Success
+                }
+                val pulse = 1f + 0.28f * (if (aiSpeaking) aiLevel else level).coerceIn(0f, 1f)
+                Box(
+                    Modifier.size((82 * pulse).dp)
+                        .background(circleColor, CircleShape)
+                        .clickable { model.toggleFreeTalkPause() },
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
-                        if (aiSpeaking) "老师正在说话，开口即可打断" else "正在聆听，你说完稍停即发送",
-                        color = Color.White.copy(alpha = 0.55f), fontSize = (12 * fontScale).sp,
+                        if (paused) "▶" else if (aiSpeaking) "🔊" else "🎙",
+                        color = Color.White, fontSize = 26.sp,
                     )
                 }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    when {
+                        paused -> "已暂停，点击继续"
+                        aiSpeaking -> "老师正在说话，开口即可打断"
+                        else -> "正在聆听，你说完稍停即发送 · 点击可暂停"
+                    },
+                    color = Color.White.copy(alpha = 0.62f), fontSize = (13 * fontScale).sp, fontWeight = FontWeight.Medium,
+                )
             }
         }
     }

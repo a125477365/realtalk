@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// 自由对话（一对一语音英语老师）：无场景、无指导区，只有字幕流。
-/// 老师的讲解/纠正直接作为对话字幕显示并朗读；可随时开口（说话即抢话打断老师）。
+/// AI英语私教（一对一语音老师）：无场景、无指导区，只有字幕流。
+/// 老师的讲解/纠正直接作为对话字幕显示并朗读；说话即抢话打断；底部音频圆钮点按可临时暂停/恢复。
 struct FreeTalkView: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject var stream: RoleplayStreamManager
 
     var body: some View {
         ZStack {
@@ -23,7 +24,7 @@ struct FreeTalkView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("自由对话")
+                Text("AI英语私教")
                     .font(.system(size: 17 * model.fontScale, weight: .semibold))
                     .foregroundStyle(.white)
                 Text("一对一语音老师 · 想聊什么直接说，可以问语法、单词，或说「练一个打车场景」")
@@ -87,24 +88,47 @@ struct FreeTalkView: View {
         }
     }
 
+    // 与沉浸式同款：随音频电平跳动的状态圆钮；点按 = 临时暂停 / 恢复
     private var controls: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if model.freeTalkStatus.isEmpty == false, model.freeTalkMessages.isEmpty == false {
                 Text(model.freeTalkStatus)
                     .font(.system(size: 12 * model.fontScale))
                     .foregroundStyle(.yellow.opacity(0.9))
             }
-            HStack(spacing: 14) {
-                // 电平指示：老师说话/自己说话
-                Circle()
-                    .fill(model.freeStream.isAISpeaking ? RTTheme.accent : Color.green)
-                    .frame(width: 10, height: 10)
-                    .opacity(0.5 + 0.5 * (model.freeStream.isAISpeaking ? model.freeStream.aiAudioLevel : model.freeStream.audioLevel))
-                Text(model.freeStream.isAISpeaking ? "老师正在说话，开口即可打断" : "正在聆听，你说完稍停即发送")
-                    .font(.system(size: 12 * model.fontScale))
-                    .foregroundStyle(.white.opacity(0.55))
+            Button {
+                stream.togglePause()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(circleColor)
+                        .frame(width: 82, height: 82)
+                        .scaleEffect(1 + 0.28 * (stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel))
+                        .shadow(color: circleColor.opacity(0.35), radius: 24, y: 8)
+                    Image(systemName: stream.isPaused ? "play.fill" : (stream.isAISpeaking ? "speaker.wave.2.fill" : "mic.fill"))
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
             }
-            .padding(.bottom, 24)
+            .buttonStyle(.plain)
+            .animation(.easeOut(duration: 0.12), value: stream.audioLevel)
+
+            Text(statusLabel)
+                .font(.system(size: 13 * model.fontScale, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
+                .padding(.bottom, 24)
         }
+    }
+
+    private var circleColor: Color {
+        if stream.isPaused { return Color.white.opacity(0.25) }
+        if stream.isAISpeaking { return RTTheme.accent }
+        return RTTheme.success
+    }
+
+    private var statusLabel: String {
+        if stream.isPaused { return "已暂停，点击继续" }
+        if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
+        return "正在聆听，你说完稍停即发送 · 点击可暂停"
     }
 }

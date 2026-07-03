@@ -361,7 +361,7 @@ struct ImmersiveRoleplayView: View {
 
     private var controlText: String {
         if model.roleplay?.completed == true { return "本轮已完成" }
-        if model.isWorking { return "等待后台处理" }
+        if model.isWorking { return "已发送，正在识别评分…" }
         if voice.isSpeaking { return "AI 正在说话，点击可停止" }
         if practiceSpeech.isListening {
             return model.conversationMode == .manual ? "松开发送 · 向左滑取消" : "正在听你说英语"

@@ -384,13 +384,16 @@ fun MainChatScreen(model: AppViewModel) {
                 Text("场景列表与日期选择", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
             }
             Spacer(Modifier.weight(1f))
-            // 主界面最右侧：自由对话（一对一语音老师，无场景无指导，只有字幕）
-            Box(
-                Modifier.background(RT.BrandBrush, RoundedCornerShape(99.dp))
+            // 主界面最右侧：AI英语私教（一对一语音老师，无场景无指导，只有字幕）——绿色电话按钮
+            Row(
+                Modifier.background(RT.Success, RoundedCornerShape(99.dp))
                     .clickable { model.startFreeTalk() }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 13.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("自由对话", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp)
+                Text("📞", fontSize = (13 * fontScale).sp)
+                Spacer(Modifier.width(5.dp))
+                Text("AI英语私教", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp)
             }
         }
 

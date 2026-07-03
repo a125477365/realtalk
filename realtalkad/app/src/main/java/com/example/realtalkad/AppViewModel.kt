@@ -90,6 +90,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val freeTalkStatus = MutableStateFlow("")
     val freeTalkAiSpeaking = MutableStateFlow(false)
     val freeTalkLevel = MutableStateFlow(0f)
+    val freeTalkAiLevel = MutableStateFlow(0f)
+    val freeTalkPaused = MutableStateFlow(false)
+
+    fun toggleFreeTalkPause() {
+        freeTalkPaused.value = freeStream.togglePause()
+    }
 
     fun startFreeTalk() {
         val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始自由对话"); return }
@@ -102,6 +108,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.onStatus = { msg -> freeTalkStatus.value = msg }
         freeStream.onAiSpeaking = { s -> freeTalkAiSpeaking.value = s }
         freeStream.onUserLevel = { l -> freeTalkLevel.value = l }
+        freeStream.onAiLevel = { l -> freeTalkAiLevel.value = l }
+        freeTalkPaused.value = false
         showFreeTalk.value = true
         freeStream.start(api.freeTalkStreamUrl(token), "realtime")
     }
@@ -164,11 +172,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         stream.onUserLevel = { practiceAudioLevel.value = it }
         stream.onAiLevel = { aiAudioLevel.value = it }
         stream.onAiSpeaking = { isSpeaking.value = it }
-        stream.onResultState = { jsonStr -> applyStreamState(jsonStr) }
-        stream.onResultMessage = { msg -> statusMessage.value = msg }
+        stream.onCommitted = { isWorking.value = true }   // 已发送 → 「已发送，正在识别评分…」
+        stream.onResultState = { jsonStr -> isWorking.value = false; applyStreamState(jsonStr) }
+        stream.onResultMessage = { msg -> isWorking.value = false; statusMessage.value = msg }
         stream.onStatus = { msg -> statusMessage.value = msg }
         stream.onCompleted = { isVoiceActive.value = false }
         stream.onError = { msg ->
+            isWorking.value = false
             isVoiceActive.value = false
             stream.stop()
             presentFailure(msg, title = "对话中断")

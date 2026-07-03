@@ -278,11 +278,20 @@ final class AppModel: ObservableObject {
             return await self.fetchTTSAudio(text, cache: cache)
         }
         // 沉浸式后端语音流（WS）：整段对话由流驱动，结果回来直接刷新对练状态
+        stream.onCommitted = { [weak self] in
+            Task { @MainActor in self?.isWorking = true }   // 已发送 → 「已发送，正在识别评分…」
+        }
         stream.onResultState = { [weak self] data in
-            Task { @MainActor in self?.applyStreamState(data) }
+            Task { @MainActor in
+                self?.isWorking = false
+                self?.applyStreamState(data)
+            }
         }
         stream.onResultMessage = { [weak self] msg in
-            Task { @MainActor in self?.statusMessage = msg }
+            Task { @MainActor in
+                self?.isWorking = false
+                self?.statusMessage = msg
+            }
         }
         stream.onStatus = { [weak self] msg in
             Task { @MainActor in self?.statusMessage = msg }
@@ -293,6 +302,7 @@ final class AppModel: ObservableObject {
         stream.onError = { [weak self] msg in
             Task { @MainActor in
                 guard let self else { return }
+                self.isWorking = false
                 self.isVoiceConversationActive = false
                 self.stream.stop()
                 self.presentFailure(msg, title: "对话中断")

@@ -92,7 +92,7 @@ struct MainChatView: View {
                 ImmersiveVoiceLLMView()
             }
             .fullScreenCover(isPresented: $model.showFreeTalk) {
-                FreeTalkView()
+                FreeTalkView(stream: model.freeStream)
             }
             .sheet(isPresented: Binding(
                 get: { model.pendingPractice != nil },
@@ -200,20 +200,21 @@ struct MainChatView: View {
 
             Spacer()
 
-            // 主界面最右侧：自由对话（一对一语音老师，无场景无指导，只有字幕）
+            // 主界面最右侧：AI英语私教（一对一语音老师，无场景无指导，只有字幕）——绿色电话按钮
             Button {
                 model.startFreeTalk()
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("自由对话")
+                HStack(spacing: 6) {
+                    Image(systemName: "phone.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("AI英语私教")
                         .font(.system(size: 13 * model.fontScale, weight: .semibold))
                 }
                 .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(RTTheme.brandGradient, in: Capsule())
+                .padding(.horizontal, 13)
+                .padding(.vertical, 9)
+                .background(RTTheme.success, in: Capsule())
+                .shadow(color: RTTheme.success.opacity(0.35), radius: 8, y: 3)
             }
             .buttonStyle(.plain)
         }

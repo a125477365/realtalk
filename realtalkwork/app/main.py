@@ -2999,10 +2999,19 @@ async def freetalk_stream(
     history = db.list_freetalk_messages(user.id, limit=30)
     await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
     if not history:
-        opening = await generate_freetalk_reply(
-            "(The user just opened the free-talk session for the first time. Greet them briefly and start an easy conversation.)",
-            db.get_user_memory(user.id), [], user_id=user.id,
-        )
+        memory = db.get_user_memory(user.id)
+        if memory.strip():
+            opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
+        else:
+            # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
+            # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
+            opening_prompt = (
+                "(Brand-new student, no profile yet. Introduce yourself in one short sentence as their personal "
+                "English tutor. Then start a quick intake: you need their age range, education/occupation, current "
+                "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
+                "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
+            )
+        opening = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
         db.add_freetalk_message(user.id, "ai", opening)
         await _sj({"type": "ai_text", "text": opening})
         tts_task = asyncio.create_task(_send_tts(opening))

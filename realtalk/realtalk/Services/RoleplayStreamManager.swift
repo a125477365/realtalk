@@ -10,6 +10,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     @Published private(set) var audioLevel: Double = 0
     @Published private(set) var aiAudioLevel: Double = 0
     @Published private(set) var isAISpeaking = false
+    @Published private(set) var isPaused = false   // 临时暂停：停录音停播报，连接保持，点按恢复
 
     /// 一轮完整状态（RoleplayStateResponse 的 JSON），客户端据此刷新字幕/进度/评分。
     var onResultState: ((Data) -> Void)?
@@ -18,6 +19,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var onCompleted: (() -> Void)?
     var onError: ((String) -> Void)?
     var onStatus: ((String) -> Void)?   // 「重连中/已重连」等提示
+    var onCommitted: (() -> Void)?      // 一句录音已提交后端（用于「已发送，正在识别评分…」状态提示）
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
     var onFreeTalkHistory: (([(speaker: String, text: String)]) -> Void)?
     var onUserText: ((String) -> Void)?
@@ -90,9 +92,28 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         }
     }
 
+    /// 临时暂停/恢复：暂停时停录音+停 AI 朗读（不断开 WS），再点恢复聆听。
+    func togglePause() {
+        if isPaused {
+            isPaused = false
+            startRecording()
+            return
+        }
+        isPaused = true
+        recorder?.stop(); recorder = nil
+        if let u = recURL { try? FileManager.default.removeItem(at: u) }
+        recURL = nil
+        sendJSON(["type": "interrupt"])
+        aiPlayer?.stop(); aiPlayer = nil
+        aiQueue.removeAll()
+        isAISpeaking = false
+        audioLevel = 0; aiAudioLevel = 0
+    }
+
     func stop() {
         active = false
         connected = false
+        isPaused = false
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
         meterTimer?.invalidate(); meterTimer = nil
@@ -193,6 +214,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         if heard, let url, let data = try? Data(contentsOf: url), data.count > 1200 {
             task?.send(.data(data)) { _ in }
             sendJSON(["type": "commit", "format": ".m4a", "guidance_mode": guidanceMode])
+            onCommitted?()
         }
         if let url { try? FileManager.default.removeItem(at: url) }
         startRecording()
@@ -201,6 +223,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     // MARK: 收 AI 音频并顺序播放
 
     private func enqueueAI(_ data: Data) {
+        guard isPaused == false else { return }   // 暂停期间到达的音频直接丢弃
         aiQueue.append(data)
         if aiPlayer == nil { playNextAI() }
     }

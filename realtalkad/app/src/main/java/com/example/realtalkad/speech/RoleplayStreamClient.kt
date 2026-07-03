@@ -31,6 +31,7 @@ class RoleplayStreamClient(private val context: Context) {
     var onCompleted: (() -> Unit)? = null
     var onError: ((String) -> Unit)? = null
     var onStatus: ((String) -> Unit)? = null   // 「重连中/已重连」等提示
+    var onCommitted: (() -> Unit)? = null      // 一句录音已提交后端（用于「已发送，正在识别评分…」状态提示）
     var onUserLevel: ((Float) -> Unit)? = null
     var onAiLevel: ((Float) -> Unit)? = null
     var onAiSpeaking: ((Boolean) -> Unit)? = null
@@ -77,8 +78,30 @@ class RoleplayStreamClient(private val context: Context) {
         this.wsUrl = wsUrl
         this.guidanceMode = guidanceMode
         active = true
+        paused = false
         reconnectAttempts = 0
         connectWS()   // 录音在收到 state 事件后开始（首连/重连都走这条路径）
+    }
+
+    /** 临时暂停/恢复：暂停时停录音+停 AI 朗读（不断开 WS），再点恢复聆听。返回当前是否已暂停。 */
+    var paused = false
+        private set
+
+    fun togglePause(): Boolean {
+        if (paused) {
+            paused = false
+            startRecording()
+            return false
+        }
+        paused = true
+        runCatching { recorder?.stop() }; runCatching { recorder?.release() }; recorder = null
+        file?.delete(); file = null
+        runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
+        runCatching { player?.stop() }; runCatching { player?.release() }; player = null
+        aiQueue.clear()
+        aiSpeaking = false
+        scope.launch { onAiSpeaking?.invoke(false); onUserLevel?.invoke(0f); onAiLevel?.invoke(0f) }
+        return true
     }
 
     private fun connectWS() {
@@ -102,6 +125,7 @@ class RoleplayStreamClient(private val context: Context) {
     fun stop() {
         active = false
         connected = false
+        paused = false
         reconnectJob?.cancel(); reconnectJob = null
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "bye")).toString()) }
         runCatching { webSocket?.close(1000, null) }
@@ -181,6 +205,7 @@ class RoleplayStreamClient(private val context: Context) {
             runCatching {
                 webSocket?.send(out.readBytes().toByteString())
                 webSocket?.send(JSONObject(mapOf("type" to "commit", "format" to ".m4a", "guidance_mode" to guidanceMode)).toString())
+                scope.launch { onCommitted?.invoke() }
             }
         }
         out?.delete()
@@ -190,6 +215,7 @@ class RoleplayStreamClient(private val context: Context) {
     // ---- 收 AI 音频并顺序播放 ----
 
     private fun enqueueAi(data: ByteArray) {
+        if (paused) return   // 暂停期间到达的音频直接丢弃
         aiQueue.addLast(data)
         if (player == null) playNextAi()
     }

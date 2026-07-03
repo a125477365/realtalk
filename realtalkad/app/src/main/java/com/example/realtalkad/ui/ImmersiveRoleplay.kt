@@ -333,7 +333,7 @@ private fun PromptCircle(
     }
     val label = when {
         completed -> "本轮已完成"
-        isWorking -> "等待后台处理"
+        isWorking -> "已发送，正在识别评分…"
         isSpeaking -> "AI 正在说话，点击可停止"
         isListening -> "正在听你说英语"
         !isVoiceActive -> "已暂停"

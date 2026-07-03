@@ -211,9 +211,11 @@ def _completion_payload(
         payload["max_tokens"] = config.max_tokens_long if _is_long_kind(kind) else config.max_tokens_normal
     if _is_zhipu_config(config):
         model_name = (model or "").lower()
-        if model_name.startswith("glm-4.7") and kind in _ZHIPU_THINKING_KINDS:
-            # 场景生成类任务需要更强推理；轻量纠错/连接测试不启用，避免响应变慢或触发过载。
-            payload["thinking"] = {"type": "enabled"}
+        if model_name.startswith("glm-4.7"):
+            # GLM-4.7 系列【默认开启】深度思考——必须显式声明：只有场景生成/学习材料这类长任务才启用；
+            # 对话/评分/指导/连接测试一律显式关闭，否则每次请求都带推理过程，又慢又可能污染 JSON 输出。
+            enabled = kind in _ZHIPU_THINKING_KINDS
+            payload["thinking"] = {"type": "enabled" if enabled else "disabled"}
     return payload
 
 
