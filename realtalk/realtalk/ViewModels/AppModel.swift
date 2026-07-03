@@ -127,8 +127,10 @@ final class AppModel: ObservableObject {
     @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
     // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
     @Published var showDialogueContent = true
-    // 参考提示：开口前在「请用英文说」下面同时给出参考英文，方便新手；关则只在说错时纠正里给
-    @Published var showRefHint = true
+    // 中文提示：开则手动/沉浸式轮到用户时显示中文、私教每句后显示中文翻译；关则不显示中文（私教里用户说中文时仍强制附英文翻译）
+    @Published var showChineseHint = true {
+        didSet { defaults.set(showChineseHint, forKey: DefaultsKey.showChineseHint) }
+    }
     @Published var isVoiceConversationActive = false
     /// 超时未答时 AI 给出的「可以这样说」英文提示，显示在沉浸式指导区（不再只进不可见的主聊天流）。
     @Published var practiceHintText: String?
@@ -142,11 +144,13 @@ final class AppModel: ObservableObject {
     @Published var showFreeTalk = false
     @Published var freeTalkMessages: [FreeTalkLine] = []
     @Published var freeTalkStatus: String = ""
+    @Published var freeTalkWorking = false   // 已发送、等待后端转写+回复（圈变红，不能打断）
 
     struct FreeTalkLine: Identifiable {
         let id = UUID()
         let speaker: String   // user / ai
         let text: String
+        var translation: String = ""   // 中文翻译（AI 行=中译；用户说中文时=英译）
     }
 
     func startFreeTalk() {
@@ -156,13 +160,21 @@ final class AppModel: ObservableObject {
         }
         freeTalkMessages = []
         freeTalkStatus = "连接中…"
+        freeTalkWorking = false
         freeStream.onFreeTalkHistory = { [weak self] items in
             self?.freeTalkMessages = items.map { FreeTalkLine(speaker: $0.speaker, text: $0.text) }
             self?.freeTalkStatus = ""
         }
-        freeStream.onUserText = { [weak self] t in self?.freeTalkMessages.append(FreeTalkLine(speaker: "user", text: t)) }
-        freeStream.onAIText = { [weak self] t in self?.freeTalkMessages.append(FreeTalkLine(speaker: "ai", text: t)) }
-        freeStream.onError = { [weak self] msg in self?.freeTalkStatus = msg }
+        freeStream.onCommitted = { [weak self] in self?.freeTalkWorking = true }   // 已发送 → 等后端
+        freeStream.onUserText = { [weak self] t, tr in self?.freeTalkMessages.append(FreeTalkLine(speaker: "user", text: t, translation: tr)) }
+        freeStream.onAIText = { [weak self] t, tr in
+            self?.freeTalkWorking = false
+            self?.freeTalkMessages.append(FreeTalkLine(speaker: "ai", text: t, translation: tr))
+        }
+        freeStream.onError = { [weak self] msg in
+            self?.freeTalkWorking = false
+            self?.freeTalkStatus = msg
+        }
         freeStream.onStatus = { [weak self] msg in self?.freeTalkStatus = msg }
         showFreeTalk = true
         freeStream.start(streamURL: url, guidanceMode: "realtime")
@@ -170,6 +182,7 @@ final class AppModel: ObservableObject {
 
     func stopFreeTalk() {
         freeStream.stop()
+        freeTalkWorking = false
         showFreeTalk = false
     }
     @Published var autoCaptureEnabled = false
@@ -234,6 +247,7 @@ final class AppModel: ObservableObject {
         static let fontScale = "realtalk.fontScale"
         static let guidancePreference = "realtalk.guidancePreference"
         static let conversationPreference = "realtalk.conversationPreference"
+        static let showChineseHint = "realtalk.showChineseHint"
     }
 
     init() {
@@ -246,6 +260,9 @@ final class AppModel: ObservableObject {
         voice = VoicePromptPlayer()
         realtime = RealtimeVoiceManager()
         autoCaptureEnabled = defaults.bool(forKey: DefaultsKey.autoCaptureEnabled)
+        if defaults.object(forKey: DefaultsKey.showChineseHint) != nil {
+            showChineseHint = defaults.bool(forKey: DefaultsKey.showChineseHint)
+        }
         captureWindows = Self.loadCaptureWindows(defaults)
         if let raw = defaults.string(forKey: DefaultsKey.appearance),
            let value = AppAppearance(rawValue: raw) {
@@ -1032,6 +1049,9 @@ final class AppModel: ObservableObject {
         practiceSpeech.stop(emit: false)
         voice.stop()
         stream.stop()
+        // 关键：停流后那一轮「识别评分」回包不会再来，必须清掉 isWorking，
+        // 否则退出后主界面 isBusy 恒真、场景与采集按钮全灰、用户无法再操作（#5）。
+        isWorking = false
         statusMessage = "语音对话已暂停"
     }
 
@@ -1431,7 +1451,7 @@ final class AppModel: ObservableObject {
                 appendChat(.assistant, "我正在扮演 \(roleName(message.role))。请听语音回应。")
             }
             if let next = state.nextLine, next.index == (line?.index ?? -1) + 1 {
-                appendChat(.system, "轮到你：\(next.sourceText)" + (showRefHint && next.english.isEmpty == false ? "\n参考提示：\(next.english)" : ""))
+                appendChat(.system, showChineseHint ? "轮到你：\(next.sourceText)" : "轮到你（请用英文说）")
             }
         }
         if let next = state.nextLine, newAIMessages.isEmpty {

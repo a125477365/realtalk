@@ -69,7 +69,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val ttsCurrentVoice = MutableStateFlow("")
     val ttsConfigured = MutableStateFlow(false)
     val showSubtitles = MutableStateFlow(auth.showSubtitles)
-    val showRefHint = MutableStateFlow(auth.showRefHint)
+    val showChineseHint = MutableStateFlow(auth.showChineseHint)
     val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
     val guidancePreference = MutableStateFlow(auth.guidancePreference)     // ask/realtime/final
@@ -86,12 +86,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val showImmersive = MutableStateFlow(false)
     // 自由对话（一对一语音老师）：无场景、无指导区，只有字幕
     val showFreeTalk = MutableStateFlow(false)
-    val freeTalkMessages = MutableStateFlow<List<Pair<String, String>>>(emptyList())   // (speaker, text)
+    // 私教字幕行：speaker(user/ai) + 文本 + 中文翻译(AI行=中译；用户说中文时=英译)
+    data class FreeTalkLine(val speaker: String, val text: String, val translation: String = "")
+    val freeTalkMessages = MutableStateFlow<List<FreeTalkLine>>(emptyList())
     val freeTalkStatus = MutableStateFlow("")
     val freeTalkAiSpeaking = MutableStateFlow(false)
     val freeTalkLevel = MutableStateFlow(0f)
     val freeTalkAiLevel = MutableStateFlow(0f)
     val freeTalkPaused = MutableStateFlow(false)
+    val freeTalkWorking = MutableStateFlow(false)   // 已发送、等待后端转写+回复（圈变红，不能打断）
 
     fun toggleFreeTalkPause() {
         freeTalkPaused.value = freeStream.togglePause()
@@ -101,10 +104,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始自由对话"); return }
         freeTalkMessages.value = emptyList()
         freeTalkStatus.value = "连接中…"
-        freeStream.onFreeTalkHistory = { items -> freeTalkMessages.value = items; freeTalkStatus.value = "" }
-        freeStream.onUserText = { t -> freeTalkMessages.value = freeTalkMessages.value + ("user" to t) }
-        freeStream.onAIText = { t -> freeTalkMessages.value = freeTalkMessages.value + ("ai" to t) }
-        freeStream.onError = { msg -> freeTalkStatus.value = msg }
+        freeTalkWorking.value = false
+        freeStream.onFreeTalkHistory = { items ->
+            freeTalkMessages.value = items.map { FreeTalkLine(it.first, it.second) }; freeTalkStatus.value = ""
+        }
+        freeStream.onCommitted = { freeTalkWorking.value = true }   // 已发送 → 等后端
+        freeStream.onUserText = { t, tr -> freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("user", t, tr) }
+        freeStream.onAIText = { t, tr -> freeTalkWorking.value = false; freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("ai", t, tr) }
+        freeStream.onError = { msg -> freeTalkWorking.value = false; freeTalkStatus.value = msg }
         freeStream.onStatus = { msg -> freeTalkStatus.value = msg }
         freeStream.onAiSpeaking = { s -> freeTalkAiSpeaking.value = s }
         freeStream.onUserLevel = { l -> freeTalkLevel.value = l }
@@ -116,6 +123,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopFreeTalk() {
         freeStream.stop()
+        freeTalkWorking.value = false
         showFreeTalk.value = false
     }
     val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetSceneGroup>>(emptyList()) // 通用场景：运维预置的全局场景（分组）
@@ -607,6 +615,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 practice.stop()
                 voice.stop()
                 stream.stop()
+                isWorking.value = false   // 停流后回包不再来，清掉避免主界面按钮卡死（#5）
                 statusMessage.value = "语音对话已暂停"
             }
             else -> {
@@ -675,9 +684,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.conversationPreference = v
     }
 
-    fun setShowRefHint(value: Boolean) {
-        showRefHint.value = value
-        auth.showRefHint = value
+    fun setShowChineseHint(value: Boolean) {
+        showChineseHint.value = value
+        auth.showChineseHint = value
     }
 
     fun setShowSubtitles(value: Boolean) {
@@ -858,11 +867,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             appendChat(ChatMessage.Sender.ASSISTANT, subtitle)
         }
         state.nextLine?.let { next ->
-            // 轮到用户：先显示中文提示
+            // 轮到用户：中文提示开→给出中文，关→不显示中文
             appendChat(
                 ChatMessage.Sender.SYSTEM,
-                "轮到你：${next.sourceText}" +
-                    (if (showRefHint.value && next.english.isNotBlank()) "\n参考提示：${next.english}" else ""),
+                if (showChineseHint.value) "轮到你：${next.sourceText}" else "轮到你（请用英文说）",
             )
         }
 
@@ -1061,6 +1069,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         voice.stop()
         stream.stop()
         isVoiceActive.value = false
+        // 关键：停流后那一轮「识别评分」回包不会再来，必须清 isWorking，
+        // 否则退出后主界面 isBusy 恒真、场景与采集按钮全灰、用户无法再操作（#5）。
+        isWorking.value = false
         showImmersive.value = false
     }
 

@@ -54,17 +54,24 @@ struct FreeTalkView: View {
                     ForEach(model.freeTalkMessages) { line in
                         HStack {
                             if line.speaker == "user" { Spacer(minLength: 40) }
-                            Text(line.text)
-                                .font(.system(size: 15 * model.fontScale))
-                                .foregroundStyle(line.speaker == "user" ? Color.white : Color.white.opacity(0.92))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(
-                                    line.speaker == "user"
-                                        ? AnyShapeStyle(RTTheme.accent.opacity(0.85))
-                                        : AnyShapeStyle(Color.white.opacity(0.10)),
-                                    in: RoundedRectangle(cornerRadius: 16)
-                                )
+                            VStack(alignment: line.speaker == "user" ? .trailing : .leading, spacing: 4) {
+                                Text(line.text)
+                                    .font(.system(size: 15 * model.fontScale))
+                                    .foregroundStyle(line.speaker == "user" ? Color.white : Color.white.opacity(0.92))
+                                if let tr = translationToShow(for: line) {
+                                    Text(tr)
+                                        .font(.system(size: 13 * model.fontScale))
+                                        .foregroundStyle(.white.opacity(0.6))
+                                }
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                line.speaker == "user"
+                                    ? AnyShapeStyle(RTTheme.accent.opacity(0.85))
+                                    : AnyShapeStyle(Color.white.opacity(0.10)),
+                                in: RoundedRectangle(cornerRadius: 16)
+                            )
                             if line.speaker != "user" { Spacer(minLength: 40) }
                         }
                         .id(line.id)
@@ -105,7 +112,7 @@ struct FreeTalkView: View {
                         .frame(width: 82, height: 82)
                         .scaleEffect(1 + 0.28 * (stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel))
                         .shadow(color: circleColor.opacity(0.35), radius: 24, y: 8)
-                    Image(systemName: stream.isPaused ? "play.fill" : (stream.isAISpeaking ? "speaker.wave.2.fill" : "mic.fill"))
+                    Image(systemName: circleIcon)
                         .font(.system(size: 28, weight: .semibold))
                         .foregroundStyle(.white)
                 }
@@ -120,15 +127,40 @@ struct FreeTalkView: View {
         }
     }
 
+    // 聆听绿 / 可打断黄 / 后端处理红 / 暂停灰
     private var circleColor: Color {
         if stream.isPaused { return Color.white.opacity(0.25) }
-        if stream.isAISpeaking { return RTTheme.accent }
-        return RTTheme.success
+        if model.freeTalkWorking { return Color(red: 0.88, green: 0.18, blue: 0.18) }   // 红：处理中
+        if stream.isAISpeaking { return Color(red: 0.96, green: 0.70, blue: 0.11) }     // 黄：可打断
+        return RTTheme.success                                                          // 绿：聆听
+    }
+
+    private var circleIcon: String {
+        if stream.isPaused { return "play.fill" }
+        if model.freeTalkWorking { return "ellipsis" }
+        if stream.isAISpeaking { return "speaker.wave.2.fill" }
+        return "mic.fill"
     }
 
     private var statusLabel: String {
         if stream.isPaused { return "已暂停，点击继续" }
+        if model.freeTalkWorking { return "已发送，老师正在思考…" }
         if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
         return "正在聆听，你说完稍停即发送 · 点击可暂停"
     }
+
+    /// 翻译显示规则：用户说的是中文 → 必须显示英文翻译（不受开关约束）；
+    /// 其余（AI 行、用户说英文）→ 仅在「中文提示」开时显示。
+    private func translationToShow(for line: FreeTalkView.Line) -> String? {
+        let tr = line.translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard tr.isEmpty == false else { return nil }
+        if line.speaker == "user" && line.text.containsChinese { return tr }   // 中文发言强制附英文
+        return model.showChineseHint ? tr : nil
+    }
+
+    typealias Line = AppModel.FreeTalkLine
+}
+
+private extension String {
+    var containsChinese: Bool { unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) } }
 }

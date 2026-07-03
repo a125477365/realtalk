@@ -257,7 +257,8 @@ async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: s
         if config["mode"] == "local":
             if not is_local:
                 raise RuntimeError("本地转写命令未配置")
-            return (await asyncio.to_thread(_transcribe_local, config, path, Path(workdir))).strip()
+            # 口语练习是英语 → 明确传 en，避免本地 whisper 误当中文转写导致空输出
+            return (await asyncio.to_thread(_transcribe_local, config, path, Path(workdir), language)).strip()
         if not is_cloud:
             raise RuntimeError("语音识别服务未配置，请在管理台「系统设置」中配置 ASR")
         data = {"model": config["model"], "language": language, "response_format": "json"}

@@ -3011,9 +3011,11 @@ async def freetalk_stream(
                 "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
                 "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
             )
-        opening = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
+        result = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
+        opening = result["reply_en"]
         db.add_freetalk_message(user.id, "ai", opening)
-        await _sj({"type": "ai_text", "text": opening})
+        # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
+        await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
         tts_task = asyncio.create_task(_send_tts(opening))
 
     try:
@@ -3052,16 +3054,19 @@ async def freetalk_stream(
             if not recognized:
                 await _sj({"type": "error", "detail": "没听清，请再说一次"})
                 continue
-            db.add_freetalk_message(user.id, "user", recognized)
-            await _sj({"type": "user_text", "text": recognized})
-            reply = await generate_freetalk_reply(
+            result = await generate_freetalk_reply(
                 recognized,
                 db.get_user_memory(user.id),
                 db.list_freetalk_messages(user.id, limit=20),
                 user_id=user.id,
             )
+            # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
+            user_display = result.get("user_display", "").strip() or recognized
+            db.add_freetalk_message(user.id, "user", user_display)
+            await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", "")})
+            reply = result["reply_en"]
             db.add_freetalk_message(user.id, "ai", reply)
-            await _sj({"type": "ai_text", "text": reply})
+            await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", "")})
             tts_task = asyncio.create_task(_send_tts(reply))
             turns_since_memory += 1
             if turns_since_memory >= 6:

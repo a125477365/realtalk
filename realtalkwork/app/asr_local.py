@@ -67,9 +67,16 @@ def main() -> int:
         )
         return 4
 
+    # 语言由调用方经 ASR_LANGUAGE 指定：英语口语练习(沉浸式/私教)="en"、日常对话采集="zh"、空=自动识别。
+    # 此前写死 "zh" 会把英语练习识别成中文 → 空输出("本地转写未产生文本输出")。
+    language = (os.getenv("ASR_LANGUAGE") or "").strip() or None
     try:
-        segments, _info = model.transcribe(audio, language="zh", beam_size=1, vad_filter=True)
+        segments, _info = model.transcribe(audio, language=language, beam_size=1, vad_filter=True)
         out = "".join(seg.text for seg in segments).strip()
+        # 短句 + VAD 偶尔整段被过滤 → 关掉 VAD 再试一次，尽量不返回空
+        if not out:
+            segments, _info = model.transcribe(audio, language=language, beam_size=1, vad_filter=False)
+            out = "".join(seg.text for seg in segments).strip()
     except Exception as exc:  # noqa: BLE001
         print(f"whisper 转写失败：{exc}", file=sys.stderr)
         return 5

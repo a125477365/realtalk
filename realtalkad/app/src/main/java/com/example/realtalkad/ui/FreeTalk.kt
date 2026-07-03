@@ -45,6 +45,8 @@ fun FreeTalkScreen(model: AppViewModel) {
     val level by model.freeTalkLevel.collectAsState()
     val aiLevel by model.freeTalkAiLevel.collectAsState()
     val paused by model.freeTalkPaused.collectAsState()
+    val working by model.freeTalkWorking.collectAsState()
+    val showChineseHint by model.showChineseHint.collectAsState()
     val fontScale by model.fontScale.collectAsState()
     val listState = rememberLazyListState()
 
@@ -84,20 +86,32 @@ fun FreeTalkScreen(model: AppViewModel) {
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                itemsIndexed(messages) { _, (speaker, text) ->
+                itemsIndexed(messages) { _, line ->
+                    val speaker = line.speaker
+                    // 翻译显示：用户说中文 → 必附英文翻译（不受开关约束）；其余仅在「中文提示」开时显示
+                    val translation = line.translation.trim().takeIf {
+                        it.isNotEmpty() && (showChineseHint || (speaker == "user" && line.text.any { c -> c.code in 0x4E00..0x9FFF }))
+                    }
                     Row(Modifier.fillMaxWidth()) {
                         if (speaker == "user") Spacer(Modifier.weight(1f, fill = true))
-                        Text(
-                            text,
-                            color = if (speaker == "user") Color.White else Color.White.copy(alpha = 0.92f),
-                            fontSize = (15 * fontScale).sp,
-                            modifier = Modifier
+                        Column(
+                            Modifier
                                 .background(
                                     if (speaker == "user") RT.Accent.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.10f),
                                     RoundedCornerShape(16.dp),
                                 )
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
-                        )
+                        ) {
+                            Text(
+                                line.text,
+                                color = if (speaker == "user") Color.White else Color.White.copy(alpha = 0.92f),
+                                fontSize = (15 * fontScale).sp,
+                            )
+                            if (translation != null) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(translation, color = Color.White.copy(alpha = 0.6f), fontSize = (13 * fontScale).sp)
+                            }
+                        }
                         if (speaker != "user") Spacer(Modifier.weight(1f, fill = true))
                     }
                 }
@@ -121,10 +135,12 @@ fun FreeTalkScreen(model: AppViewModel) {
                     Text(status, color = Color(0xFFF3D268), fontSize = (12 * fontScale).sp)
                     Spacer(Modifier.height(6.dp))
                 }
+                // 聆听绿 / 可打断黄 / 后端处理红 / 暂停灰
                 val circleColor = when {
                     paused -> Color.White.copy(alpha = 0.25f)
-                    aiSpeaking -> RT.Accent
-                    else -> RT.Success
+                    working -> Color(0xFFE03131)   // 红：处理中，不能打断
+                    aiSpeaking -> Color(0xFFF5B21C) // 黄：可打断
+                    else -> RT.Success              // 绿：聆听
                 }
                 val pulse = 1f + 0.28f * (if (aiSpeaking) aiLevel else level).coerceIn(0f, 1f)
                 Box(
@@ -134,7 +150,7 @@ fun FreeTalkScreen(model: AppViewModel) {
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        if (paused) "▶" else if (aiSpeaking) "🔊" else "🎙",
+                        when { paused -> "▶"; working -> "…"; aiSpeaking -> "🔊"; else -> "🎙" },
                         color = Color.White, fontSize = 26.sp,
                     )
                 }
@@ -142,6 +158,7 @@ fun FreeTalkScreen(model: AppViewModel) {
                 Text(
                     when {
                         paused -> "已暂停，点击继续"
+                        working -> "已发送，老师正在思考…"
                         aiSpeaking -> "老师正在说话，开口即可打断"
                         else -> "正在聆听，你说完稍停即发送 · 点击可暂停"
                     },

@@ -23,9 +23,10 @@ class AuthStore(context: Context) {
         get() = prefs.getBoolean("show_subtitles", true)
         set(value) = prefs.edit().putBoolean("show_subtitles", value).apply()
 
-    var showRefHint: Boolean
-        get() = prefs.getBoolean("show_ref_hint", true)
-        set(value) = prefs.edit().putBoolean("show_ref_hint", value).apply()
+    // 中文提示：开→轮到用户时显示中文 / 私教每句后显示中文翻译；关→不显示中文
+    var showChineseHint: Boolean
+        get() = prefs.getBoolean("show_chinese_hint", true)
+        set(value) = prefs.edit().putBoolean("show_chinese_hint", value).apply()
 
     // 指导方式偏好：ask / realtime / final（默认 ask=每次询问）。对话中不可切换。
     var guidancePreference: String

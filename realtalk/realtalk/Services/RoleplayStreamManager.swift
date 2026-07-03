@@ -20,10 +20,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var onError: ((String) -> Void)?
     var onStatus: ((String) -> Void)?   // 「重连中/已重连」等提示
     var onCommitted: (() -> Void)?      // 一句录音已提交后端（用于「已发送，正在识别评分…」状态提示）
-    // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
+    // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕(带中文翻译)。协议其余部分与沉浸式完全一致。
     var onFreeTalkHistory: (([(speaker: String, text: String)]) -> Void)?
-    var onUserText: ((String) -> Void)?
-    var onAIText: ((String) -> Void)?
+    var onUserText: ((String, String) -> Void)?   // (text, translation)
+    var onAIText: ((String, String) -> Void)?      // (text, translation)
 
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
@@ -36,7 +36,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var silentTicks = 0
     private var bargeTicks = 0
     private let tick: TimeInterval = 0.1
-    private let silenceThreshold: TimeInterval = 2.0
+    private let silenceThreshold: TimeInterval = 1.5   // 说完到发送的停顿判定，越小越跟手
     private let speechLevel: Double = 0.12
     private let bargeLevel: Double = 0.2
     private let bargeNeeded = 3   // 连续 N 个 tick 高能量才算抢话，避免误触
@@ -297,9 +297,9 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             }
             startRecording()
         case "user_text":
-            if let t = obj["text"] as? String { onUserText?(t) }
+            if let t = obj["text"] as? String { onUserText?(t, obj["translation"] as? String ?? "") }
         case "ai_text":
-            if let t = obj["text"] as? String { onAIText?(t) }
+            if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
         case "ai_line":
             break   // 字幕由 result 的完整状态驱动（roleplay.messages）
         case "ai_audio_begin":

@@ -7,6 +7,7 @@ OpenAI 兼容 /audio/transcriptions 逐段转写 → 清洗 + 涉政过滤 →
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import uuid
@@ -101,14 +102,17 @@ async def _transcribe_chunk(client: httpx.AsyncClient, config: dict[str, Any], p
     return str(response.json().get("text", "")).strip()
 
 
-def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path) -> str:
+def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path, language: str | None = None) -> str:
     """用服务器本地命令行工具转写。命令模板支持 {input}/{dir}，
-    文本优先取 stdout；若 stdout 为空则读取 {dir} 下生成的 .txt。"""
+    文本优先取 stdout；若 stdout 为空则读取 {dir} 下生成的 .txt。
+    language 经 ASR_LANGUAGE 环境变量传给脚本(en=英语练习 / zh=日常采集 / None=自动)。"""
     template = config["local_command"]
     if not template:
         raise RuntimeError("本地转写命令未配置")
     cmd = template.replace("{input}", str(path)).replace("{dir}", str(workdir))
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=settings.audio_max_seconds + 600)
+    env = {**os.environ, "ASR_LANGUAGE": (language or "")}
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env,
+                          timeout=settings.audio_max_seconds + 600)
     if proc.returncode != 0:
         # 取 stderr 末尾：Python 回溯的真正错误在最后，开头常是 HF 下载告警等噪音
         detail = (proc.stderr or proc.stdout or "").strip()[-800:]
@@ -137,8 +141,8 @@ async def transcribe_file(path: Path) -> str:
         if config["mode"] == "local":
             if not is_local_ready:
                 raise RuntimeError("本地转写命令未配置，请在管理台「系统设置 → 语音转写」中配置")
-            # 本地工具自行处理整段音频，无需切片
-            return await asyncio.to_thread(_transcribe_local, config, path, workdir)
+            # 本地工具自行处理整段音频，无需切片；日常对话采集是中文 → 传 zh
+            return await asyncio.to_thread(_transcribe_local, config, path, workdir, "zh")
 
         if not is_cloud_ready:
             raise RuntimeError("语音转写服务未配置，请在管理台「系统设置」中配置 ASR")

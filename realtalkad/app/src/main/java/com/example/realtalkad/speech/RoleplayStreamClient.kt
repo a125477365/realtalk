@@ -37,8 +37,8 @@ class RoleplayStreamClient(private val context: Context) {
     var onAiSpeaking: ((Boolean) -> Unit)? = null
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
     var onFreeTalkHistory: ((List<Pair<String, String>>) -> Unit)? = null   // (speaker, text)
-    var onUserText: ((String) -> Unit)? = null
-    var onAIText: ((String) -> Unit)? = null
+    var onUserText: ((String, String) -> Unit)? = null   // (text, translation)
+    var onAIText: ((String, String) -> Unit)? = null      // (text, translation)
 
     private val wsClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -62,7 +62,7 @@ class RoleplayStreamClient(private val context: Context) {
     private var silentMs = 0L
     private var bargeTicks = 0
     private val tickMs = 100L
-    private val silenceThresholdMs = 2000L
+    private val silenceThresholdMs = 1500L   // 说完到发送的停顿判定，越小越跟手
     private val speechLevel = 0.12f
     private val bargeLevel = 0.2f
     private val bargeNeeded = 3
@@ -277,8 +277,8 @@ class RoleplayStreamClient(private val context: Context) {
                 }
                 startRecording()
             }
-            "user_text" -> onUserText?.invoke(obj.optString("text"))
-            "ai_text" -> onAIText?.invoke(obj.optString("text"))
+            "user_text" -> onUserText?.invoke(obj.optString("text"), obj.optString("translation"))
+            "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {
                 receivingAudio = false

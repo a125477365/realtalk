@@ -19,9 +19,9 @@ struct ImmersiveRoleplayView: View {
     private enum Palette {
         static let top = Color(red: 0.07, green: 0.11, blue: 0.22)
         static let bottom = Color(red: 0.02, green: 0.03, blue: 0.08)
-        static let listen = Color(red: 0.12, green: 0.74, blue: 0.38)
-        static let speak = Color(red: 0.88, green: 0.18, blue: 0.18)
-        static let thinking = Color(red: 0.32, green: 0.30, blue: 0.88)
+        static let listen = Color(red: 0.12, green: 0.74, blue: 0.38)   // 聆听绿
+        static let speak = Color(red: 0.96, green: 0.70, blue: 0.11)    // 可打断黄（AI 说话时可开口打断）
+        static let thinking = Color(red: 0.88, green: 0.18, blue: 0.18) // 后端处理红（不能打断）
         static let muted = Color.white.opacity(0.18)
         static let guide = Color(red: 1.0, green: 0.82, blue: 0.42)   // 指导/纠正色
     }
@@ -352,31 +352,32 @@ struct ImmersiveRoleplayView: View {
     private var nextLineHint: String? {
         guard model.roleplay?.completed == false, let next = model.roleplay?.nextLine else { return nil }
         let prefix = model.roleplay?.latestAccepted == false ? "请你用英文继续说" : "请你用英文说"
-        var hint = "\(prefix)：\(next.sourceText)"
-        if model.showRefHint, next.english.isEmpty == false {   // 参考提示：开口前给参考英文，方便新手
-            hint += "\n参考提示：\(next.english)"
-        }
-        return hint
+        // 中文提示：开→给出该句中文；关→只给提示词、不显示中文
+        return model.showChineseHint ? "\(prefix)：\(next.sourceText)" : "\(prefix)"
     }
+
+    // AI 是否正在说话：手动式用本地 TTS(voice)、沉浸式用流(stream)
+    private var aiSpeakingNow: Bool { voice.isSpeaking || stream.isAISpeaking }
 
     private var controlText: String {
         if model.roleplay?.completed == true { return "本轮已完成" }
-        if model.isWorking { return "已发送，正在识别评分…" }
-        if voice.isSpeaking { return "AI 正在说话，点击可停止" }
-        if practiceSpeech.isListening {
-            return model.conversationMode == .manual ? "松开发送 · 向左滑取消" : "正在听你说英语"
+        if model.isWorking { return "已发送，正在识别评分…" }        // 红：后端处理，不能打断
+        if aiSpeakingNow { return "AI 正在说话，开口即可打断" }       // 黄：可打断
+        if model.isVoiceConversationActive == false { return "已暂停，点击继续" }
+        if model.conversationMode == .manual {
+            return practiceSpeech.isListening ? "松开发送 · 向左滑取消" : "请长按并说话"
         }
-        if model.isVoiceConversationActive == false { return "已暂停" }
-        if model.conversationMode == .manual && isUserTurnNow { return "请长按并说话" }
-        return "准备进入下一句"
+        return "正在聆听，说完停顿即可发送"                          // 绿：聆听
     }
 
     private var circleColor: Color {
         if model.roleplay?.completed == true { return .white }
-        if model.isWorking { return Palette.thinking }
-        if voice.isSpeaking { return Palette.speak }
-        if practiceSpeech.isListening { return Palette.listen }
-        return Palette.muted
+        if model.isWorking { return Palette.thinking }              // 红
+        if aiSpeakingNow { return Palette.speak }                    // 黄
+        if model.isVoiceConversationActive == false { return Palette.muted }
+        // 手动式等待长按时不显示绿色（尚未在录音）
+        if model.conversationMode == .manual && practiceSpeech.isListening == false { return Palette.muted }
+        return Palette.listen                                        // 绿
     }
 
     private var circleIcon: String {

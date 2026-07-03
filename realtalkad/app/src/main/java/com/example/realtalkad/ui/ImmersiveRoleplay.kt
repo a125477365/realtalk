@@ -55,9 +55,9 @@ private object RTImm {
     // 深蓝调暗色背景（呼应品牌渐变蓝端，同时保证字幕可读）
     val Top = Color(0xFF12203B)
     val Bottom = Color(0xFF05060F)
-    val Listen = Color(0xFF1FBA62)
-    val Speak = Color(0xFFE03131)
-    val Thinking = Color(0xFF514BE0)
+    val Listen = Color(0xFF1FBA62)      // 聆听绿
+    val Speak = Color(0xFFF5B21C)       // 可打断黄（AI 说话时可开口打断）
+    val Thinking = Color(0xFFE03131)    // 后端处理红（不能打断）
     val Muted = Color.White.copy(alpha = 0.18f)
     val Correction = Color(0xFFFFD166)
 }
@@ -77,7 +77,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val isSpeaking by model.isSpeaking.collectAsState()
     val isWorking by model.isWorking.collectAsState()
     val showSubtitles by model.showSubtitles.collectAsState()
-    val showRefHint by model.showRefHint.collectAsState()
+    val showChineseHint by model.showChineseHint.collectAsState()
     val guidanceMode by model.guidanceMode.collectAsState()
     val conversationMode by model.conversationMode.collectAsState()
     val partial by model.partialSubtitle.collectAsState()
@@ -105,8 +105,8 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
         ?.takeIf { state?.completed == false && !isWorking && !isSpeaking }
         ?.let {
             val prefix = if (state?.latestAccepted == false) "请你用英文继续说" else "请你用英文说"
-            val ref = if (showRefHint && it.english.isNotBlank()) "\n参考提示：${it.english}" else ""
-            "$prefix：${it.sourceText}$ref"
+            // 中文提示开→给出该句中文；关→只给提示词、不显示中文
+            if (showChineseHint) "$prefix：${it.sourceText}" else prefix
         }
 
     Box(
@@ -317,27 +317,26 @@ private fun PromptCircle(
     onReplay: () -> Unit,
     onEvaluate: () -> Unit,
 ) {
+    // 沉浸式流模式没有单独的 isListening 标志：只要在对话中、非 AI 说话、非后端处理，麦克风就在聆听
+    val listening = !completed && !isWorking && !isSpeaking && isVoiceActive
     val color = when {
         completed -> Color.White
-        isWorking -> RTImm.Thinking
-        isSpeaking -> RTImm.Speak
-        isListening -> RTImm.Listen
+        isWorking -> RTImm.Thinking    // 红：后端处理，不能打断
+        isSpeaking -> RTImm.Speak      // 黄：可打断
+        listening -> RTImm.Listen      // 绿：聆听
         else -> RTImm.Muted
     }
     val scale = when {
-        // 绿色：随用户说话的真实麦克风电平跳动
-        isListening -> 1f + level.coerceIn(0f, 1f) * 0.28f
-        // 红色：随 AI 实际输出音量跳动（Visualizer 实时电平，非固定正弦）
+        listening -> 1f + level.coerceIn(0f, 1f) * 0.28f
         isSpeaking -> 1f + aiLevel.coerceIn(0f, 1f) * 0.28f
         else -> 1f
     }
     val label = when {
         completed -> "本轮已完成"
         isWorking -> "已发送，正在识别评分…"
-        isSpeaking -> "AI 正在说话，点击可停止"
-        isListening -> "正在听你说英语"
-        !isVoiceActive -> "已暂停"
-        else -> "准备进入下一句"
+        isSpeaking -> "AI 正在说话，开口即可打断"
+        !isVoiceActive -> "已暂停，点击继续"
+        else -> "正在聆听，说完停顿即可发送"
     }
 
     Column(
