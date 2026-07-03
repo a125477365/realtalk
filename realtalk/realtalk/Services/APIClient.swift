@@ -318,7 +318,9 @@ final class APIClient {
         var comps = URLComponents(url: url(for: "/roleplay/stream"), resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "token", value: token),
                              URLQueryItem(name: "session_id", value: sessionId)]
-        comps?.percentEncodedQuery = comps?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        if let encoded = comps?.percentEncodedQuery {
+            comps?.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+        }
         guard let s = comps?.url?.absoluteString else { return nil }
         if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
         if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
@@ -329,7 +331,9 @@ final class APIClient {
     func freeTalkStreamURL(token: String) -> URL? {
         var comps = URLComponents(url: url(for: "/freetalk/stream"), resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "token", value: token)]
-        comps?.percentEncodedQuery = comps?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        if let encoded = comps?.percentEncodedQuery {
+            comps?.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+        }
         guard let s = comps?.url?.absoluteString else { return nil }
         if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
         if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
