@@ -34,6 +34,10 @@ class RoleplayStreamClient(private val context: Context) {
     var onUserLevel: ((Float) -> Unit)? = null
     var onAiLevel: ((Float) -> Unit)? = null
     var onAiSpeaking: ((Boolean) -> Unit)? = null
+    // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
+    var onFreeTalkHistory: ((List<Pair<String, String>>) -> Unit)? = null   // (speaker, text)
+    var onUserText: ((String) -> Unit)? = null
+    var onAIText: ((String) -> Unit)? = null
 
     private val wsClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -238,8 +242,17 @@ class RoleplayStreamClient(private val context: Context) {
                 aiQueue.clear(); receivingAudio = false; incoming = java.io.ByteArrayOutputStream()
                 aiSpeaking = false; onAiSpeaking?.invoke(false)
                 obj.optJSONObject("state")?.let { onResultState?.invoke(it.toString()) }
+                // 自由对话：state 直接带历史字幕列表
+                obj.optJSONArray("messages")?.let { arr ->
+                    val items = (0 until arr.length()).mapNotNull { i ->
+                        arr.optJSONObject(i)?.let { m -> m.optString("speaker", "ai") to m.optString("text") }
+                    }
+                    onFreeTalkHistory?.invoke(items)
+                }
                 startRecording()
             }
+            "user_text" -> onUserText?.invoke(obj.optString("text"))
+            "ai_text" -> onAIText?.invoke(obj.optString("text"))
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {
                 receivingAudio = false

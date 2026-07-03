@@ -98,6 +98,7 @@ final class AppModel: ObservableObject {
     let practiceSpeech: SpeechPracticeManager
     let voice: VoicePromptPlayer
     let stream = RoleplayStreamManager()
+    let freeStream = RoleplayStreamManager()   // 自由对话（一对一语音老师）复用同一套流协议
     let realtime: RealtimeVoiceManager
 
     @Published var filter: TranscriptStore.TimeFilter = .lastHour
@@ -137,6 +138,40 @@ final class AppModel: ObservableObject {
     @Published var conversationPreference: ConversationPreference = .ask
     @Published var pendingPractice: PendingPractice?                 // 非空时弹「对话前询问」
     @Published var showVoiceLLM = false                              // 控制实时语音沉浸式界面呈现
+    // 自由对话（一对一语音老师）：无场景、无指导区，只有字幕；老师的讲解/纠正直接进字幕并朗读
+    @Published var showFreeTalk = false
+    @Published var freeTalkMessages: [FreeTalkLine] = []
+    @Published var freeTalkStatus: String = ""
+
+    struct FreeTalkLine: Identifiable {
+        let id = UUID()
+        let speaker: String   // user / ai
+        let text: String
+    }
+
+    func startFreeTalk() {
+        guard let token = auth.token, let url = api.freeTalkStreamURL(token: token) else {
+            presentFailure("请先登录", title: "无法开始自由对话")
+            return
+        }
+        freeTalkMessages = []
+        freeTalkStatus = "连接中…"
+        freeStream.onFreeTalkHistory = { [weak self] items in
+            self?.freeTalkMessages = items.map { FreeTalkLine(speaker: $0.speaker, text: $0.text) }
+            self?.freeTalkStatus = ""
+        }
+        freeStream.onUserText = { [weak self] t in self?.freeTalkMessages.append(FreeTalkLine(speaker: "user", text: t)) }
+        freeStream.onAIText = { [weak self] t in self?.freeTalkMessages.append(FreeTalkLine(speaker: "ai", text: t)) }
+        freeStream.onError = { [weak self] msg in self?.freeTalkStatus = msg }
+        freeStream.onStatus = { [weak self] msg in self?.freeTalkStatus = msg }
+        showFreeTalk = true
+        freeStream.start(streamURL: url, guidanceMode: "realtime")
+    }
+
+    func stopFreeTalk() {
+        freeStream.stop()
+        showFreeTalk = false
+    }
     @Published var autoCaptureEnabled = false
     /// 自动采集时段列表（支持多个）。
     @Published var captureWindows: [CaptureWindow] = []

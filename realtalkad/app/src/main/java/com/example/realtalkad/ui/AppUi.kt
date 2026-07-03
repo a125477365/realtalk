@@ -384,6 +384,14 @@ fun MainChatScreen(model: AppViewModel) {
                 Text("场景列表与日期选择", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
             }
             Spacer(Modifier.weight(1f))
+            // 主界面最右侧：自由对话（一对一语音老师，无场景无指导，只有字幕）
+            Box(
+                Modifier.background(RT.BrandBrush, RoundedCornerShape(99.dp))
+                    .clickable { model.startFreeTalk() }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            ) {
+                Text("自由对话", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp)
+            }
         }
 
         // 顶部状态：低调的「圆点 + 文字」指示器，不再是抢眼的彩色胶囊
@@ -624,6 +632,9 @@ fun MainChatScreen(model: AppViewModel) {
     if (showImmersive) ImmersiveRoleplayScreen(model)
     // 高级会员沉浸式 + 实时语音大模型对练
     if (showVoiceLLM) ImmersiveVoiceLLMScreen(model)
+    // 自由对话（一对一语音老师）
+    val showFreeTalk by model.showFreeTalk.collectAsState()
+    if (showFreeTalk) FreeTalkScreen(model)
 }
 
 /** 对话前询问：指导/对话方式设为「每次询问」时，开练前选择本次方式（可勾选以后不再询问）。 */

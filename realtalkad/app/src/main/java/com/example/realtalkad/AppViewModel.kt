@@ -43,6 +43,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val practice = PracticeSpeech(application)
     val voice = VoicePlayer(application)
     val stream = RoleplayStreamClient(application)
+    val freeStream = RoleplayStreamClient(application)   // 自由对话（一对一语音老师）复用同一套流协议
     val realtime = RealtimeVoiceClient(application)
     private val transcriptStore = TranscriptFileStore(application)
 
@@ -83,6 +84,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val myTickets = MutableStateFlow<List<com.example.realtalkad.data.SupportTicket>>(emptyList())
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
+    // 自由对话（一对一语音老师）：无场景、无指导区，只有字幕
+    val showFreeTalk = MutableStateFlow(false)
+    val freeTalkMessages = MutableStateFlow<List<Pair<String, String>>>(emptyList())   // (speaker, text)
+    val freeTalkStatus = MutableStateFlow("")
+    val freeTalkAiSpeaking = MutableStateFlow(false)
+    val freeTalkLevel = MutableStateFlow(0f)
+
+    fun startFreeTalk() {
+        val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始自由对话"); return }
+        freeTalkMessages.value = emptyList()
+        freeTalkStatus.value = "连接中…"
+        freeStream.onFreeTalkHistory = { items -> freeTalkMessages.value = items; freeTalkStatus.value = "" }
+        freeStream.onUserText = { t -> freeTalkMessages.value = freeTalkMessages.value + ("user" to t) }
+        freeStream.onAIText = { t -> freeTalkMessages.value = freeTalkMessages.value + ("ai" to t) }
+        freeStream.onError = { msg -> freeTalkStatus.value = msg }
+        freeStream.onStatus = { msg -> freeTalkStatus.value = msg }
+        freeStream.onAiSpeaking = { s -> freeTalkAiSpeaking.value = s }
+        freeStream.onUserLevel = { l -> freeTalkLevel.value = l }
+        showFreeTalk.value = true
+        freeStream.start(api.freeTalkStreamUrl(token), "realtime")
+    }
+
+    fun stopFreeTalk() {
+        freeStream.stop()
+        showFreeTalk.value = false
+    }
     val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetSceneGroup>>(emptyList()) // 通用场景：运维预置的全局场景（分组）
     // 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在顶部短暂提示）
     val failureAlert = MutableStateFlow<FailureAlert?>(null)

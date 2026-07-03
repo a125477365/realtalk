@@ -18,6 +18,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var onCompleted: (() -> Void)?
     var onError: ((String) -> Void)?
     var onStatus: ((String) -> Void)?   // 「重连中/已重连」等提示
+    // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
+    var onFreeTalkHistory: (([(speaker: String, text: String)]) -> Void)?
+    var onUserText: ((String) -> Void)?
+    var onAIText: ((String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
@@ -264,7 +268,15 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             if let state = obj["state"], let d = try? JSONSerialization.data(withJSONObject: state) {
                 onResultState?(d)
             }
+            // 自由对话：state 直接带历史字幕列表
+            if let msgs = obj["messages"] as? [[String: Any]] {
+                onFreeTalkHistory?(msgs.map { (speaker: $0["speaker"] as? String ?? "ai", text: $0["text"] as? String ?? "") })
+            }
             startRecording()
+        case "user_text":
+            if let t = obj["text"] as? String { onUserText?(t) }
+        case "ai_text":
+            if let t = obj["text"] as? String { onAIText?(t) }
         case "ai_line":
             break   // 字幕由 result 的完整状态驱动（roleplay.messages）
         case "ai_audio_begin":

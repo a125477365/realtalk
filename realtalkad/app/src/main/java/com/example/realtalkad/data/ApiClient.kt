@@ -193,6 +193,17 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         }
     }
 
+    /** 自由对话（一对一语音老师）流地址；协议同沉浸式流。 */
+    fun freeTalkStreamUrl(token: String): String {
+        val q = java.net.URLEncoder.encode(token, "UTF-8")
+        val base = url("/freetalk/stream?token=$q")
+        return when {
+            base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+            base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+            else -> base
+        }
+    }
+
     /** 按需最终评估：中途退出也能拿到评分与建议，不推进对话。 */
     suspend fun evaluateRoleplay(sessionId: String, token: String): RoleplayState =
         post("/roleplay/evaluate", RoleplayEvaluateRequest(sessionId), token)

@@ -91,6 +91,9 @@ struct MainChatView: View {
             .fullScreenCover(isPresented: $model.showVoiceLLM) {
                 ImmersiveVoiceLLMView()
             }
+            .fullScreenCover(isPresented: $model.showFreeTalk) {
+                FreeTalkView()
+            }
             .sheet(isPresented: Binding(
                 get: { model.pendingPractice != nil },
                 set: { if $0 == false { model.cancelPendingPractice() } }
@@ -196,6 +199,23 @@ struct MainChatView: View {
             }
 
             Spacer()
+
+            // 主界面最右侧：自由对话（一对一语音老师，无场景无指导，只有字幕）
+            Button {
+                model.startFreeTalk()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("自由对话")
+                        .font(.system(size: 13 * model.fontScale, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(RTTheme.brandGradient, in: Capsule())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

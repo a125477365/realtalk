@@ -322,6 +322,16 @@ final class APIClient {
         return URL(string: s)
     }
 
+    /// 自由对话（一对一语音老师）流地址；协议同沉浸式流。
+    func freeTalkStreamURL(token: String) -> URL? {
+        var comps = URLComponents(url: url(for: "/freetalk/stream"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "token", value: token)]
+        guard let s = comps?.url?.absoluteString else { return nil }
+        if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
+        if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
+        return URL(string: s)
+    }
+
     func evaluateRoleplay(sessionId: String, token: String) async throws -> RoleplayStateResponse {
         try await post(
             "/roleplay/evaluate",
