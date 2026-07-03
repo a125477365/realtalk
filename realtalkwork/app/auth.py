@@ -169,12 +169,15 @@ def verify_refresh_token(token: str) -> tuple[str, str | None, int, str]:
 
 
 def _decode_token(token: str, expected_type: str, expired_detail: str) -> dict:
+    # 兼容：旧版标准 base64 令牌经 URL 查询串传输时 '+' 会被解析成空格——令牌里绝不含空格，直接还原
+    token = token.strip().replace(" ", "+")
     try:
         payload_b64, signature = token.split(".", 1)
     except ValueError as exc:
         raise _unauthorized() from exc
 
-    if hmac.compare_digest(_sign(payload_b64), signature) is False:
+    # 签名比较前归一字母表：新令牌 URL-safe、旧令牌标准 base64，两者等价可互验
+    if hmac.compare_digest(_norm_b64(_sign(payload_b64)), _norm_b64(signature)) is False:
         raise _unauthorized()
 
     try:
@@ -221,7 +224,14 @@ def _sign(payload_b64: str) -> str:
 def _b64(data: bytes | str) -> str:
     if isinstance(data, str):
         data = data.encode("utf-8")
-    return base64.b64encode(data).rstrip(b"=").decode("ascii")
+    # URL-safe：令牌要走 WebSocket 查询串，标准 base64 的 '+' 会被解析成空格导致签名校验失败
+    # （表现为 WS 一连上就被 4401 关闭、客户端无限「网络不稳，正在重连」）。
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _norm_b64(value: str) -> str:
+    """把 base64 字符串归一到 URL-safe 字母表，供签名比较——兼容旧版标准 base64 签发的令牌。"""
+    return value.replace("+", "-").replace("/", "_")
 
 
 def _unb64(data: str) -> bytes:

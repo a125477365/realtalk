@@ -271,6 +271,8 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
             URLQueryItem(name: "token", value: token),
             URLQueryItem(name: "session_id", value: sessionId),
         ]
+        // URLQueryItem 不转义 '+'：老令牌可能含 '+'，服务端会解析成空格导致鉴权失败，强制编码为 %2B
+        comps.percentEncodedQuery = comps.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         return comps.url
     }
 

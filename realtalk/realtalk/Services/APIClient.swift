@@ -311,21 +311,25 @@ final class APIClient {
         return comps?.url
     }
 
-    /// 沉浸式后端语音流的 WebSocket 地址（http→ws / https→wss）。token 经 URLQueryItem 自动转义。
+    /// 沉浸式后端语音流的 WebSocket 地址（http→ws / https→wss）。
+    /// 注意：URLQueryItem 不会转义 '+'（老令牌是标准 base64 可能含 '+'，服务端会把它解析成空格→鉴权失败），
+    /// 必须强制把查询串中的 '+' 编码为 %2B。
     func roleplayStreamURL(sessionId: String, token: String) -> URL? {
         var comps = URLComponents(url: url(for: "/roleplay/stream"), resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "token", value: token),
                              URLQueryItem(name: "session_id", value: sessionId)]
+        comps?.percentEncodedQuery = comps?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let s = comps?.url?.absoluteString else { return nil }
         if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
         if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
         return URL(string: s)
     }
 
-    /// 自由对话（一对一语音老师）流地址；协议同沉浸式流。
+    /// 自由对话（一对一语音老师）流地址；协议同沉浸式流。'+' 强制编码为 %2B（原因见 roleplayStreamURL）。
     func freeTalkStreamURL(token: String) -> URL? {
         var comps = URLComponents(url: url(for: "/freetalk/stream"), resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "token", value: token)]
+        comps?.percentEncodedQuery = comps?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let s = comps?.url?.absoluteString else { return nil }
         if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
         if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
