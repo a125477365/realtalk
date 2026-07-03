@@ -762,6 +762,8 @@ class RealtimeSettingsRequest(BaseModel):
     input_audio_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_text_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_audio_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
+    # 按分钟计费单价（分/分钟）。>0 按会话时长计费(GLM-Realtime 等)，=0 按 token 计费(OpenAI 等)
+    price_per_minute_cents: float | None = Field(default=None, ge=0, le=100000)
 
 
 class ScenarioSummary(BaseModel):

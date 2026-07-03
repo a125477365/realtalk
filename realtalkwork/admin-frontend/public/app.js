@@ -1557,6 +1557,7 @@ function renderSettingsPage() {
     '    <div class="form-group"><label>输入·音频（分/百万token）</label><input type="number" id="rt-price-in-audio" min="0" step="0.01" /></div>',
     '    <div class="form-group"><label>输出·文本（分/百万token）</label><input type="number" id="rt-price-out-text" min="0" step="0.01" /></div>',
     '    <div class="form-group"><label>输出·音频（分/百万token）</label><input type="number" id="rt-price-out-audio" min="0" step="0.01" /></div>',
+    '    <div class="form-group"><label>按分钟计费（分/分钟）<span class="subtitle">GLM-Realtime 等按分钟计费的模型填这里；&gt;0 时本会话按时长计费(不足1分钟按1分钟)、忽略上方 token 单价；=0 按 token 计费</span></label><input type="number" id="rt-price-minute" min="0" step="0.01" /></div>',
     "  </div>",
     '  <div class="hint" style="margin:6px 0 12px">仅高级会员、且选择「沉浸式 + 语音大模型」时使用；未配置时该功能不可用。音频 token 远贵于文本，按你的语音模型官方报价分别填写；用量计入用户当月费用额度（会员月费的 50%）。</div>',
     '  <div class="btn-row" style="justify-content:flex-start">',
@@ -1582,6 +1583,7 @@ function loadRealtimeSettings() {
       if (getEl("rt-price-in-audio")) getEl("rt-price-in-audio").value = d.input_audio_price_per_1m_cents;
       if (getEl("rt-price-out-text")) getEl("rt-price-out-text").value = d.output_text_price_per_1m_cents;
       if (getEl("rt-price-out-audio")) getEl("rt-price-out-audio").value = d.output_audio_price_per_1m_cents;
+      if (getEl("rt-price-minute")) getEl("rt-price-minute").value = d.price_per_minute_cents || 0;
       var ks = getEl("rt-key-status");
       if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : "（未配置）";
     });
@@ -1603,6 +1605,7 @@ function saveRealtimeSettings() {
     ["rt-price-in-audio", "input_audio_price_per_1m_cents"],
     ["rt-price-out-text", "output_text_price_per_1m_cents"],
     ["rt-price-out-audio", "output_audio_price_per_1m_cents"],
+    ["rt-price-minute", "price_per_minute_cents"],
   ];
   priceFields.forEach(function(pair) {
     var v = parseFloat((getEl(pair[0]) || { value: "" }).value);

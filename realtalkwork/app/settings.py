@@ -165,6 +165,9 @@ class Settings:
     realtime_model: str = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
     realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
     realtime_max_response_tokens: int = int(os.getenv("REALTIME_MAX_RESPONSE_TOKENS", "1024"))  # 每次回复输出上限(GLM≤1024)
+    # 按分钟计费单价（分/分钟）。>0 时该会话按【时长】计费（GLM-Realtime 等按分钟计费的模型），
+    # =0 时按 token 计费（OpenAI Realtime 等）。两种都计入同一「当月费用额度」（会员月费×比例）。
+    realtime_price_per_minute_cents: float = float(os.getenv("REALTIME_PRICE_PER_MINUTE_CENTS", "0"))
     # 实时语音计费：文本/音频分开两组单价（分/百万 token）。音频 token 远贵于文本。
     realtime_input_text_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS", "400"))
     realtime_input_audio_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS", "2800"))

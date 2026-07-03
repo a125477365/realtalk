@@ -191,6 +191,28 @@ roleplay_messages = Table(
 )
 Index("idx_roleplay_messages_session_created", roleplay_messages.c.session_id, roleplay_messages.c.created_at)
 
+# 自由对话（一对一语音老师）：不绑场景，只有连续的用户/AI 消息流；保留近段历史供上下文与字幕回放。
+freetalk_messages = Table(
+    "freetalk_messages",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("speaker", Text, nullable=False),  # user / ai
+    Column("content", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+)
+Index("idx_freetalk_messages_user_created", freetalk_messages.c.user_id, freetalk_messages.c.created_at)
+
+# 用户学习记忆（仿 Claude 记忆文档）：每用户一份 Markdown 式摘要（英文水平/常错点/习惯/生活背景/练习偏好），
+# 由模型在对话后增量维护；超长自动压缩（见 ark_client.update_freetalk_memory）。
+user_memory = Table(
+    "user_memory",
+    metadata,
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("content", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+
 practice_results = Table(
     "practice_results",
     metadata,
@@ -1305,6 +1327,7 @@ class Database:
             "realtime_output_text_price_per_1m_cents": s.realtime_output_text_price_per_1m_cents,
             "realtime_output_audio_price_per_1m_cents": s.realtime_output_audio_price_per_1m_cents,
             "realtime_max_response_tokens": s.realtime_max_response_tokens,
+            "realtime_price_per_minute_cents": s.realtime_price_per_minute_cents,
             "daily_token_limit_free": s.daily_token_limit_free,
             "daily_token_limit_basic": s.daily_token_limit_basic,
             "daily_token_limit_premium": s.daily_token_limit_premium,
@@ -2389,6 +2412,57 @@ class Database:
                 .fetchall()
             )
         return [_message_from_row(row) for row in rows]
+
+    # ---- 自由对话（一对一语音老师）----
+
+    _FREETALK_KEEP_MESSAGES = 200   # 每用户最多保留的历史条数（超过删最旧，字幕回放/上下文都用不到更早的）
+
+    def add_freetalk_message(self, user_id: str, speaker: str, content: str) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(freetalk_messages).values(
+                    id=str(uuid.uuid4()), user_id=user_id, speaker=speaker, content=content, created_at=now,
+                )
+            )
+            # 裁剪：只留最近 N 条（按时间删最旧）
+            old = conn.execute(
+                select(freetalk_messages.c.id)
+                .where(freetalk_messages.c.user_id == user_id)
+                .order_by(freetalk_messages.c.created_at.desc())
+                .offset(self._FREETALK_KEEP_MESSAGES)
+            ).fetchall()
+            if old:
+                conn.execute(delete(freetalk_messages).where(freetalk_messages.c.id.in_([r[0] for r in old])))
+
+    def list_freetalk_messages(self, user_id: str, limit: int = 30) -> list[dict[str, str]]:
+        """最近 limit 条（时间正序返回），供上下文与开场字幕回放。"""
+        with self.engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    select(freetalk_messages)
+                    .where(freetalk_messages.c.user_id == user_id)
+                    .order_by(freetalk_messages.c.created_at.desc())
+                    .limit(limit)
+                )
+                .mappings()
+                .fetchall()
+            )
+        return [{"speaker": r["speaker"], "content": r["content"]} for r in reversed(rows)]
+
+    def get_user_memory(self, user_id: str) -> str:
+        with self.engine.connect() as conn:
+            row = conn.execute(select(user_memory.c.content).where(user_memory.c.user_id == user_id)).fetchone()
+        return row[0] if row else ""
+
+    def set_user_memory(self, user_id: str, content: str) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            updated = conn.execute(
+                update(user_memory).where(user_memory.c.user_id == user_id).values(content=content, updated_at=now)
+            )
+            if (updated.rowcount or 0) == 0:
+                conn.execute(insert(user_memory).values(user_id=user_id, content=content, updated_at=now))
 
     def add_practice_result(
         self,

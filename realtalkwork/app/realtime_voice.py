@@ -44,6 +44,7 @@ _PRICE_KEYS = [
     "realtime_input_audio_price_per_1m_cents",
     "realtime_output_text_price_per_1m_cents",
     "realtime_output_audio_price_per_1m_cents",
+    "realtime_price_per_minute_cents",
 ]
 
 
@@ -102,12 +103,14 @@ def _session_payload(config: RealtimeConfig, instructions: str | None) -> dict:
 
 @dataclass(frozen=True)
 class RealtimePricing:
-    """实时语音计费单价（分/百万 token），文本/音频分开。"""
+    """实时语音计费单价。token 计费按分/百万 token（文本/音频分开）；
+    per_minute>0 时改按【分钟】计费（分/分钟，GLM-Realtime 等按分钟计费的模型）。"""
 
     input_text: float
     input_audio: float
     output_text: float
     output_audio: float
+    per_minute: float = 0.0
 
 
 def resolve_realtime_config() -> RealtimeConfig:
@@ -158,6 +161,7 @@ def resolve_realtime_pricing() -> RealtimePricing:
         input_audio=_price(ov, _PRICE_KEYS[1], settings.realtime_input_audio_price_per_1m_cents),
         output_text=_price(ov, _PRICE_KEYS[2], settings.realtime_output_text_price_per_1m_cents),
         output_audio=_price(ov, _PRICE_KEYS[3], settings.realtime_output_audio_price_per_1m_cents),
+        per_minute=_price(ov, _PRICE_KEYS[4], settings.realtime_price_per_minute_cents),
     )
 
 
@@ -170,6 +174,17 @@ def realtime_usage_cost_cents(usage: dict, pricing: RealtimePricing) -> float:
         + usage.get("output_audio", 0) / 1_000_000 * pricing.output_audio,
         4,
     )
+
+
+def realtime_session_cost_cents(usage: dict, seconds: float, pricing: RealtimePricing) -> float:
+    """本次实时语音会话费用（分）：per_minute>0 按时长(不足1分钟按1分钟)，否则按 token。
+    两种方式都计入同一「当月费用额度」（会员月费×比例），额度机制不变。"""
+    if pricing.per_minute > 0:
+        import math
+
+        minutes = max(1, math.ceil(max(seconds, 0) / 60)) if seconds > 0 else 0
+        return round(minutes * pricing.per_minute, 4)
+    return realtime_usage_cost_cents(usage, pricing)
 
 
 def build_session_instructions(scenario, selected_role: str) -> str:

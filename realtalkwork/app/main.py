@@ -27,7 +27,9 @@ from .ark_client import (
     ai_timeout_policy,
     evaluate_roleplay_turn,
     generate_ai_chat_reply,
+    generate_freetalk_reply,
     generate_learning,
+    update_freetalk_memory,
     generate_preset_scenario,
     generate_scenario,
     resolve_ai_config,
@@ -147,6 +149,7 @@ from . import payments
 from .realtime_voice import (
     build_session_instructions,
     proxy_session,
+    realtime_session_cost_cents,
     realtime_usage_cost_cents,
     resolve_realtime_config,
     resolve_realtime_pricing,
@@ -599,6 +602,7 @@ async def admin_get_realtime_settings(admin: dict = Depends(current_admin)) -> d
         "input_audio_price_per_1m_cents": pricing.input_audio,
         "output_text_price_per_1m_cents": pricing.output_text,
         "output_audio_price_per_1m_cents": pricing.output_audio,
+        "price_per_minute_cents": pricing.per_minute,
     }
 
 
@@ -624,6 +628,7 @@ async def admin_set_realtime_settings(
         ("input_audio_price_per_1m_cents", "realtime_input_audio_price_per_1m_cents"),
         ("output_text_price_per_1m_cents", "realtime_output_text_price_per_1m_cents"),
         ("output_audio_price_per_1m_cents", "realtime_output_audio_price_per_1m_cents"),
+        ("price_per_minute_cents", "realtime_price_per_minute_cents"),
     ):
         value = getattr(request, field)
         if value is not None:
@@ -2754,14 +2759,16 @@ async def roleplay_voice(
 
     instructions = build_session_instructions(scenario, session.selected_role)
     usage: dict = {}
+    _rt_started = _time.monotonic()
     try:
         transcript, usage = await proxy_session(websocket, instructions, config)
     except Exception:  # noqa: BLE001 — 转发期间任一端异常即结束并评分
         transcript = []
-    # 实时语音用量计费：按文本/音频分开的单价折算费用并入账（与文字模型同一张 ai_usage 表）
-    if usage and any(usage.values()):
-        pricing = resolve_realtime_pricing()
-        cost = realtime_usage_cost_cents(usage, pricing)
+    _rt_seconds = _time.monotonic() - _rt_started
+    # 实时语音计费：per_minute>0 按会话时长(分钟,不足1分钟按1分钟)；否则按 token 单价。均入 ai_usage 计当月额度。
+    pricing = resolve_realtime_pricing()
+    if (usage and any(usage.values())) or (pricing.per_minute > 0 and transcript):
+        cost = realtime_session_cost_cents(usage, _rt_seconds, pricing)
         input_tokens = int(usage.get("input_text", 0)) + int(usage.get("input_audio", 0))
         output_tokens = int(usage.get("output_text", 0)) + int(usage.get("output_audio", 0))
         try:
@@ -2934,6 +2941,134 @@ async def roleplay_stream(
             pass
     finally:
         _cancel_tts()
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@app.websocket("/freetalk/stream")
+async def freetalk_stream(
+    websocket: WebSocket,
+    token: str = Query(...),
+) -> None:
+    """自由对话（一对一语音英语老师）：与沉浸式同构（音频帧+commit → 后端 ASR → 文字大模型 → TTS 推回），
+    但不绑场景、无指导区：老师回复(含纠正/讲解)直接进字幕并朗读。带用户记忆(DB)与近期历史上下文。
+    计费与文字大模型一致(kind=chat，走普通档超时/max_tokens 与每日 token 额度)。"""
+    await websocket.accept()
+    try:
+        user = _authenticate_token(token)
+        require_ai_access(user, estimated_cents=0.0)
+    except HTTPException as exc:
+        await websocket.close(code=4401, reason=_ws_reason(exc.detail))
+        return
+
+    voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
+    send_lock = asyncio.Lock()
+    utterance = bytearray()
+    tts_task: asyncio.Task | None = None
+    turns_since_memory = 0   # 每 6 轮用户发言后台更新一次记忆；结束时再补一次
+
+    async def _sj(obj: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(obj)
+
+    async def _sb(data: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(data)
+
+    async def _send_tts(text: str) -> None:
+        try:
+            # 自由对话回复每句唯一且动态 → 不入 Redis(与指导内容同策略)，实时合成推流
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=False)
+        except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：字幕仍在
+            await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
+            return
+        await _sj({"type": "ai_audio_begin", "content_type": ct})
+        for i in range(0, len(audio), 16384):
+            await _sb(audio[i:i + 16384])
+        await _sj({"type": "ai_audio_end"})
+
+    def _cancel_tts() -> None:
+        nonlocal tts_task
+        if tts_task and not tts_task.done():
+            tts_task.cancel()
+        tts_task = None
+
+    # 开场：回放近期字幕；首次进入让老师先开口（按记忆个性化开场）
+    history = db.list_freetalk_messages(user.id, limit=30)
+    await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
+    if not history:
+        opening = await generate_freetalk_reply(
+            "(The user just opened the free-talk session for the first time. Greet them briefly and start an easy conversation.)",
+            db.get_user_memory(user.id), [], user_id=user.id,
+        )
+        db.add_freetalk_message(user.id, "ai", opening)
+        await _sj({"type": "ai_text", "text": opening})
+        tts_task = asyncio.create_task(_send_tts(opening))
+
+    try:
+        while True:
+            event = await websocket.receive()
+            if event.get("type") == "websocket.disconnect":
+                break
+            if event.get("bytes") is not None:
+                utterance.extend(event["bytes"])
+                continue
+            text = event.get("text")
+            if not text:
+                continue
+            try:
+                data = _json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            mtype = data.get("type")
+            if mtype == "interrupt":          # 抢话：立刻停老师朗读
+                _cancel_tts()
+                continue
+            if mtype == "bye":
+                break
+            if mtype != "commit":
+                continue
+            _cancel_tts()
+            audio = bytes(utterance)
+            utterance.clear()
+            if not audio:
+                continue
+            try:
+                recognized = (await voice_io.transcribe(audio, suffix=data.get("format", ".m4a"))).strip()
+            except Exception as exc:  # noqa: BLE001
+                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[-200:]}"})
+                continue
+            if not recognized:
+                await _sj({"type": "error", "detail": "没听清，请再说一次"})
+                continue
+            db.add_freetalk_message(user.id, "user", recognized)
+            await _sj({"type": "user_text", "text": recognized})
+            reply = await generate_freetalk_reply(
+                recognized,
+                db.get_user_memory(user.id),
+                db.list_freetalk_messages(user.id, limit=20),
+                user_id=user.id,
+            )
+            db.add_freetalk_message(user.id, "ai", reply)
+            await _sj({"type": "ai_text", "text": reply})
+            tts_task = asyncio.create_task(_send_tts(reply))
+            turns_since_memory += 1
+            if turns_since_memory >= 6:
+                turns_since_memory = 0
+                asyncio.create_task(update_freetalk_memory(user.id))
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await _sj({"type": "error", "detail": str(exc)[:160]})
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _cancel_tts()
+        if turns_since_memory > 0:   # 会话结束把余下轮次也并进记忆
+            asyncio.create_task(update_freetalk_memory(user.id))
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001
