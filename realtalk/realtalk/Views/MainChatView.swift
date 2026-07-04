@@ -94,6 +94,22 @@ struct MainChatView: View {
             .fullScreenCover(isPresented: $model.showFreeTalk) {
                 FreeTalkView(stream: model.freeStream)
             }
+            // 学习提醒「私教来电」
+            .fullScreenCover(isPresented: Binding(
+                get: { model.incomingReminder != nil },
+                set: { if $0 == false { model.incomingReminder = nil } }
+            )) {
+                if let scenario = model.incomingReminder {
+                    ReminderCallView(scenario: scenario)
+                }
+            }
+            // 来电中选「现在练习」→ 走与点场景卡完全相同的流程（选角色 → 继续/重新 → 对话方式）
+            .onChange(of: model.reminderPracticeScene) { _, scene in
+                if let scene {
+                    model.reminderPracticeScene = nil
+                    roleDialogScenario = scene
+                }
+            }
             .sheet(isPresented: Binding(
                 get: { model.pendingPractice != nil },
                 set: { if $0 == false { model.cancelPendingPractice() } }

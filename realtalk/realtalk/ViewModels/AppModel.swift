@@ -192,6 +192,106 @@ final class AppModel: ObservableObject {
     @Published var autoCaptureEnabled = false
     /// 自动采集时段列表（支持多个）。
     @Published var captureWindows: [CaptureWindow] = []
+
+    // ---- 学习提醒（智能电话）：App 主导触发（多活后端只提供幂等查询/拒绝接口，绝不重复来电）----
+    @Published var practiceReminderEnabled = false { didSet { saveReminderSettings() } }
+    @Published var reminderMode = "smart" { didSet { saveReminderSettings() } }          // smart=智能 / timed=定时
+    @Published var reminderWindows: [CaptureWindow] = [] { didSet { saveReminderSettings() } }   // 智能：提醒学习时段
+    @Published var reminderTimes: [Date] = [] { didSet { saveReminderSettings() } }              // 定时：多个时间点
+    @Published var incomingReminder: ScenarioSummary?      // 非空=弹出「私教来电」
+    @Published var reminderPracticeScene: ScenarioSummary? // 接听并选「现在练习」→ 主界面弹角色选择
+    private var reminderTimer: Timer?
+    private var firedTimedKeys: Set<String> = []           // 「日期-HH:mm」已触发标记，防同一时间点重复响铃
+
+    private func saveReminderSettings() {
+        defaults.set(practiceReminderEnabled, forKey: DefaultsKey.reminderEnabled)
+        defaults.set(reminderMode, forKey: DefaultsKey.reminderMode)
+        if let data = try? JSONEncoder().encode(reminderWindows) {
+            defaults.set(data, forKey: DefaultsKey.reminderWindows)
+        }
+        defaults.set(reminderTimes.map { $0.timeIntervalSince1970 }, forKey: DefaultsKey.reminderTimes)
+    }
+
+    private func loadReminderSettings() {
+        practiceReminderEnabled = defaults.bool(forKey: DefaultsKey.reminderEnabled)
+        reminderMode = defaults.string(forKey: DefaultsKey.reminderMode) ?? "smart"
+        if let data = defaults.data(forKey: DefaultsKey.reminderWindows),
+           let windows = try? JSONDecoder().decode([CaptureWindow].self, from: data) {
+            reminderWindows = windows
+        }
+        if let stamps = defaults.array(forKey: DefaultsKey.reminderTimes) as? [Double] {
+            reminderTimes = stamps.map { Date(timeIntervalSince1970: $0) }
+        }
+    }
+
+    func startReminderScheduler() {
+        reminderTimer?.invalidate()
+        reminderTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkPracticeReminder() }
+        }
+    }
+
+    /// 智能来电判定（全部在 App 端做，后端无状态）：
+    /// 开关开 + 已登录 + 当前不在任何对话/采集中 + 时段/时间点满足 → 问后端有没有「新增未练习」场景 → 弹私教来电。
+    /// 没有新场景时后端一次轻查询即返回（用户要求：无新场景不做任何空闲分析，不浪费资源）。
+    func checkPracticeReminder() async {
+        guard practiceReminderEnabled, let token = auth.token, incomingReminder == nil else { return }
+        // 忙碌判定：正在对话/私教/实时语音/采集/处理中都不打扰
+        guard isVoiceConversationActive == false, showFreeTalk == false, showVoiceLLM == false,
+              speech.isRecording == false, isWorking == false, pendingPractice == nil,
+              reminderPracticeScene == nil else { return }
+        let now = Date()
+        let cal = Calendar.current
+        let minuteOfDay = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
+        if reminderMode == "smart" {
+            // 智能：有设置时段则须在时段内；没设置则默认 9:00-21:00（避开深夜/清晨）
+            let windows = reminderWindows
+            let inWindow: Bool
+            if windows.isEmpty {
+                inWindow = (minuteOfDay >= 9 * 60 && minuteOfDay <= 21 * 60)
+            } else {
+                inWindow = windows.contains { w in
+                    let s = cal.component(.hour, from: w.start) * 60 + cal.component(.minute, from: w.start)
+                    let e = cal.component(.hour, from: w.end) * 60 + cal.component(.minute, from: w.end)
+                    return s <= e ? (minuteOfDay >= s && minuteOfDay <= e) : (minuteOfDay >= s || minuteOfDay <= e)
+                }
+            }
+            guard inWindow else { return }
+        } else {
+            // 定时：到达某个时间点(±2.5 分钟)且今天该点没响过
+            let df = DateFormatter(); df.dateFormat = "HH:mm"
+            let dayKey = ISO8601DateFormatter().string(from: cal.startOfDay(for: now))
+            var matched: String?
+            for t in reminderTimes {
+                let m = cal.component(.hour, from: t) * 60 + cal.component(.minute, from: t)
+                if abs(minuteOfDay - m) <= 2, firedTimedKeys.contains("\(dayKey)-\(m)") == false {
+                    matched = "\(dayKey)-\(m)"
+                    break
+                }
+            }
+            guard let key = matched else { return }
+            firedTimedKeys.insert(key)
+        }
+        // 时段/时间点满足 → 只此一步查后端；无新场景则什么都不发生
+        guard let scenario = ((try? await api.reminderPending(token: token)) ?? nil) else { return }
+        incomingReminder = scenario
+    }
+
+    /// 挂断/暂不练习：该场景永不再来电（后端幂等记录），以后手工进场景练即可。
+    func declineReminder() {
+        guard let scenario = incomingReminder else { return }
+        incomingReminder = nil
+        guard let token = auth.token else { return }
+        Task { try? await api.reminderDismiss(sceneId: scenario.sceneId, token: token) }
+    }
+
+    /// 接听并选「现在练习」：走与点场景卡完全相同的流程（选角色 → 继续/重新 → 按设置询问对话方式）。
+    func acceptReminder() {
+        guard let scenario = incomingReminder else { return }
+        incomingReminder = nil
+        voice.stop()
+        reminderPracticeScene = scenario
+    }
     @Published var appearance: AppAppearance = .system
     @Published var fontScale: Double = 1.0
     @Published var lastSpokenAnswer = ""
@@ -252,6 +352,10 @@ final class AppModel: ObservableObject {
         static let guidancePreference = "realtalk.guidancePreference"
         static let conversationPreference = "realtalk.conversationPreference"
         static let showChineseHint = "realtalk.showChineseHint"
+        static let reminderEnabled = "realtalk.reminderEnabled"
+        static let reminderMode = "realtalk.reminderMode"
+        static let reminderWindows = "realtalk.reminderWindows"
+        static let reminderTimes = "realtalk.reminderTimes"
     }
 
     init() {
@@ -268,6 +372,8 @@ final class AppModel: ObservableObject {
             showChineseHint = defaults.bool(forKey: DefaultsKey.showChineseHint)
         }
         captureWindows = Self.loadCaptureWindows(defaults)
+        loadReminderSettings()
+        startReminderScheduler()
         if let raw = defaults.string(forKey: DefaultsKey.appearance),
            let value = AppAppearance(rawValue: raw) {
             appearance = value

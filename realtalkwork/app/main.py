@@ -83,6 +83,8 @@ from .schemas import (
     PracticeHistoryResponse,
     PriceResponse,
     RechargeConfirmRequest,
+    ReminderDismissRequest,
+    ReminderPendingResponse,
     RechargeCreateRequest,
     RechargeQueryRequest,
     RechargeOrderResponse,
@@ -2424,6 +2426,31 @@ def history_window_days(tier: str) -> int:
     return HISTORY_WINDOW_DAYS.get(tier, 2)
 
 
+@app.get("/reminder/pending", response_model=ReminderPendingResponse)
+def reminder_pending(user: UserOut = Depends(current_user)) -> ReminderPendingResponse:
+    """学习提醒（智能电话）：返回最新一个「7 天内新增、从没练过、也没被用户拒绝过」的场景。
+    App 侧判定空闲/时段后来查询；后端无状态、幂等 → 多活部署不会重复来电。"""
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    items = db.list_scenarios(user.id, since, None, limit=50)
+    if not items:
+        return ReminderPendingResponse()
+    dismissed = db.list_dismissed_reminders(user.id)
+    candidates = [
+        s for s in _summaries_with_last_score(user.id, items)
+        if s.scene_id not in dismissed and s.last_practiced_at is None and s.in_progress is False
+    ]
+    if not candidates:
+        return ReminderPendingResponse()
+    return ReminderPendingResponse(scenario=max(candidates, key=lambda s: s.created_at))
+
+
+@app.post("/reminder/dismiss")
+def reminder_dismiss(request: ReminderDismissRequest, user: UserOut = Depends(current_user)) -> dict:
+    """用户挂断/暂不练习：该场景永不再来电（后续手工进入练习即可）。幂等。"""
+    db.dismiss_reminder(user.id, request.scene_id)
+    return {"ok": True}
+
+
 @app.get("/scenario/list", response_model=ScenarioListResponse)
 def scenario_list(
     start: datetime | None = Query(default=None),
@@ -3065,7 +3092,7 @@ async def freetalk_stream(
             result = await generate_freetalk_reply(
                 recognized,
                 db.get_user_memory(user.id),
-                db.list_freetalk_messages(user.id, limit=20),
+                db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史(200条)都给上下文，按预算裁剪在模型侧做
                 user_id=user.id,
             )
             # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)

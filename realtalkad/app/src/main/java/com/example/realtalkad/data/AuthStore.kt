@@ -25,6 +25,20 @@ class AuthStore(context: Context) {
         get() = prefs.getBoolean("show_chinese_hint", true)
         set(value) = prefs.edit().putBoolean("show_chinese_hint", value).apply()
 
+    // 学习提醒（智能电话）：App 主导触发；windows/times 均为 "HH:mm-HH:mm;…" / "HH:mm;…" 串
+    var reminderEnabled: Boolean
+        get() = prefs.getBoolean("reminder_enabled", false)
+        set(value) = prefs.edit().putBoolean("reminder_enabled", value).apply()
+    var reminderMode: String
+        get() = prefs.getString("reminder_mode", "smart") ?: "smart"
+        set(value) = prefs.edit().putString("reminder_mode", value).apply()
+    var reminderWindows: String
+        get() = prefs.getString("reminder_windows", "") ?: ""
+        set(value) = prefs.edit().putString("reminder_windows", value).apply()
+    var reminderTimes: String
+        get() = prefs.getString("reminder_times", "") ?: ""
+        set(value) = prefs.edit().putString("reminder_times", value).apply()
+
     // 指导方式偏好：ask / realtime / final（默认 ask=每次询问）。对话中不可切换。
     var guidancePreference: String
         get() = prefs.getString("guidance_pref", "ask") ?: "ask"

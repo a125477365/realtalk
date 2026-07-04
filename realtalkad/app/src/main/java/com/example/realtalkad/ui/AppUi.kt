@@ -634,6 +634,17 @@ fun MainChatScreen(model: AppViewModel) {
     // 自由对话（一对一语音老师）
     val showFreeTalk by model.showFreeTalk.collectAsState()
     if (showFreeTalk) FreeTalkScreen(model)
+    // 学习提醒「私教来电」
+    val incomingReminder by model.incomingReminder.collectAsState()
+    incomingReminder?.let { ReminderCallScreen(model, it) }
+    // 来电中选「现在练习」→ 走与点场景卡完全相同的流程（选角色 → 继续/重新 → 对话方式）
+    val reminderScene by model.reminderPracticeScene.collectAsState()
+    LaunchedEffect(reminderScene) {
+        reminderScene?.let {
+            model.reminderPracticeScene.value = null
+            roleDialogFor = it
+        }
+    }
 }
 
 /** 对话前询问：指导/对话方式设为「每次询问」时，开练前选择本次方式（可勾选以后不再询问）。 */

@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -130,6 +131,14 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     // ---- 场景 ----
     suspend fun todayScenarios(token: String): ScenarioListResponse = get("/scenario/today", token)
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)
+
+    // ---- 学习提醒（智能电话）：App 主导触发，后端只回待提醒场景/记录拒绝 ----
+    suspend fun reminderPending(token: String): ScenarioSummary? =
+        get<ReminderPendingResponse>("/reminder/pending", token).scenario
+
+    suspend fun reminderDismiss(sceneId: String, token: String) {
+        post<ReminderDismissRequest, JsonObject>("/reminder/dismiss", ReminderDismissRequest(sceneId), token)
+    }
     suspend fun scenarioDetail(sceneId: String, token: String): Scenario = get("/scenario/$sceneId", token)
 
     /** 删除用户自己的场景（预置通用场景不可删）。 */

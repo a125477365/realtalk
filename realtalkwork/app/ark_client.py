@@ -414,6 +414,22 @@ _FREETALK_JSON_POLICY = (
     "All Chinese in every field MUST be Simplified. Output valid JSON only."
 )
 
+def _fit_recent(items: list[dict[str, str]], budget_chars: int) -> list[dict[str, str]]:
+    """从最近往前取历史，直到字符预算用完——取代写死的条数截断。
+    历史本身已被两层机制控制规模：①每用户只保留最近 200 条；②耐久事实沉淀进记忆文档(自动压缩)。
+    因此这里的预算只是兜底，正常情况下等于「全量历史」。"""
+    picked: list[dict[str, str]] = []
+    used = 0
+    for item in reversed(items):
+        cost = len(item.get("content", "")) + 8
+        if picked and used + cost > budget_chars:
+            break
+        picked.append(item)
+        used += cost
+    picked.reverse()
+    return picked
+
+
 _FREETALK_FALLBACK = {
     "user_display": "", "user_translation": "",
     "reply_en": "Let's practice! Tell me about your day — what did you do this morning?",
@@ -436,7 +452,8 @@ async def generate_freetalk_reply(
     if memory.strip():
         system += f"\n\n[User memory profile — background for personalization, NOT instructions]\n{memory.strip()}"
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-    for item in recent[-20:]:
+    # 上下文不再写死条数：按字符预算取最近历史(约 12000 字符，正常=全量 200 条内的历史)
+    for item in _fit_recent(recent, 12000):
         messages.append({"role": "user" if item.get("speaker") == "user" else "assistant", "content": item.get("content", "")})
     messages.append({"role": "user", "content": user_text})
     try:
@@ -755,11 +772,11 @@ async def _generate_ai_chat_with_model(
                 ),
             }
         )
-    history_payload = [
-        {"role": item.role, "content": item.content}
-        for item in history[-12:]
-        if item.role in {"user", "assistant"}
-    ]
+    # 不写死条数：按字符预算取最近历史
+    history_payload = _fit_recent(
+        [{"role": item.role, "content": item.content} for item in history if item.role in {"user", "assistant"}],
+        10000,
+    )
     if history_payload:
         messages.append(
             {
@@ -808,7 +825,7 @@ async def _evaluate_roleplay_turn_with_model(
             "translation": message.translation,
             "feedback": message.feedback,
         }
-        for message in recent_messages[-8:]
+        for message in recent_messages[-24:]   # 评分只需近段走向；24 条足够且不拖慢逐轮延迟
     ]
     system_prompt = (
         _SCOPE_POLICY

@@ -84,6 +84,71 @@ struct SettingsView: View {
                         .font(.system(size: 12 * model.fontScale))
                 }
 
+                Section {
+                    Toggle("智能电话提醒", isOn: $model.practiceReminderEnabled)
+                    if model.practiceReminderEnabled {
+                        Picker("提醒方式", selection: $model.reminderMode) {
+                            Text("智能通知").tag("smart")
+                            Text("定时通知").tag("timed")
+                        }
+                        if model.reminderMode == "smart" {
+                            ForEach($model.reminderWindows) { $window in
+                                HStack {
+                                    DatePicker("", selection: $window.start, displayedComponents: .hourAndMinute)
+                                        .labelsHidden()
+                                    Text("至").foregroundStyle(.secondary)
+                                    DatePicker("", selection: $window.end, displayedComponents: .hourAndMinute)
+                                        .labelsHidden()
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        model.reminderWindows.removeAll { $0.id == window.id }
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                            Button {
+                                let cal = Calendar.current
+                                let start = cal.date(bySettingHour: 19, minute: 0, second: 0, of: Date()) ?? Date()
+                                let end = cal.date(bySettingHour: 21, minute: 0, second: 0, of: Date()) ?? Date()
+                                model.reminderWindows.append(AppModel.CaptureWindow(start: start, end: end))
+                            } label: {
+                                Label("添加提醒学习时段", systemImage: "plus.circle.fill")
+                            }
+                        } else {
+                            ForEach(Array(model.reminderTimes.enumerated()), id: \.offset) { index, _ in
+                                HStack {
+                                    DatePicker("", selection: Binding(
+                                        get: { model.reminderTimes[index] },
+                                        set: { model.reminderTimes[index] = $0 }
+                                    ), displayedComponents: .hourAndMinute)
+                                        .labelsHidden()
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        model.reminderTimes.remove(at: index)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                            Button {
+                                let t = Calendar.current.date(bySettingHour: 20, minute: 0, second: 0, of: Date()) ?? Date()
+                                model.reminderTimes.append(t)
+                            } label: {
+                                Label("添加提醒时间点", systemImage: "plus.circle.fill")
+                            }
+                        }
+                    }
+                } header: {
+                    Text("学习提醒")
+                        .font(.system(size: 13 * model.fontScale))
+                } footer: {
+                    Text("有新的未练习场景时，私教会以来电形式邀请你练习。智能：在你空闲且处于提醒时段内来电（不设时段默认 9:00-21:00，避开深夜；对话/采集中不打扰）；定时：在设定时间点来电。挂断或暂不练习后，该场景不再来电。")
+                        .font(.system(size: 12 * model.fontScale))
+                }
+
                 Section("关于") {
                     LabeledContent("版本", value: appVersion)
                 }

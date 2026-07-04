@@ -789,6 +789,16 @@ class ScenarioListResponse(BaseModel):
     generated: bool = False  # 本次请求是否触发了自动生成
 
 
+# ---- 学习提醒（智能电话）：App 主导触发，后端只回「待提醒场景」并记录拒绝 ----
+
+class ReminderPendingResponse(BaseModel):
+    scenario: ScenarioSummary | None = None   # 最新的「未练习、未被拒绝」场景；无则 None
+
+
+class ReminderDismissRequest(BaseModel):
+    scene_id: str = Field(max_length=64)
+
+
 # ============================================================
 # Payment Webhooks
 # ============================================================

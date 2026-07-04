@@ -340,6 +340,23 @@ final class APIClient {
         return URL(string: s)
     }
 
+    // ---- 学习提醒（智能电话）：App 主导触发，后端只回待提醒场景/记录拒绝 ----
+
+    private struct ReminderPendingResponse: Codable {
+        let scenario: ScenarioSummary?
+    }
+
+    func reminderPending(token: String) async throws -> ScenarioSummary? {
+        let resp: ReminderPendingResponse = try await get("/reminder/pending", token: token, queryItems: [])
+        return resp.scenario
+    }
+
+    func reminderDismiss(sceneId: String, token: String) async throws {
+        struct Req: Codable { let sceneId: String }
+        struct Resp: Codable { let ok: Bool }
+        let _: Resp = try await post("/reminder/dismiss", body: Req(sceneId: sceneId), token: token)
+    }
+
     func evaluateRoleplay(sessionId: String, token: String) async throws -> RoleplayStateResponse {
         try await post(
             "/roleplay/evaluate",

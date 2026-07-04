@@ -203,6 +203,15 @@ freetalk_messages = Table(
 )
 Index("idx_freetalk_messages_user_created", freetalk_messages.c.user_id, freetalk_messages.c.created_at)
 
+# 学习提醒：用户拒绝过(挂断/暂不)的场景不再来电。App 主导触发，后端只记幂等状态 → 多活不重复。
+reminder_dismissed = Table(
+    "reminder_dismissed",
+    metadata,
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("scene_id", Text, primary_key=True),
+    Column("created_at", Text, nullable=False),
+)
+
 # 用户学习记忆（仿 Claude 记忆文档）：每用户一份 Markdown 式摘要（英文水平/常错点/习惯/生活背景/练习偏好），
 # 由模型在对话后增量维护；超长自动压缩（见 ark_client.update_freetalk_memory）。
 user_memory = Table(
@@ -2450,6 +2459,24 @@ class Database:
                 .fetchall()
             )
         return [{"speaker": r["speaker"], "content": r["content"]} for r in reversed(rows)]
+
+    # ---- 学习提醒（智能电话）----
+
+    def dismiss_reminder(self, user_id: str, scene_id: str) -> None:
+        """该场景不再来电提醒（用户挂断/暂不练习）。幂等：重复调用不报错。"""
+        now = _iso(_now())
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(insert(reminder_dismissed).values(user_id=user_id, scene_id=scene_id, created_at=now))
+        except DatabaseIntegrityError:
+            pass
+
+    def list_dismissed_reminders(self, user_id: str) -> set[str]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(reminder_dismissed.c.scene_id).where(reminder_dismissed.c.user_id == user_id)
+            ).fetchall()
+        return {r[0] for r in rows}
 
     def get_user_memory(self, user_id: str) -> str:
         with self.engine.connect() as conn:

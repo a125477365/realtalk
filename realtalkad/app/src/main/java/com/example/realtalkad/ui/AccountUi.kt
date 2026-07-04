@@ -560,6 +560,59 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                 Switch(checked = showChineseHint, onCheckedChange = { model.setShowChineseHint(it) })
             }
         }
+        item {
+            val reminderEnabled by model.reminderEnabled.collectAsState()
+            val reminderMode by model.reminderMode.collectAsState()
+            val reminderWindows by model.reminderWindows.collectAsState()
+            val reminderTimes by model.reminderTimes.collectAsState()
+            Column {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("智能电话提醒", fontWeight = FontWeight.SemiBold)
+                        Text("有新的未练习场景时，私教以来电形式邀请你练习；挂断/暂不后该场景不再来电", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                    }
+                    Switch(checked = reminderEnabled, onCheckedChange = { model.setReminderEnabled(it) })
+                }
+                if (reminderEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    BrandSegmented(
+                        options = listOf("smart" to "智能通知", "timed" to "定时通知"),
+                        selected = reminderMode,
+                        fontScale = fontScale,
+                        onSelect = { model.setReminderMode(it) },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    if (reminderMode == "smart") {
+                        Text("提醒学习时段（不设默认 9:00-21:00，避开深夜；对话/采集中不打扰）", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                        reminderWindows.forEachIndexed { index, window ->
+                            Spacer(Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TimeField("开始", window.first, Modifier.weight(1f), fontScale = fontScale) {
+                                    model.setReminderWindows(reminderWindows.toMutableList().apply { this[index] = it to window.second })
+                                }
+                                TimeField("结束", window.second, Modifier.weight(1f), fontScale = fontScale) {
+                                    model.setReminderWindows(reminderWindows.toMutableList().apply { this[index] = window.first to it })
+                                }
+                                TextButton(onClick = { model.setReminderWindows(reminderWindows.filterIndexed { i, _ -> i != index }) }) { Text("删除") }
+                            }
+                        }
+                        TextButton(onClick = { model.setReminderWindows(reminderWindows + ("19:00" to "21:00")) }) { Text("＋ 添加提醒学习时段") }
+                    } else {
+                        Text("提醒时间点（可加多个）", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                        reminderTimes.forEachIndexed { index, t ->
+                            Spacer(Modifier.height(6.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TimeField("时间", t, Modifier.weight(1f), fontScale = fontScale) {
+                                    model.setReminderTimes(reminderTimes.toMutableList().apply { this[index] = it })
+                                }
+                                TextButton(onClick = { model.setReminderTimes(reminderTimes.filterIndexed { i, _ -> i != index }) }) { Text("删除") }
+                            }
+                        }
+                        TextButton(onClick = { model.setReminderTimes(reminderTimes + "20:00") }) { Text("＋ 添加提醒时间点") }
+                    }
+                }
+            }
+        }
         if (ttsConfigured && ttsVoices.isNotEmpty()) {
             item {
                 Text("AI 朗读音色", fontWeight = FontWeight.SemiBold)

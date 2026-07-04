@@ -162,6 +162,12 @@ data class ScenarioSummary(
 data class ScenarioListResponse(val items: List<ScenarioSummary>, val generated: Boolean = false)
 
 @Serializable
+data class ReminderPendingResponse(val scenario: ScenarioSummary? = null)
+
+@Serializable
+data class ReminderDismissRequest(@SerialName("scene_id") val sceneId: String)
+
+@Serializable
 data class RoleplayStartRequest(
     val start: String,
     val end: String,

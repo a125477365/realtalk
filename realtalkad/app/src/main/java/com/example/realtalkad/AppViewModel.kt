@@ -127,6 +127,86 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeTalkWorking.value = false
         showFreeTalk.value = false
     }
+
+    // ---- 学习提醒（智能电话）：App 主导触发（多活后端只提供幂等查询/拒绝接口，绝不重复来电）----
+    val reminderEnabled = MutableStateFlow(auth.reminderEnabled)
+    val reminderMode = MutableStateFlow(auth.reminderMode)              // smart=智能 / timed=定时
+    val reminderWindows = MutableStateFlow(parseWindows(auth.reminderWindows))   // 智能：提醒学习时段
+    val reminderTimes = MutableStateFlow(auth.reminderTimes.split(";").filter { it.isNotBlank() })  // 定时：HH:mm 列表
+    val incomingReminder = MutableStateFlow<ScenarioSummary?>(null)     // 非空=弹出「私教来电」
+    val reminderPracticeScene = MutableStateFlow<ScenarioSummary?>(null) // 接听并选「现在练习」→ 主界面弹角色选择
+    private val firedTimedKeys = mutableSetOf<String>()
+
+    private fun parseWindows(raw: String): List<Pair<String, String>> =
+        raw.split(";").filter { it.contains("-") }.map { val p = it.split("-"); p[0] to p[1] }
+
+    fun setReminderEnabled(v: Boolean) { reminderEnabled.value = v; auth.reminderEnabled = v }
+    fun setReminderMode(v: String) { reminderMode.value = v; auth.reminderMode = v }
+    fun setReminderWindows(v: List<Pair<String, String>>) {
+        reminderWindows.value = v; auth.reminderWindows = v.joinToString(";") { "${it.first}-${it.second}" }
+    }
+    fun setReminderTimes(v: List<String>) { reminderTimes.value = v; auth.reminderTimes = v.joinToString(";") }
+
+    init {
+        // 每 2 分钟检查一次学习提醒（App 前台运行时）
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(120_000)
+                runCatching { checkPracticeReminder() }
+            }
+        }
+    }
+
+    private fun minuteOf(hhmm: String): Int {
+        val p = hhmm.split(":"); return (p.getOrNull(0)?.toIntOrNull() ?: 0) * 60 + (p.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+
+    /** 智能来电判定（全部在 App 端做，后端无状态）：开关开+已登录+不在任何对话/采集中+时段/时间点满足
+     *  → 问后端有没有「新增未练习」场景 → 弹私教来电。无新场景时后端一次轻查询即返回（不做空闲分析，不浪费资源）。 */
+    private suspend fun checkPracticeReminder() {
+        if (!reminderEnabled.value) return
+        val token = auth.token ?: return
+        if (incomingReminder.value != null || reminderPracticeScene.value != null) return
+        // 忙碌判定：正在对话/私教/实时语音/采集/处理中都不打扰
+        if (isVoiceActive.value || showFreeTalk.value || showVoiceLLM.value || showImmersive.value ||
+            isRecording.value || isWorking.value) return
+        val cal = java.util.Calendar.getInstance()
+        val nowMin = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+        if (reminderMode.value == "smart") {
+            val windows = reminderWindows.value
+            val inWindow = if (windows.isEmpty()) nowMin in (9 * 60)..(21 * 60)
+            else windows.any { (s, e) ->
+                val sm = minuteOf(s); val em = minuteOf(e)
+                if (sm <= em) nowMin in sm..em else (nowMin >= sm || nowMin <= em)
+            }
+            if (!inWindow) return
+        } else {
+            val dayKey = "${cal.get(java.util.Calendar.YEAR)}-${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
+            val hit = reminderTimes.value.firstOrNull { t ->
+                kotlin.math.abs(nowMin - minuteOf(t)) <= 2 && !firedTimedKeys.contains("$dayKey-$t")
+            } ?: return
+            firedTimedKeys.add("$dayKey-$hit")
+        }
+        // 时段/时间点满足 → 只此一步查后端；无新场景则什么都不发生
+        val scenario = runCatching { api.reminderPending(token) }.getOrNull() ?: return
+        incomingReminder.value = scenario
+    }
+
+    /** 挂断/暂不练习：该场景永不再来电（后端幂等记录），以后手工进场景练即可。 */
+    fun declineReminder() {
+        val scenario = incomingReminder.value ?: return
+        incomingReminder.value = null
+        val token = auth.token ?: return
+        viewModelScope.launch { runCatching { api.reminderDismiss(scenario.sceneId, token) } }
+    }
+
+    /** 接听并选「现在练习」：走与点场景卡完全相同的流程（选角色 → 继续/重新 → 按设置询问对话方式）。 */
+    fun acceptReminder() {
+        val scenario = incomingReminder.value ?: return
+        incomingReminder.value = null
+        voice.stop()
+        reminderPracticeScene.value = scenario
+    }
     val presetCatalog = MutableStateFlow<List<com.example.realtalkad.data.PresetSceneGroup>>(emptyList()) // 通用场景：运维预置的全局场景（分组）
     // 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在顶部短暂提示）
     val failureAlert = MutableStateFlow<FailureAlert?>(null)
