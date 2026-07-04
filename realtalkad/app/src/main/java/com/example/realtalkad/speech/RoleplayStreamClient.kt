@@ -61,9 +61,13 @@ class RoleplayStreamClient(private val context: Context) {
     private var heardSpeech = false
     private var silentMs = 0L
     private var bargeTicks = 0
+    private var utteranceMs = 0L
+    private var noiseFloor = 0.1f            // 自适应环境噪声本底（绝对阈值在有底噪时会一直判成“在说话”）
     private val tickMs = 100L
-    private val silenceThresholdMs = 1500L   // 说完到发送的停顿判定，越小越跟手
-    private val speechLevel = 0.12f
+    private val silenceThresholdMs = 1000L   // 说完到发送的停顿判定，越小越跟手
+    private val maxUtteranceMs = 15000L       // 兜底：一句(含持续噪声)最长强制提交，避免永远卡在“聆听”
+    private val speechMargin = 0.10f          // 高于本底这么多算“在说话”
+    private val silenceMargin = 0.045f        // 低于本底+这么多算“静音”
     private val bargeLevel = 0.2f
     private val bargeNeeded = 3
 
@@ -160,7 +164,7 @@ class RoleplayStreamClient(private val context: Context) {
             runCatching { rec.release() }; out.delete(); return
         }
         recorder = rec; file = out
-        heardSpeech = false; silentMs = 0; bargeTicks = 0
+        heardSpeech = false; silentMs = 0; bargeTicks = 0; utteranceMs = 0
         if (meterJob == null) {
             meterJob = scope.launch {
                 while (active) { delay(tickMs); meterTick() }
@@ -181,11 +185,19 @@ class RoleplayStreamClient(private val context: Context) {
             } else bargeTicks = 0
             return
         }
-        if (level >= speechLevel) { heardSpeech = true; silentMs = 0 }
-        else if (heardSpeech) {
-            silentMs += tickMs
-            if (silentMs >= silenceThresholdMs) commitUtterance()
+        // 自适应 VAD：以「相对环境本底」判定，避免安静房间底噪被误判为一直在说话（从不提交、从不变红）
+        if (!heardSpeech) noiseFloor = (noiseFloor * 0.92f + level * 0.08f).coerceAtMost(0.5f)
+        val speechThresh = noiseFloor + speechMargin
+        val silenceThresh = noiseFloor + silenceMargin
+        if (level >= speechThresh) {
+            heardSpeech = true; silentMs = 0; utteranceMs += tickMs
+        } else if (heardSpeech) {
+            utteranceMs += tickMs
+            if (level <= silenceThresh) silentMs += tickMs else silentMs = 0
+            if (silentMs >= silenceThresholdMs) { commitUtterance(); return }
         }
+        // 兜底：一句(含持续噪声)说太久 → 强制提交
+        if (heardSpeech && utteranceMs >= maxUtteranceMs) commitUtterance()
     }
 
     private fun bargeIn() {

@@ -1000,9 +1000,25 @@ def _repair_roleplay_evaluation(
     correction = evaluation.correction.strip() or target_line.english
     # 字幕用「用户实际想表达」的整理版；模型没给则退回用户识别原文（仍是用户自己说的，不用正确答案）
     user_said = (evaluation.user_said or "").strip() or user_text.strip()
+    accepted = bool(evaluation.accepted)
+    # 防「模型过度接受」：弱模型偶尔把风马牛不相及的句子判 accepted=true（截图里 "okay thank you"
+    # 被判通过目标 "今天的皇堡很不错"）。用离线相似度兜底校验：说的内容与目标几乎无重叠时强制打回，
+    # 让实时指导给出纠正而不是放行。空输入不校验（交由模型/上层处理）。
+    probe = (user_said or user_text).strip()
+    if accepted and probe:
+        # 用「实义词是否有重叠」兜底：字符相似度对无关英文句会因共用字母虚高，故只看内容词。
+        _stop = {"the", "a", "an", "is", "are", "am", "to", "of", "and", "you", "i", "it",
+                 "that", "this", "do", "for", "me", "my", "your", "please", "okay", "ok", "yeah", "yes", "no"}
+        nu = set(_normalize_for_score(probe).split()) - _stop
+        nt = set(_normalize_for_score(target_line.english).split()) - _stop
+        if len(nt) >= 2 and not (nu & nt):   # 目标有≥2个实义词，用户一个都没命中 → 完全不搭
+            accepted = False
+            score = min(score, 0.3)
+            if not evaluation.feedback.strip():
+                feedback = "这句和目标意思差得比较远，我们照参考再说一遍。"
     return RoleplayEvaluation(
         score=round(score, 3),
-        accepted=bool(evaluation.accepted),
+        accepted=accepted,
         feedback=feedback,
         correction=correction,
         user_said=user_said,

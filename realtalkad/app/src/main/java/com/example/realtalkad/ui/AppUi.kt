@@ -384,19 +384,12 @@ fun MainChatScreen(model: AppViewModel) {
                 Text("场景列表与日期选择", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
             }
             Spacer(Modifier.weight(1f))
-            // 主界面最右侧：AI英语私教。与左侧「圆形头像 + 文字」对称：文字无背景 + 场景色(surface)圆形电话图标
-            Row(
-                Modifier.clickable { model.startFreeTalk() },
-                verticalAlignment = Alignment.CenterVertically,
+            // 主界面最右侧：AI英语私教入口——绿色圆形电话按钮（与左侧圆形头像对称）
+            Box(
+                Modifier.size(36.dp).background(RT.Success, CircleShape).clickable { model.startFreeTalk() },
+                contentAlignment = Alignment.Center,
             ) {
-                Text("AI英语私教", color = RT.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier.size(36.dp).background(RT.Surface, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("☎", color = RT.Accent, fontSize = 18.sp)
-                }
+                Text("☎", color = Color.White, fontSize = 18.sp)
             }
         }
 

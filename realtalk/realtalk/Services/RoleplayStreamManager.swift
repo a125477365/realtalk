@@ -35,9 +35,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var heardSpeech = false
     private var silentTicks = 0
     private var bargeTicks = 0
+    private var utteranceTicks = 0
+    private var noiseFloor: Double = 0.15            // 自适应环境噪声本底（关键：绝对阈值在有底噪时会一直判成“在说话”）
     private let tick: TimeInterval = 0.1
-    private let silenceThreshold: TimeInterval = 1.5   // 说完到发送的停顿判定，越小越跟手
-    private let speechLevel: Double = 0.12
+    private let silenceThreshold: TimeInterval = 1.0 // 说完到发送的停顿判定，越小越跟手
+    private let maxUtterance: TimeInterval = 15       // 兜底：一句(含持续噪声)最长强制提交，避免永远卡在“聆听”
+    private let speechMargin: Double = 0.10           // 高于本底这么多算“在说话”
+    private let silenceMargin: Double = 0.045         // 低于本底+这么多算“静音”
     private let bargeLevel: Double = 0.2
     private let bargeNeeded = 3   // 连续 N 个 tick 高能量才算抢话，避免误触
 
@@ -154,6 +158,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         heardSpeech = false
         silentTicks = 0
         bargeTicks = 0
+        utteranceTicks = 0
         if meterTimer == nil {
             meterTimer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.meterTick() }
@@ -185,15 +190,27 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             return
         }
 
-        // 普通 VAD：说话→静音到阈值即提交一句
-        if level >= speechLevel {
+        // 自适应 VAD：以「相对环境本底」判定说话/静音，避免安静房间底噪(level≈0.2>固定阈值)被误判为一直在说话
+        if !heardSpeech {
+            noiseFloor = min(0.5, noiseFloor * 0.92 + level * 0.08)   // 只在未说话时缓慢跟踪本底
+        }
+        let speechThresh = noiseFloor + speechMargin
+        let silenceThresh = noiseFloor + silenceMargin
+        if level >= speechThresh {
             heardSpeech = true
             silentTicks = 0
+            utteranceTicks += 1
         } else if heardSpeech {
-            silentTicks += 1
+            utteranceTicks += 1
+            if level <= silenceThresh { silentTicks += 1 } else { silentTicks = 0 }
             if Double(silentTicks) * tick >= silenceThreshold {
                 commitUtterance()
+                return
             }
+        }
+        // 兜底：一句(含持续噪声)说太久 → 强制提交，避免永远卡在“聆听”从不变红
+        if heardSpeech && Double(utteranceTicks) * tick >= maxUtterance {
+            commitUtterance()
         }
     }
 

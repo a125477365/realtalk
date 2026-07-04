@@ -239,7 +239,9 @@ class RoleplayEvaluation(BaseModel):
     score: float = Field(ge=0, le=1)
     feedback: str
     correction: str
-    accepted: bool = True
+    # 默认 False：模型若漏给/给错 accepted 字段(弱模型常见)，宁可判「未通过」给出指导让用户重试，
+    # 也不要静默放行错误答案(表现为「说错了却没有任何指导」)。
+    accepted: bool = False
     # 用户本句「实际想表达」的简洁英文（去口头语/重复/无意义内容后），用于字幕显示——
     # 不是场景正确答案(correction 才是)，而是用户自己表达的整理版。
     user_said: str = ""
