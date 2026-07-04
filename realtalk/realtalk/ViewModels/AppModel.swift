@@ -1,8 +1,10 @@
 import AVFoundation
 import Combine
+import CoreMotion
 import CryptoKit
 import Foundation
 import SwiftUI
+import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -194,7 +196,15 @@ final class AppModel: ObservableObject {
     @Published var captureWindows: [CaptureWindow] = []
 
     // ---- 学习提醒（智能电话）：App 主导触发（多活后端只提供幂等查询/拒绝接口，绝不重复来电）----
-    @Published var practiceReminderEnabled = false { didSet { saveReminderSettings() } }
+    @Published var practiceReminderEnabled = false {
+        didSet {
+            saveReminderSettings()
+            // 开启时申请通知权限（后台判定命中来电时用本地通知唤起）
+            if practiceReminderEnabled {
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            }
+        }
+    }
     @Published var reminderMode = "smart" { didSet { saveReminderSettings() } }          // smart=智能 / timed=定时
     @Published var reminderWindows: [CaptureWindow] = [] { didSet { saveReminderSettings() } }   // 智能：提醒学习时段
     @Published var reminderTimes: [Date] = [] { didSet { saveReminderSettings() } }              // 定时：多个时间点
@@ -226,55 +236,104 @@ final class AppModel: ObservableObject {
 
     func startReminderScheduler() {
         reminderTimer?.invalidate()
-        reminderTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+        // 10 分钟检查一次（用户要求，不要太频繁）
+        reminderTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.checkPracticeReminder() }
         }
     }
 
-    /// 智能来电判定（全部在 App 端做，后端无状态）：
-    /// 开关开 + 已登录 + 当前不在任何对话/采集中 + 时段/时间点满足 → 问后端有没有「新增未练习」场景 → 弹私教来电。
-    /// 没有新场景时后端一次轻查询即返回（用户要求：无新场景不做任何空闲分析，不浪费资源）。
+    private let motionManager = CMMotionActivityManager()
+
+    /// 取当前运动状态（stationary/walking/running/driving/cycling/unknown）；无权限/不可用返回 nil，不影响判断。
+    private func currentMotion() async -> String? {
+        guard CMMotionActivityManager.isActivityAvailable() else { return nil }
+        return await withCheckedContinuation { cont in
+            motionManager.queryActivityStarting(from: Date().addingTimeInterval(-120), to: Date(), to: .main) { activities, _ in
+                guard let latest = activities?.last else { cont.resume(returning: nil); return }
+                let motion: String
+                if latest.automotive { motion = "driving" }
+                else if latest.cycling { motion = "cycling" }
+                else if latest.running { motion = "running" }
+                else if latest.walking { motion = "walking" }
+                else if latest.stationary { motion = "stationary" }
+                else { motion = "unknown" }
+                cont.resume(returning: motion)
+            }
+        }
+    }
+
+    /// 学习提醒判定：App 采集信号 → POST 给后端综合裁决（后端只被动应答，多活安全）。
+    /// App 端只做「明确忙碌」的先拦（在对话/采集中）与时段/时间点门槛；
+    /// 空闲综合判断（深夜/运动/心率/环境音/记忆作息）由后端在收到报文后执行。
     func checkPracticeReminder() async {
         guard practiceReminderEnabled, let token = auth.token, incomingReminder == nil else { return }
-        // 忙碌判定：正在对话/私教/实时语音/采集/处理中都不打扰
+        // 明确忙碌：正在对话/私教/实时语音/采集/处理中都不打扰
         guard isVoiceConversationActive == false, showFreeTalk == false, showVoiceLLM == false,
               speech.isRecording == false, isWorking == false, pendingPractice == nil,
               reminderPracticeScene == nil else { return }
         let now = Date()
         let cal = Calendar.current
         let minuteOfDay = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
+        // in_user_window：nil=用户没设时段(24h 交给后端综合判断)；true=在自设时段内(时段优先)；时段外直接不查
+        var inUserWindow: Bool?
         if reminderMode == "smart" {
-            // 智能：有设置时段则须在时段内；没设置则默认 9:00-21:00（避开深夜/清晨）
-            let windows = reminderWindows
-            let inWindow: Bool
-            if windows.isEmpty {
-                inWindow = (minuteOfDay >= 9 * 60 && minuteOfDay <= 21 * 60)
+            if reminderWindows.isEmpty {
+                inUserWindow = nil
             } else {
-                inWindow = windows.contains { w in
+                let inside = reminderWindows.contains { w in
                     let s = cal.component(.hour, from: w.start) * 60 + cal.component(.minute, from: w.start)
                     let e = cal.component(.hour, from: w.end) * 60 + cal.component(.minute, from: w.end)
                     return s <= e ? (minuteOfDay >= s && minuteOfDay <= e) : (minuteOfDay >= s || minuteOfDay <= e)
                 }
+                guard inside else { return }   // 用户设了时段且不在内 → 连后端都不必查
+                inUserWindow = true
             }
-            guard inWindow else { return }
         } else {
-            // 定时：到达某个时间点(±2.5 分钟)且今天该点没响过
-            let df = DateFormatter(); df.dateFormat = "HH:mm"
+            // 定时：到达某个时间点(±5 分钟，10 分钟一查)且今天该点没响过；定时=用户明确指定 → 视同自设时段
             let dayKey = ISO8601DateFormatter().string(from: cal.startOfDay(for: now))
             var matched: String?
             for t in reminderTimes {
                 let m = cal.component(.hour, from: t) * 60 + cal.component(.minute, from: t)
-                if abs(minuteOfDay - m) <= 2, firedTimedKeys.contains("\(dayKey)-\(m)") == false {
+                if abs(minuteOfDay - m) <= 5, firedTimedKeys.contains("\(dayKey)-\(m)") == false {
                     matched = "\(dayKey)-\(m)"
                     break
                 }
             }
             guard let key = matched else { return }
             firedTimedKeys.insert(key)
+            inUserWindow = true
         }
-        // 时段/时间点满足 → 只此一步查后端；无新场景则什么都不发生
-        guard let scenario = ((try? await api.reminderPending(token: token)) ?? nil) else { return }
-        incomingReminder = scenario
+        // 采集设备信号（有就传、没有传空——后端尽量综合判断）
+        let motion = await currentMotion()
+        let request = APIClient.ReminderCheckRequest(
+            localDayStart: cal.startOfDay(for: now),
+            localHour: cal.component(.hour, from: now),
+            weekday: (cal.component(.weekday, from: now) + 5) % 7,   // 转 0=周一
+            inUserWindow: inUserWindow,
+            motion: motion,
+            ambientLevel: nil,    // 预留：环境音（待授权方案确定后接入）
+            heartRate: nil        // 预留：HealthKit 心率
+        )
+        guard let resp = try? await api.reminderCheck(request, token: token) else { return }
+        if resp.decision == "call", let scenario = resp.scenario {
+            incomingReminder = scenario
+        }
+    }
+
+    /// 后台刷新（BGAppRefresh）里的判定：与前台同一套「App 触发 + 后端裁决」，
+    /// 命中来电 → 发本地通知（后台无法直接弹全屏来电界面）；点通知进 App 前台立即弹「私教来电」。
+    static func backgroundReminderCheck() async -> Bool {
+        let model = AppModel()   // 后台任务独立实例：只读设置 + 发请求，不触碰 UI
+        await model.checkPracticeReminder()
+        guard let scenario = model.incomingReminder else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "AI英语私教 来电"
+        content.body = "邀请你练习新场景《\(scenario.title)》，点按接听"
+        content.sound = .default
+        try? await UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "reminder-\(scenario.sceneId)", content: content, trigger: nil)
+        )
+        return true
     }
 
     /// 挂断/暂不练习：该场景永不再来电（后端幂等记录），以后手工进场景练即可。

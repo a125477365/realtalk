@@ -140,7 +140,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun parseWindows(raw: String): List<Pair<String, String>> =
         raw.split(";").filter { it.contains("-") }.map { val p = it.split("-"); p[0] to p[1] }
 
-    fun setReminderEnabled(v: Boolean) { reminderEnabled.value = v; auth.reminderEnabled = v }
+    fun setReminderEnabled(v: Boolean) {
+        reminderEnabled.value = v; auth.reminderEnabled = v
+        // 同步后台周期任务（WorkManager，系统最小 15 分钟）；命中来电时发通知，点开进 App 弹「私教来电」
+        ReminderWorker.schedule(getApplication(), v)
+    }
     fun setReminderMode(v: String) { reminderMode.value = v; auth.reminderMode = v }
     fun setReminderWindows(v: List<Pair<String, String>>) {
         reminderWindows.value = v; auth.reminderWindows = v.joinToString(";") { "${it.first}-${it.second}" }
@@ -148,10 +152,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setReminderTimes(v: List<String>) { reminderTimes.value = v; auth.reminderTimes = v.joinToString(";") }
 
     init {
-        // 每 2 分钟检查一次学习提醒（App 前台运行时）
+        // App 启动同步后台周期任务状态（开关开着就保证已调度）
+        ReminderWorker.schedule(getApplication(), auth.reminderEnabled)
+        // 学习提醒：进 App 15 秒后先查一次（覆盖「点通知打开」的场景），之后每 10 分钟一次（用户要求的频率）
         viewModelScope.launch {
+            kotlinx.coroutines.delay(15_000)
+            runCatching { checkPracticeReminder() }
             while (true) {
-                kotlinx.coroutines.delay(120_000)
+                kotlinx.coroutines.delay(600_000)
                 runCatching { checkPracticeReminder() }
             }
         }
@@ -161,35 +169,62 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val p = hhmm.split(":"); return (p.getOrNull(0)?.toIntOrNull() ?: 0) * 60 + (p.getOrNull(1)?.toIntOrNull() ?: 0)
     }
 
-    /** 智能来电判定（全部在 App 端做，后端无状态）：开关开+已登录+不在任何对话/采集中+时段/时间点满足
-     *  → 问后端有没有「新增未练习」场景 → 弹私教来电。无新场景时后端一次轻查询即返回（不做空闲分析，不浪费资源）。 */
-    private suspend fun checkPracticeReminder() {
+    /** 学习提醒判定：App 采集信号 → POST 给后端综合裁决（后端只被动应答，多活安全）。
+     *  App 端只做「明确忙碌」先拦（对话/采集中）与时段/时间点门槛；
+     *  空闲综合判断（深夜/运动/心率/环境音/记忆作息）由后端在收到报文后执行。 */
+    suspend fun checkPracticeReminder() {
         if (!reminderEnabled.value) return
         val token = auth.token ?: return
         if (incomingReminder.value != null || reminderPracticeScene.value != null) return
-        // 忙碌判定：正在对话/私教/实时语音/采集/处理中都不打扰
+        // 明确忙碌：正在对话/私教/实时语音/采集/处理中都不打扰
         if (isVoiceActive.value || showFreeTalk.value || showVoiceLLM.value || showImmersive.value ||
             isRecording.value || isWorking.value) return
         val cal = java.util.Calendar.getInstance()
         val nowMin = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+        // in_user_window：null=没设时段(24h 交给后端综合判断)；true=在自设时段内(时段优先)；时段外直接不查
+        var inUserWindow: Boolean? = null
         if (reminderMode.value == "smart") {
             val windows = reminderWindows.value
-            val inWindow = if (windows.isEmpty()) nowMin in (9 * 60)..(21 * 60)
-            else windows.any { (s, e) ->
-                val sm = minuteOf(s); val em = minuteOf(e)
-                if (sm <= em) nowMin in sm..em else (nowMin >= sm || nowMin <= em)
+            if (windows.isNotEmpty()) {
+                val inside = windows.any { (s, e) ->
+                    val sm = minuteOf(s); val em = minuteOf(e)
+                    if (sm <= em) nowMin in sm..em else (nowMin >= sm || nowMin <= em)
+                }
+                if (!inside) return   // 用户设了时段且不在内 → 连后端都不必查
+                inUserWindow = true
             }
-            if (!inWindow) return
         } else {
+            // 定时：到达某个时间点(±5 分钟，10 分钟一查)且今天该点没响过；定时=用户明确指定 → 视同自设时段
             val dayKey = "${cal.get(java.util.Calendar.YEAR)}-${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
             val hit = reminderTimes.value.firstOrNull { t ->
-                kotlin.math.abs(nowMin - minuteOf(t)) <= 2 && !firedTimedKeys.contains("$dayKey-$t")
+                kotlin.math.abs(nowMin - minuteOf(t)) <= 5 && !firedTimedKeys.contains("$dayKey-$t")
             } ?: return
             firedTimedKeys.add("$dayKey-$hit")
+            inUserWindow = true
         }
-        // 时段/时间点满足 → 只此一步查后端；无新场景则什么都不发生
-        val scenario = runCatching { api.reminderPending(token) }.getOrNull() ?: return
-        incomingReminder.value = scenario
+        val resp = runCatching { api.reminderCheck(buildReminderRequest(inUserWindow), token) }.getOrNull() ?: return
+        if (resp.decision == "call" && resp.scenario != null) {
+            incomingReminder.value = resp.scenario
+        }
+    }
+
+    companion object {
+        /** 组装信号报文（心率/环境音/运动暂传空——协议已留位，接入传感器后填充即可，后端有则用无则跳过）。 */
+        fun buildReminderRequest(inUserWindow: Boolean?): com.example.realtalkad.data.ReminderCheckRequest {
+            val cal = java.util.Calendar.getInstance()
+            val dayStart = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+            }
+            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US)
+            return com.example.realtalkad.data.ReminderCheckRequest(
+                localDayStart = fmt.format(dayStart.time),
+                localHour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+                weekday = (cal.get(java.util.Calendar.DAY_OF_WEEK) + 5) % 7,   // 转 0=周一
+                inUserWindow = inUserWindow,
+                motion = null, ambientLevel = null, heartRate = null,
+            )
+        }
     }
 
     /** 挂断/暂不练习：该场景永不再来电（后端幂等记录），以后手工进场景练即可。 */

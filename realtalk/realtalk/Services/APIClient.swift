@@ -340,15 +340,36 @@ final class APIClient {
         return URL(string: s)
     }
 
-    // ---- 学习提醒（智能电话）：App 主导触发，后端只回待提醒场景/记录拒绝 ----
+    // ---- 学习提醒（智能电话）：App 定时触发并上报信号，后端综合裁决（后端无任何主动动作）----
 
-    private struct ReminderPendingResponse: Codable {
+    struct ReminderCheckRequest: Codable {
+        let localDayStart: Date
+        let localHour: Int
+        let weekday: Int
+        let inUserWindow: Bool?
+        let motion: String?
+        let ambientLevel: Double?
+        let heartRate: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case localDayStart = "local_day_start"
+            case localHour = "local_hour"
+            case weekday
+            case inUserWindow = "in_user_window"
+            case motion
+            case ambientLevel = "ambient_level"
+            case heartRate = "heart_rate"
+        }
+    }
+
+    struct ReminderCheckResponse: Codable {
+        let decision: String          // call / none / busy
+        let reason: String?
         let scenario: ScenarioSummary?
     }
 
-    func reminderPending(token: String) async throws -> ScenarioSummary? {
-        let resp: ReminderPendingResponse = try await get("/reminder/pending", token: token, queryItems: [])
-        return resp.scenario
+    func reminderCheck(_ request: ReminderCheckRequest, token: String) async throws -> ReminderCheckResponse {
+        try await post("/reminder/check", body: request, token: token)
     }
 
     func reminderDismiss(sceneId: String, token: String) async throws {

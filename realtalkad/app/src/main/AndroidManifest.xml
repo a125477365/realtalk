@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 学习提醒：后台判定命中来电时发通知（类似 IM 的后台提醒能力，由 WorkManager 周期调度） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 微信一键登录：查询/拉起微信客户端 -->
     <queries>

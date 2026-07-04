@@ -33,6 +33,8 @@
 	<string>RealTalk 需要麦克风权限来采集用户主动开启的对话语音。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>RealTalk 需要语音识别权限将对话转写成学习文本。</string>
+	<key>NSMotionUsageDescription</key>
+	<string>RealTalk 使用运动状态判断你是否空闲（走路/开车时不来电提醒学习）。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -41,6 +43,11 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.realtalk.reminder.refresh</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

@@ -5,12 +5,33 @@
 //  Created by 谭坚 on 2026/6/3.
 //
 
+import BackgroundTasks
 import SwiftUI
 
 @main
 struct realtalkApp: App {
     @StateObject private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // 学习提醒后台刷新（类似 IM 的后台能力，由系统调度、App 不常驻）：
+        // 后台醒来 → 跑与前台相同的判定（App 触发 + 后端综合裁决）→ 判定来电则发本地通知，点通知进 App 弹「私教来电」。
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.realtalk.reminder.refresh", using: nil) { task in
+            guard let refresh = task as? BGAppRefreshTask else { task.setTaskCompleted(success: false); return }
+            Self.scheduleReminderRefresh()   // 先排下一次，保证链式续约
+            let work = Task { @MainActor in
+                let fired = await AppModel.backgroundReminderCheck()
+                refresh.setTaskCompleted(success: fired)
+            }
+            refresh.expirationHandler = { work.cancel() }
+        }
+    }
+
+    static func scheduleReminderRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: "com.realtalk.reminder.refresh")
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 10 * 60)   // 最早 10 分钟后（实际由系统按使用习惯调度）
+        try? BGTaskScheduler.shared.submit(request)
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -33,8 +54,18 @@ struct realtalkApp: App {
                     _ = WeChatAuthManager.shared.handleUniversalLink(activity)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    guard phase == .active else { return }
-                    Task { await model.handlePendingShortcutAction() }
+                    switch phase {
+                    case .active:
+                        Task {
+                            await model.handlePendingShortcutAction()
+                            // 从通知点开/回到前台：立即补一次学习提醒判定（前台弹「私教来电」）
+                            await model.checkPracticeReminder()
+                        }
+                    case .background:
+                        if model.practiceReminderEnabled { Self.scheduleReminderRefresh() }
+                    default:
+                        break
+                    }
                 }
         }
     }

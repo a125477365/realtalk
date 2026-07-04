@@ -132,9 +132,9 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun todayScenarios(token: String): ScenarioListResponse = get("/scenario/today", token)
     suspend fun scenarioList(token: String): ScenarioListResponse = get("/scenario/list", token)
 
-    // ---- 学习提醒（智能电话）：App 主导触发，后端只回待提醒场景/记录拒绝 ----
-    suspend fun reminderPending(token: String): ScenarioSummary? =
-        get<ReminderPendingResponse>("/reminder/pending", token).scenario
+    // ---- 学习提醒（智能电话）：App 定时触发并上报信号，后端综合裁决（后端无任何主动动作）----
+    suspend fun reminderCheck(request: ReminderCheckRequest, token: String): ReminderCheckResponse =
+        post("/reminder/check", request, token)
 
     suspend fun reminderDismiss(sceneId: String, token: String) {
         post<ReminderDismissRequest, JsonObject>("/reminder/dismiss", ReminderDismissRequest(sceneId), token)

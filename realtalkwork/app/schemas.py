@@ -789,10 +789,29 @@ class ScenarioListResponse(BaseModel):
     generated: bool = False  # 本次请求是否触发了自动生成
 
 
-# ---- 学习提醒（智能电话）：App 主导触发，后端只回「待提醒场景」并记录拒绝 ----
+# ---- 学习提醒（智能电话）：App 主导触发并上报信号，后端收到报文后做综合空闲裁决 ----
 
+class ReminderCheckRequest(BaseModel):
+    """App 每 10 分钟采集到的信号（有就传、没有传 None，后端尽量综合判断）。"""
+
+    local_day_start: datetime                      # 用户本地「今天 0 点」：只提醒当天新增场景
+    local_hour: int = Field(ge=0, le=23)           # 用户本地小时
+    weekday: int = Field(ge=0, le=6)               # 0=周一
+    in_user_window: bool | None = None             # None=用户没设时段(24h综合判断)；True=在自设时段内(时段优先,不再按深夜拦)
+    motion: str | None = Field(default=None, max_length=24)     # stationary/walking/running/driving/cycling/unknown
+    ambient_level: float | None = Field(default=None, ge=0, le=1)  # 环境音量 0-1
+    heart_rate: float | None = Field(default=None, ge=20, le=250)  # 最近心率 bpm
+
+
+class ReminderCheckResponse(BaseModel):
+    decision: str                                   # call=来电 / none=无新场景 / busy=判定非空闲
+    reason: str = ""                                # busy 时的原因（诊断用）
+    scenario: ScenarioSummary | None = None         # decision=call 时的目标场景
+
+
+# 兼容旧客户端字段名（已由 /reminder/check 取代，仅保留类型防旧包解析崩溃）
 class ReminderPendingResponse(BaseModel):
-    scenario: ScenarioSummary | None = None   # 最新的「未练习、未被拒绝」场景；无则 None
+    scenario: ScenarioSummary | None = None
 
 
 class ReminderDismissRequest(BaseModel):

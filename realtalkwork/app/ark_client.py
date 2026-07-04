@@ -497,6 +497,9 @@ async def update_freetalk_memory(user_id: str) -> None:
             "memory document in Markdown bullets, no commentary. Keep durable facts only: English level & common "
             "mistakes, corrected issues, life background, interests, practice preferences/goals. Drop greetings and "
             "one-off details. Merge new facts into the existing document; update stale facts instead of duplicating. "
+            "If the user's daily schedule is known or mentioned (work/class/sleep hours), keep one bullet in EXACTLY "
+            "this format so the reminder system can parse it: `- 作息: 工作 9点-18点; 睡觉 23点-7点`(按实际情况填, "
+            "用 工作/上课/睡觉 + N点-N点). "
             f"Hard limit {_MEMORY_TARGET_CHARS} characters — if over, keep the most important and most recent facts."
         )
         user = f"[Existing memory]\n{memory or '(empty)'}\n\n[Recent conversation]\n{convo}"

@@ -583,7 +583,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                     )
                     Spacer(Modifier.height(8.dp))
                     if (reminderMode == "smart") {
-                        Text("提醒学习时段（不设默认 9:00-21:00，避开深夜；对话/采集中不打扰）", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                        Text("提醒学习时段：不设=24小时智能综合判断(默认避开深夜23-8点与作息/运动等)；设了则只在时段内提醒(时段优先,可含深夜)", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                         reminderWindows.forEachIndexed { index, window ->
                             Spacer(Modifier.height(6.dp))
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

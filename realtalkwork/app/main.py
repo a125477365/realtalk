@@ -83,8 +83,9 @@ from .schemas import (
     PracticeHistoryResponse,
     PriceResponse,
     RechargeConfirmRequest,
+    ReminderCheckRequest,
+    ReminderCheckResponse,
     ReminderDismissRequest,
-    ReminderPendingResponse,
     RechargeCreateRequest,
     RechargeQueryRequest,
     RechargeOrderResponse,
@@ -2426,22 +2427,65 @@ def history_window_days(tier: str) -> int:
     return HISTORY_WINDOW_DAYS.get(tier, 2)
 
 
-@app.get("/reminder/pending", response_model=ReminderPendingResponse)
-def reminder_pending(user: UserOut = Depends(current_user)) -> ReminderPendingResponse:
-    """学习提醒（智能电话）：返回最新一个「7 天内新增、从没练过、也没被用户拒绝过」的场景。
-    App 侧判定空闲/时段后来查询；后端无状态、幂等 → 多活部署不会重复来电。"""
-    since = datetime.now(timezone.utc) - timedelta(days=7)
-    items = db.list_scenarios(user.id, since, None, limit=50)
+_BUSY_MOTIONS = {"walking", "running", "driving", "automotive", "cycling"}
+# 记忆里的作息行：形如「工作 9点-18点 / work 9:00-18:00 / 上课 8-16 / 睡觉 23-7」
+_SCHEDULE_RE = re.compile(
+    r"(工作|上班|上课|上学|work|working|class|school|睡觉|睡眠|休息|sleep)\D{0,12}?"
+    r"(\d{1,2})(?::(\d{2}))?\s*[点时:]?\s*[-~～到至]+\s*(\d{1,2})(?::(\d{2}))?",
+    re.IGNORECASE,
+)
+
+
+def _busy_by_memory_schedule(memory: str, hour: int, weekday: int) -> str | None:
+    """从私教记忆文档中提取作息（工作/上课/睡觉时段），命中则返回原因。
+    工作/上课只在工作日(周一~五)生效；睡觉/休息每天生效。跨零点区间(如 23-7)按环形判断。"""
+    for m in _SCHEDULE_RE.finditer(memory or ""):
+        kind, sh, _sm, eh, _em = m.group(1), int(m.group(2)), m.group(3), int(m.group(4)), m.group(5)
+        is_rest = kind in ("睡觉", "睡眠", "休息") or kind.lower() == "sleep"
+        if not is_rest and weekday >= 5:   # 周末不按工作/上课拦
+            continue
+        in_range = (sh <= hour < eh) if sh <= eh else (hour >= sh or hour < eh)
+        if in_range:
+            return f"记忆作息：{kind} {sh}-{eh} 点"
+    return None
+
+
+@app.post("/reminder/check", response_model=ReminderCheckResponse)
+def reminder_check(request: ReminderCheckRequest, user: UserOut = Depends(current_user)) -> ReminderCheckResponse:
+    """学习提醒（智能电话）综合裁决——由 App 定时触发并上报信号，后端只被动应答（多活安全，无任何主动动作）。
+    先查「当天新增、从没练过、未被拒绝」的场景，没有就直接返回（不做任何空闲分析，不浪费资源）；
+    有才做空闲判定：用户自设时段优先（在时段内不再按深夜拦）→ 深夜/运动/心率/环境音/记忆作息逐项综合。"""
+    items = db.list_scenarios(user.id, request.local_day_start, None, limit=50)
     if not items:
-        return ReminderPendingResponse()
+        return ReminderCheckResponse(decision="none")
     dismissed = db.list_dismissed_reminders(user.id)
     candidates = [
         s for s in _summaries_with_last_score(user.id, items)
         if s.scene_id not in dismissed and s.last_practiced_at is None and s.in_progress is False
     ]
     if not candidates:
-        return ReminderPendingResponse()
-    return ReminderPendingResponse(scenario=max(candidates, key=lambda s: s.created_at))
+        return ReminderCheckResponse(decision="none")
+    scenario = max(candidates, key=lambda s: s.created_at)
+
+    # ---- 空闲综合判定（信号有就用、没有跳过）----
+    hour, weekday = request.local_hour, request.weekday
+    if request.in_user_window is False:
+        return ReminderCheckResponse(decision="busy", reason="不在用户自设提醒时段内")
+    if request.in_user_window is None and (hour >= 23 or hour < 8):
+        # 用户没设时段 → 默认深夜(23:00-8:00)休息不打扰；设了时段则由时段说了算（优先级更高）
+        return ReminderCheckResponse(decision="busy", reason="深夜休息时间")
+    if (request.motion or "").lower() in _BUSY_MOTIONS:
+        return ReminderCheckResponse(decision="busy", reason=f"正在{request.motion}")
+    if request.heart_rate is not None and request.heart_rate > 110:
+        return ReminderCheckResponse(decision="busy", reason="心率偏高（可能在运动/紧张状态）")
+    if request.ambient_level is not None and request.ambient_level > 0.6:
+        return ReminderCheckResponse(decision="busy", reason="环境嘈杂（可能在忙）")
+    if request.in_user_window is None:
+        # 没设时段才参考记忆作息（设了时段=用户明确指定，优先级最高）
+        reason = _busy_by_memory_schedule(db.get_user_memory(user.id), hour, weekday)
+        if reason:
+            return ReminderCheckResponse(decision="busy", reason=reason)
+    return ReminderCheckResponse(decision="call", scenario=scenario)
 
 
 @app.post("/reminder/dismiss")

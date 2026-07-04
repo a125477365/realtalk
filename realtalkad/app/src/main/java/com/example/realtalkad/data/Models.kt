@@ -162,7 +162,22 @@ data class ScenarioSummary(
 data class ScenarioListResponse(val items: List<ScenarioSummary>, val generated: Boolean = false)
 
 @Serializable
-data class ReminderPendingResponse(val scenario: ScenarioSummary? = null)
+data class ReminderCheckRequest(
+    @SerialName("local_day_start") val localDayStart: String,   // ISO8601 用户本地今天0点
+    @SerialName("local_hour") val localHour: Int,
+    val weekday: Int,                                            // 0=周一
+    @SerialName("in_user_window") val inUserWindow: Boolean? = null,
+    val motion: String? = null,
+    @SerialName("ambient_level") val ambientLevel: Double? = null,
+    @SerialName("heart_rate") val heartRate: Double? = null,
+)
+
+@Serializable
+data class ReminderCheckResponse(
+    val decision: String,                 // call / none / busy
+    val reason: String = "",
+    val scenario: ScenarioSummary? = null,
+)
 
 @Serializable
 data class ReminderDismissRequest(@SerialName("scene_id") val sceneId: String)
