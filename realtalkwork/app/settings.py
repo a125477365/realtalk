@@ -153,6 +153,8 @@ class Settings:
     ai_model: str | None = os.getenv("AI_MODEL") or os.getenv("ARK_MODEL")
     # 普通任务(对话/评分/指导)超时：口语对话要跟手；模型挂死不该让用户干等两分钟
     ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "30"))
+    # 文字模型全局并发上限：免费档(如 glm-4.7-flash)QPS/并发极低，调小可减少自触发 429；上游付费后可调大
+    ai_max_concurrency: int = int(os.getenv("AI_MAX_CONCURRENCY", "2"))
     # 两档任务参数（管理台可配、存 DB）：长任务=场景生成(采集文字/语音文件→场景)+学习材料；其余(对话/评分)=普通任务。
     ai_timeout_long_seconds: float = float(os.getenv("AI_TIMEOUT_LONG_SECONDS", "1800"))
     ai_max_tokens_normal: int = int(os.getenv("AI_MAX_TOKENS_NORMAL", "4096"))

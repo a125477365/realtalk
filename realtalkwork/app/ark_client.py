@@ -78,6 +78,17 @@ _TRANSIENT_MODEL_STATUS = {429, 500, 502, 503, 504}
 _TRANSIENT_RETRY_DELAYS = (2.0, 5.0, 10.0)
 _ZHIPU_THINKING_KINDS = {"learning", "scenario", "preset_scenario"}
 
+# 全局并发上限：避免同一轮里「回复 + 记忆更新 + 预取」等多个调用并发轰上游 → 自己把自己打成 429。
+# 上游有硬性 QPS/并发限额时应调小；免费档(如 glm-4.7-flash)尤其容易触发。
+_AI_SEM: asyncio.Semaphore | None = None
+
+
+def _ai_sem() -> asyncio.Semaphore:
+    global _AI_SEM
+    if _AI_SEM is None:
+        _AI_SEM = asyncio.Semaphore(max(1, settings.ai_max_concurrency))
+    return _AI_SEM
+
 
 def _http_client() -> httpx.AsyncClient:
     """进程级共享客户端：复用连接池，避免每次模型调用重建 TCP/TLS。"""
@@ -239,20 +250,21 @@ async def _chat_completion(
     # 重试等待按档位：普通任务(对话/评分)要跟手,只短暂重试;长任务(场景生成)可以多等
     retry_delays = _TRANSIENT_RETRY_DELAYS if _is_long_kind(kind) else (1.0, 2.0)
     max_attempts = len(retry_delays) + 1
-    for attempt in range(max_attempts):
-        response = await _http_client().post(
-            url,
-            headers={
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=httpx.Timeout(timeout_seconds, connect=min(30.0, timeout_seconds)),
-        )
-        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(retry_delays):
-            await asyncio.sleep(retry_delays[attempt])
-            continue
-        break
+    async with _ai_sem():   # 限并发，避免自己把上游打成 429
+        for attempt in range(max_attempts):
+            response = await _http_client().post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=httpx.Timeout(timeout_seconds, connect=min(30.0, timeout_seconds)),
+            )
+            if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(retry_delays):
+                await asyncio.sleep(retry_delays[attempt])
+                continue
+            break
     assert response is not None
     response.raise_for_status()
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -1128,6 +1140,8 @@ roles 中至少要有 2 个 is_user_candidate=true 的角色，供用户自由�
 - 店员招呼「欢迎光临/您要点什么/需要加配菜吗」等服务方台词 → target_role=counterpart。
 注意：很多服务场景是【对方(counterpart)先开口招呼】，所以第 0 句往往是 counterpart，不要机械地把第 0 句归给 self。
 绝不能把服务/应答方(店员/服务员等)的台词分配给 self。
+【每句只说本角色会说的话】每一句都必须是该 target_role 身份在现实中真的会说的话，不能把对方身份的话并进来。
+例如顾客不会说「祝您用餐愉快」「欢迎光临」「请稍等」，店员不会说「我想买…」「多少钱」；结尾道别也要分开成两句(顾客说"谢谢"、店员说"祝您用餐愉快")，不要塞进同一句。
 source_text 为口语化中文，english 为对应的地道英文。
 
 JSON schema:
