@@ -1014,8 +1014,8 @@ def _repair_roleplay_evaluation(
         if len(nt) >= 2 and not (nu & nt):   # 目标有≥2个实义词，用户一个都没命中 → 完全不搭
             accepted = False
             score = min(score, 0.3)
-            if not evaluation.feedback.strip():
-                feedback = "这句和目标意思差得比较远，我们照参考再说一遍。"
+            # 强制打回时模型原 feedback 多半假设「已通过」，与打回矛盾，统一换成一致提示
+            feedback = "这句和目标意思差得比较远，我们照参考再说一遍。"
     return RoleplayEvaluation(
         score=round(score, 3),
         accepted=accepted,
