@@ -1047,7 +1047,7 @@ def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, An
         roles = fallback.roles + [role for role in roles if role.id not in {"self", "counterpart"}]
     role_ids = {role.id for role in roles}
 
-    repaired_lines: list[SceneLine] = []
+    survivors: list[tuple] = []
     for line in scenario.lines:
         src = (line.source_text or "").strip()
         eng = (line.english or "").strip()
@@ -1057,17 +1057,20 @@ def _repair_scenario(scenario: ScenarioResponse, atomic_lines: list[dict[str, An
             eng = _offline_translate(src)
         if not src:
             src = eng
-        target_role = line.target_role if line.target_role in role_ids else "self"
-        repaired_lines.append(
-            SceneLine(
-                index=len(repaired_lines),
-                speaker=line.speaker or ("我" if target_role == "self" else "对方"),
-                target_role=target_role,
-                source_text=src,
-                english=eng,
-                intent=line.intent,
-            )
+        survivors.append((line, src, eng))
+    # 按 speaker 名字纠正 target_role（修模型把角色名与 target_role 标反）
+    target_roles = _aligned_target_roles([s[0] for s in survivors], roles, role_ids)
+    repaired_lines: list[SceneLine] = [
+        SceneLine(
+            index=i,
+            speaker=line.speaker or ("我" if tr == "self" else "对方"),
+            target_role=tr,
+            source_text=src,
+            english=eng,
+            intent=line.intent,
         )
+        for i, ((line, src, eng), tr) in enumerate(zip(survivors, target_roles))
+    ]
 
     if not repaired_lines:
         return fallback
@@ -1110,9 +1113,13 @@ async def _generate_preset_scenario_with_model(
 请围绕该主题虚构大约 16 句（14-20 句之间）的自然口语对话，输出严格 JSON。（控制篇幅，便于快速生成；运维可在管理台继续增补。）
 index 从 0 起连续编号；roles 至少 2 个，且每句的 target_role 都必须是 roles 中存在的 id；
 roles 中至少要有 2 个 is_user_candidate=true 的角色，供用户自由选择扮演。
-【角色定位·重要】self（我）必须是本主题里「主动发起/当事的那一方」，即主题动作的执行者；counterpart（对方）是与其互动的服务/应答方。
-例如「购买汉堡」self=顾客(买方)、counterpart=店员；「面试」self=应聘者、counterpart=面试官；「问路」self=问路人、counterpart=路人。
-切勿把 self 设成服务提供方/卖方；通常第 0 句由 self（我）主动发起。
+【角色定位·重要】self（我）= 用户代入的主角/当事方（主题动作的执行者、服务的接受方）；counterpart（对方）= 服务/应答方。
+例如「购买汉堡」self=顾客(买东西的人)、counterpart=店员；「面试」self=应聘者、counterpart=面试官；「问路」self=问路人、counterpart=路人。
+每句的 target_role 必须按【这句话实际是哪个身份说的】来定，并让该句 speaker 文本与其 target_role 对应角色的 name 完全一致：
+- 顾客点单/提问/回应等主角台词 → target_role=self；
+- 店员招呼「欢迎光临/您要点什么/需要加配菜吗」等服务方台词 → target_role=counterpart。
+注意：很多服务场景是【对方(counterpart)先开口招呼】，所以第 0 句往往是 counterpart，不要机械地把第 0 句归给 self。
+绝不能把服务/应答方(店员/服务员等)的台词分配给 self。
 source_text 为口语化中文，english 为对应的地道英文。
 
 JSON schema:
@@ -1154,6 +1161,37 @@ JSON schema:
     return _sanitize_preset_scenario(scenario, group_title, sub_title)
 
 
+def _speaker_role_id(speaker: str, roles: list, role_ids: set) -> str | None:
+    """按台词标注的 speaker 名字解析出角色 id。模型常把 target_role 与角色名标反
+    （如 speaker=店员 却标 target_role=self/顾客，导致选「顾客」的用户被要求说店员台词）；
+    speaker 文本更贴合台词内容，用它来纠正 target_role。无法判定时返回 None。"""
+    sp = (speaker or "").strip()
+    if not sp:
+        return None
+    for r in roles:
+        if sp == (r.name or "").strip():
+            return r.id
+    self_id = "self" if "self" in role_ids else next(iter(role_ids), None)
+    others = [rid for rid in role_ids if rid != self_id]
+    counterpart_id = "counterpart" if "counterpart" in role_ids else (others[0] if others else self_id)
+    if sp in ("我", "自己", "本人", "我方"):
+        return self_id
+    if sp in ("对方", "对方角色"):
+        return counterpart_id
+    return None
+
+
+def _aligned_target_roles(lines: list, roles: list, role_ids: set) -> list[str]:
+    """为每句返回应使用的 target_role：优先按 speaker 名字纠正，其次用模型原值(合法则用，否则 self)。
+    崩塌保护：若按 speaker 对齐后所有句子被压成同一角色（speaker 标注异常），退回模型原始 target_role。"""
+    orig = [(line.target_role if line.target_role in role_ids else "self") for line in lines]
+    aligned = [
+        (_speaker_role_id(line.speaker, roles, role_ids) or orig[i])
+        for i, line in enumerate(lines)
+    ]
+    return aligned if len(set(aligned)) >= 2 else orig
+
+
 def _sanitize_preset_scenario(
     scenario: ScenarioResponse,
     group_title: str,
@@ -1170,23 +1208,23 @@ def _sanitize_preset_scenario(
             role.is_user_candidate = True
     role_ids = {role.id for role in roles}
 
-    clean_lines: list[SceneLine] = []
-    for line in scenario.lines:
-        if is_political_sensitive(line.source_text) or is_political_sensitive(line.english):
-            continue
-        if not (line.source_text.strip() and line.english.strip()):
-            continue
-        target_role = line.target_role if line.target_role in role_ids else "self"
-        clean_lines.append(
-            SceneLine(
-                index=len(clean_lines),
-                speaker=line.speaker or ("我" if target_role == "self" else "对方"),
-                target_role=target_role,
-                source_text=line.source_text.strip(),
-                english=line.english.strip(),
-                intent=line.intent,
-            )
+    survivors = [
+        line for line in scenario.lines
+        if line.source_text.strip() and line.english.strip()
+        and not is_political_sensitive(line.source_text) and not is_political_sensitive(line.english)
+    ]
+    target_roles = _aligned_target_roles(survivors, roles, role_ids)
+    clean_lines: list[SceneLine] = [
+        SceneLine(
+            index=i,
+            speaker=line.speaker or ("我" if tr == "self" else "对方"),
+            target_role=tr,
+            source_text=line.source_text.strip(),
+            english=line.english.strip(),
+            intent=line.intent,
         )
+        for i, (line, tr) in enumerate(zip(survivors, target_roles))
+    ]
 
     if len(clean_lines) < 6:
         # 不再返回固定占位内容（会让运维以为生成成功、却是与主题无关的同一段）；直接报错让其重试
