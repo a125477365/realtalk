@@ -19,9 +19,6 @@ class AuthStore(context: Context) {
         get() = prefs.getString("base_url", DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
         set(value) = prefs.edit().putString("base_url", value.trim().trimEnd('/')).apply()
 
-    var showSubtitles: Boolean
-        get() = prefs.getBoolean("show_subtitles", true)
-        set(value) = prefs.edit().putBoolean("show_subtitles", value).apply()
 
     // 中文提示：开→轮到用户时显示中文 / 私教每句后显示中文翻译；关→不显示中文
     var showChineseHint: Boolean

@@ -30,8 +30,7 @@ struct SettingsView: View {
                 }
 
                 Section("对话与字幕") {
-                    Toggle("显示双语字幕", isOn: $model.showDialogueContent)
-                    Toggle("中文提示", isOn: $model.showChineseHint)
+                    Toggle("中文提示（字幕中文翻译）", isOn: $model.showChineseHint)
                     if model.ttsConfigured, model.ttsVoices.isEmpty == false {
                         Picker("AI 朗读音色", selection: $model.ttsCurrentVoice) {
                             ForEach(model.ttsVoices, id: \.self) { Text($0).tag($0) }

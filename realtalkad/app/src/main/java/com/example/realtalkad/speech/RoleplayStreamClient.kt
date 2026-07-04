@@ -61,6 +61,8 @@ class RoleplayStreamClient(private val context: Context) {
     private var heardSpeech = false
     private var silentMs = 0L
     private var bargeTicks = 0
+    private var aiSpeakMs = 0L                 // AI 已连续朗读时长（用于抢话宽限期）
+    private val bargeGraceMs = 1000L            // AI 开口后这段时间内不允许抢话，保证说完开头
     private var utteranceMs = 0L
     private var noiseFloor = 0.1f            // 自适应环境噪声本底（绝对阈值在有底噪时会一直判成“在说话”）
     private val tickMs = 100L
@@ -68,7 +70,7 @@ class RoleplayStreamClient(private val context: Context) {
     private val maxUtteranceMs = 15000L       // 兜底：一句(含持续噪声)最长强制提交，避免永远卡在“聆听”
     private val speechMargin = 0.10f          // 高于本底这么多算“在说话”
     private val silenceMargin = 0.045f        // 低于本底+这么多算“静音”
-    private val bargeLevel = 0.2f
+    private val bargeLevel = 0.3f     // 抢话能量阈值(略高，避免残余回声误触)
     private val bargeNeeded = 3
 
     private var aiSpeaking = false
@@ -152,7 +154,8 @@ class RoleplayStreamClient(private val context: Context) {
         val out = File(context.cacheDir, "rt-stream-${UUID.randomUUID()}.m4a")
         val rec = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
         try {
-            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            // VOICE_COMMUNICATION 启用系统回声消除(AEC)/降噪：否则扬声器放的 AI 声音被麦克风拾到→被当成抢话→AI 刚说一个词就被打断
+            rec.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             rec.setAudioSamplingRate(16000)
@@ -179,12 +182,15 @@ class RoleplayStreamClient(private val context: Context) {
         onUserLevel?.invoke(level)
         if (!connected) return   // 断线/重连期间只显示电平，不提交
         if (aiSpeaking) {
-            if (level >= bargeLevel) {
+            aiSpeakMs += tickMs
+            // 抢话：AEC 已消回声；再加宽限期 + 更高阈值，保证 AI 至少说完开头不被自己的声音打断
+            if (aiSpeakMs >= bargeGraceMs && level >= bargeLevel) {
                 bargeTicks++
                 if (bargeTicks >= bargeNeeded) bargeIn()
             } else bargeTicks = 0
             return
         }
+        aiSpeakMs = 0
         // 自适应 VAD：以「相对环境本底」判定，避免安静房间底噪被误判为一直在说话（从不提交、从不变红）
         if (!heardSpeech) noiseFloor = (noiseFloor * 0.92f + level * 0.08f).coerceAtMost(0.5f)
         val speechThresh = noiseFloor + speechMargin

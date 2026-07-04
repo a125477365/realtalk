@@ -87,16 +87,9 @@ struct ImmersiveRoleplayView: View {
 
     private var subtitlePane: some View {
         VStack(alignment: .leading, spacing: 6) {
-            BrandSegmentedPicker(
-                selection: $model.showDialogueContent,
-                options: [(true, "双语"), (false, "仅英文")],
-                fontScale: model.fontScale
-            )
-            .padding(.horizontal, 16)
-
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 12) {
                         ForEach(Array(subtitleItems.enumerated()), id: \.offset) { idx, item in
                             captionRow(item, isCurrent: idx == subtitleItems.count - 1)
                         }
@@ -114,18 +107,30 @@ struct ImmersiveRoleplayView: View {
         .frame(maxHeight: .infinity)
     }
 
+    // 微信式气泡：AI 在左、我（You）在右；中文翻译小字是否显示由「中文提示」开关控制
     private func captionRow(_ item: Caption, isCurrent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("\(item.speaker): \(item.text)")
-                .font(.system(size: isCurrent ? 26 * model.fontScale : 21 * model.fontScale, weight: .semibold, design: .rounded))
-                .foregroundStyle(item.color.opacity(isCurrent ? 1 : 0.5))
-                .lineSpacing(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if model.showDialogueContent, item.translation.isEmpty == false {
-                Text(item.translation)
-                    .font(.system(size: 15 * model.fontScale))
-                    .foregroundStyle(.white.opacity(isCurrent ? 0.62 : 0.32))
+        HStack(alignment: .top, spacing: 0) {
+            if item.isUser { Spacer(minLength: 44) }
+            VStack(alignment: item.isUser ? .trailing : .leading, spacing: 5) {
+                Text(item.text)
+                    .font(.system(size: (isCurrent ? 20 : 18) * model.fontScale, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(isCurrent ? 1 : 0.7))
+                    .lineSpacing(3)
+                    .multilineTextAlignment(item.isUser ? .trailing : .leading)
+                if model.showChineseHint, item.translation.isEmpty == false {
+                    Text(item.translation)
+                        .font(.system(size: 14 * model.fontScale))
+                        .foregroundStyle(.white.opacity(isCurrent ? 0.62 : 0.34))
+                        .multilineTextAlignment(item.isUser ? .trailing : .leading)
+                }
             }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
+            .background(
+                item.isUser ? AnyShapeStyle(Palette.listen.opacity(0.85)) : AnyShapeStyle(Color.white.opacity(0.10)),
+                in: RoundedRectangle(cornerRadius: 16)
+            )
+            if item.isUser == false { Spacer(minLength: 44) }
         }
     }
 
@@ -351,9 +356,9 @@ struct ImmersiveRoleplayView: View {
     /// 下一句要说的中文提示（仅展示、不语音播报）。实时/事后指导都会提示。
     private var nextLineHint: String? {
         guard model.roleplay?.completed == false, let next = model.roleplay?.nextLine else { return nil }
+        // 指导区永远给中文提示（与「中文提示」开关无关；开关只管字幕里的中文翻译）
         let prefix = model.roleplay?.latestAccepted == false ? "请你用英文继续说" : "请你用英文说"
-        // 中文提示：开→给出该句中文；关→只给提示词、不显示中文
-        return model.showChineseHint ? "\(prefix)：\(next.sourceText)" : "\(prefix)"
+        return "\(prefix)：\(next.sourceText)"
     }
 
     // AI 是否正在说话：手动式用本地 TTS(voice)、沉浸式用流(stream)
@@ -401,6 +406,7 @@ struct ImmersiveRoleplayView: View {
         var text: String
         var translation: String
         var color: Color
+        var isUser: Bool
     }
 
     /// 字幕区：只含 AI 与用户的已确认对话内容（不含纠正建议）。
@@ -411,7 +417,8 @@ struct ImmersiveRoleplayView: View {
                 speaker: msg.speaker == "user" ? "You" : "AI",
                 text: msg.content,
                 translation: msg.translation ?? "",
-                color: msg.speaker == "user" ? Color.white.opacity(0.92) : Color.white
+                color: msg.speaker == "user" ? Color.white.opacity(0.92) : Color.white,
+                isUser: msg.speaker == "user"
             )
         }
     }

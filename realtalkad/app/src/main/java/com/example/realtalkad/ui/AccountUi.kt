@@ -527,7 +527,6 @@ private fun TicketsSheetContent(model: AppViewModel, onBack: () -> Unit) {
 
 @Composable
 private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
-    val showSubtitles by model.showSubtitles.collectAsState()
     val showChineseHint by model.showChineseHint.collectAsState()
     val guidancePref by model.guidancePreference.collectAsState()
     val conversationPref by model.conversationPreference.collectAsState()
@@ -555,17 +554,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("显示双语字幕", fontWeight = FontWeight.SemiBold)
-                    Text("对话字幕中显示中文辅助内容", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
-                }
-                Switch(checked = showSubtitles, onCheckedChange = { model.setShowSubtitles(it) })
-            }
-        }
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("中文提示", fontWeight = FontWeight.SemiBold)
-                    Text("开：轮到你说时显示中文、私教每句附中文翻译；关：不显示中文", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                    Text("中文提示（字幕中文翻译）", fontWeight = FontWeight.SemiBold)
+                    Text("开：字幕/私教每句下方显示中文翻译；关：不显示。指导区的中文提示始终显示，与此无关", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Switch(checked = showChineseHint, onCheckedChange = { model.setShowChineseHint(it) })
             }

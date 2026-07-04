@@ -68,7 +68,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val ttsVoices = MutableStateFlow<List<String>>(emptyList())
     val ttsCurrentVoice = MutableStateFlow("")
     val ttsConfigured = MutableStateFlow(false)
-    val showSubtitles = MutableStateFlow(auth.showSubtitles)
     val showChineseHint = MutableStateFlow(auth.showChineseHint)
     val guidanceMode = MutableStateFlow("realtime")            // 当前会话生效（不可中途切）
     val conversationMode = MutableStateFlow("immersive")       // 当前会话生效
@@ -689,10 +688,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.showChineseHint = value
     }
 
-    fun setShowSubtitles(value: Boolean) {
-        showSubtitles.value = value
-        auth.showSubtitles = value
-    }
 
     fun setFontScale(value: Float) {
         val normalized = value.coerceIn(0.85f, 1.35f)
@@ -798,8 +793,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { state ->
                 state.recognizedText?.trim()?.takeIf { it.isNotBlank() }?.let { recognized ->
                     appendChat(ChatMessage.Sender.USER, recognized)
+                    // 只在【本句没通过、还要重说】时提示发音；说对已进入下一句就不再提示上一句
                     val missed = state.pronunciation.filter { !it.ok }.map { it.word }
-                    if (missed.isNotEmpty()) {
+                    if (state.latestAccepted == false && missed.isNotEmpty()) {
                         appendChat(ChatMessage.Sender.SYSTEM, "发音再注意：${missed.joinToString("、")}")
                     }
                 }
@@ -841,8 +837,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val state = api.decodeRoleplayState(jsonStr) ?: return
         state.recognizedText?.takeIf { it.isNotBlank() }?.let { rec ->
             appendChat(ChatMessage.Sender.USER, rec)
+            // 只在【本句没通过、还要重说】时提示发音；说对已进入下一句就不再提示上一句
             val missed = state.pronunciation.filter { !it.ok }.map { it.word }
-            if (missed.isNotEmpty()) appendChat(ChatMessage.Sender.SYSTEM, "发音再注意：${missed.joinToString("、")}")
+            if (state.latestAccepted == false && missed.isNotEmpty()) {
+                appendChat(ChatMessage.Sender.SYSTEM, "发音再注意：${missed.joinToString("、")}")
+            }
         }
         state.latestFeedback?.takeIf { it.isNotBlank() }?.let { appendChat(ChatMessage.Sender.ASSISTANT, it) }
         handleRoleplayState(state, drivenByStream = true)
@@ -862,16 +861,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         val newAiMessages = state.messages.filter { it.speaker == "ai" && spokenMessageIds.add(it.id) }
         for (message in newAiMessages) {
-            // 要求 13：AI 台词中英双语字幕
-            val subtitle = if (showSubtitles.value) "${message.content}\n中文：${message.translation.orEmpty()}" else message.content
+            // 字幕里的中文翻译是否显示，由「中文提示」开关决定
+            val subtitle = if (showChineseHint.value && message.translation.orEmpty().isNotBlank())
+                "${message.content}\n中文：${message.translation.orEmpty()}" else message.content
             appendChat(ChatMessage.Sender.ASSISTANT, subtitle)
         }
         state.nextLine?.let { next ->
-            // 轮到用户：中文提示开→给出中文，关→不显示中文
-            appendChat(
-                ChatMessage.Sender.SYSTEM,
-                if (showChineseHint.value) "轮到你：${next.sourceText}" else "轮到你（请用英文说）",
-            )
+            // 轮到用户：指导提示永远给中文（与「中文提示」开关无关）
+            appendChat(ChatMessage.Sender.SYSTEM, "轮到你：${next.sourceText}")
         }
 
         // 用户已退出对话界面：状态已更新即可，绝不再播报 AI 语音或继续听

@@ -67,6 +67,7 @@ private data class ImmCaption(
     val text: String,
     val translation: String,
     val color: Color,
+    val isUser: Boolean,
 )
 
 @Composable
@@ -76,7 +77,6 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val isListening by model.isListening.collectAsState()
     val isSpeaking by model.isSpeaking.collectAsState()
     val isWorking by model.isWorking.collectAsState()
-    val showSubtitles by model.showSubtitles.collectAsState()
     val showChineseHint by model.showChineseHint.collectAsState()
     val guidanceMode by model.guidanceMode.collectAsState()
     val conversationMode by model.conversationMode.collectAsState()
@@ -88,7 +88,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
 
     // 字幕区：只显示 AI 与用户已确认的对话内容（不含纠正）
     val dialogueCaptions = state?.messages?.map {
-        ImmCaption(if (it.speaker == "user") "You" else "AI", it.content, it.translation.orEmpty(), Color.White)
+        ImmCaption(if (it.speaker == "user") "You" else "AI", it.content, it.translation.orEmpty(), Color.White, it.speaker == "user")
     } ?: emptyList()
 
     // 指导区只显示「当前这句」的纠正建议：说错时给更自然的英文，说对/进入下一句即清空。
@@ -104,9 +104,9 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
     val nextLineHint = state?.nextLine
         ?.takeIf { state?.completed == false && !isWorking && !isSpeaking }
         ?.let {
+            // 指导区永远给中文提示（与「中文提示」开关无关；开关只管字幕里的中文翻译）
             val prefix = if (state?.latestAccepted == false) "请你用英文继续说" else "请你用英文说"
-            // 中文提示开→给出该句中文；关→只给提示词、不显示中文
-            if (showChineseHint) "$prefix：${it.sourceText}" else prefix
+            "$prefix：${it.sourceText}"
         }
 
     Box(
@@ -131,10 +131,8 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                 }
             }
 
-            // 字幕区（含双语/仅英文切换）
-            SubtitlePane(dialogueCaptions, showSubtitles, fontScale, Modifier.weight(1f)) {
-                model.setShowSubtitles(it == "bilingual")
-            }
+            // 字幕区（微信式气泡；中文翻译是否显示由「中文提示」开关控制）
+            SubtitlePane(dialogueCaptions, showChineseHint, fontScale, Modifier.weight(1f))
 
             // 完成显示最终评分卡；否则显示指导区
             if (state?.completed == true) {
@@ -181,38 +179,22 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
 @Composable
 private fun SubtitlePane(
     captions: List<ImmCaption>,
-    showSubtitles: Boolean,
+    showTranslation: Boolean,
     fontScale: Float,
     modifier: Modifier,
-    onToggle: (String) -> Unit,
 ) {
     val listState = rememberLazyListState()
     LaunchedEffect(captions.size) {
         if (captions.isNotEmpty()) listState.animateScrollToItem(captions.lastIndex)
     }
-    Column(modifier.fillMaxWidth()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.fillMaxWidth()) {
-                BrandSegmented(
-                    options = listOf("bilingual" to "双语", "en" to "仅英文"),
-                    selected = if (showSubtitles) "bilingual" else "en",
-                    fontScale = fontScale,
-                    onSelect = onToggle,
-                )
-            }
-        }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            itemsIndexed(captions) { idx, item ->
-                CaptionRow(item, showSubtitles, isCurrent = idx == captions.lastIndex, fontScale = fontScale)
-            }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        itemsIndexed(captions) { idx, item ->
+            CaptionRow(item, showTranslation, isCurrent = idx == captions.lastIndex, fontScale = fontScale)
         }
     }
 }
@@ -283,21 +265,34 @@ private fun reviewAnalysis(feedback: String?): String {
 
 @Composable
 private fun CaptionRow(item: ImmCaption, showTranslation: Boolean, isCurrent: Boolean, fontScale: Float) {
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(
-            "${item.speaker}: ${item.text}",
-            color = item.color.copy(alpha = if (isCurrent) 1f else 0.5f),
-            fontSize = ((if (isCurrent) 28f else 22f) * fontScale).sp,
-            fontWeight = FontWeight.SemiBold,
-            lineHeight = ((if (isCurrent) 34f else 28f) * fontScale).sp,
-        )
-        if (showTranslation && item.translation.isNotBlank()) {
+    // 微信式气泡：AI 在左、我（You）在右
+    Row(Modifier.fillMaxWidth()) {
+        if (item.isUser) Spacer(Modifier.weight(1f))
+        Column(
+            Modifier.weight(4f, fill = false)
+                .background(
+                    if (item.isUser) RTImm.Listen.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.10f),
+                    RoundedCornerShape(16.dp),
+                )
+                .padding(horizontal = 13.dp, vertical = 9.dp),
+        ) {
             Text(
-                item.translation,
-                color = Color.White.copy(alpha = if (isCurrent) 0.62f else 0.32f),
-                fontSize = (15f * fontScale).sp,
+                item.text,
+                color = Color.White.copy(alpha = if (isCurrent) 1f else 0.7f),
+                fontSize = ((if (isCurrent) 20f else 18f) * fontScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                lineHeight = ((if (isCurrent) 26f else 24f) * fontScale).sp,
             )
+            if (showTranslation && item.translation.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    item.translation,
+                    color = Color.White.copy(alpha = if (isCurrent) 0.62f else 0.34f),
+                    fontSize = (14f * fontScale).sp,
+                )
+            }
         }
+        if (!item.isUser) Spacer(Modifier.weight(1f))
     }
 }
 

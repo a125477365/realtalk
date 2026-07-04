@@ -35,6 +35,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var heardSpeech = false
     private var silentTicks = 0
     private var bargeTicks = 0
+    private var aiSpeakTicks = 0                      // AI 已连续朗读多少 tick（用于抢话宽限期）
+    private let bargeGrace: TimeInterval = 1.0        // AI 开口后这段时间内不允许抢话，保证至少说完一句的开头
     private var utteranceTicks = 0
     private var noiseFloor: Double = 0.15            // 自适应环境噪声本底（关键：绝对阈值在有底噪时会一直判成“在说话”）
     private let tick: TimeInterval = 0.1
@@ -134,7 +136,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     private func configureSession() {
         let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
+        // .voiceChat 打开系统回声消除(AEC)：否则 AI 从扬声器放出的声音被麦克风拾到→被当成用户抢话→AI 刚说一个词就被打断
+        try? s.setCategory(.playAndRecord, mode: .voiceChat, options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
         try? s.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
@@ -178,8 +181,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                 p.updateMeters()
                 aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
             }
-            // 抢话：AI 朗读时持续高能量 → 打断
-            if level >= bargeLevel {
+            aiSpeakTicks += 1
+            // 抢话：仅在宽限期后、且麦克风电平明显高于 AI 当前输出(排除残余回声)、且持续多个 tick 才算
+            let grace = Double(aiSpeakTicks) * tick >= bargeGrace
+            if grace && level >= bargeLevel && level > aiAudioLevel + 0.12 {
                 bargeTicks += 1
                 if bargeTicks >= bargeNeeded {
                     bargeIn()
@@ -189,6 +194,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             }
             return
         }
+        aiSpeakTicks = 0
 
         // 自适应 VAD：以「相对环境本底」判定说话/静音，避免安静房间底噪(level≈0.2>固定阈值)被误判为一直在说话
         if !heardSpeech {

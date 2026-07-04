@@ -125,9 +125,8 @@ final class AppModel: ObservableObject {
     @Published var todayScenarios: [ScenarioSummary] = []
     @Published var isLoadingScenarios = false
     @Published var presetCatalog: [PresetSceneGroup] = []     // 通用场景：运维预置的全局场景（按主场景分组）
-    // 对话主界面默认显示双语字幕：AI 句中英同显，用户句先给中文提示
-    @Published var showDialogueContent = true
-    // 中文提示：开则手动/沉浸式轮到用户时显示中文、私教每句后显示中文翻译；关则不显示中文（私教里用户说中文时仍强制附英文翻译）
+    // 中文提示：唯一控制“字幕里的中文翻译是否显示”的开关（指导区的中文提示与此无关、永远显示）
+    // 私教用户说中文时仍强制附英文翻译
     @Published var showChineseHint = true {
         didSet { defaults.set(showChineseHint, forKey: DefaultsKey.showChineseHint) }
     }
@@ -1143,8 +1142,9 @@ final class AppModel: ObservableObject {
             if let recognized = state.recognizedText?.trimmingCharacters(in: .whitespacesAndNewlines), recognized.isEmpty == false {
                 lastSpokenAnswer = recognized
                 appendChat(.user, recognized)
+                // 只在【本句没通过、还要重说】时提示发音；说对已进入下一句就不再提示上一句
                 let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
-                if missed.isEmpty == false {
+                if state.latestAccepted == false, missed.isEmpty == false {
                     appendChat(.system, "发音再注意：\(missed.joined(separator: "、"))")
                 }
             }
@@ -1196,8 +1196,12 @@ final class AppModel: ObservableObject {
         roleplay = state
         scenario = state.scenario
         selectedRoleID = state.selectedRole
+        // 每来一轮新状态先清掉上一轮的发音提示；只有【本句没通过、还停在这一句】时才提示，
+        // 说对已推进到下一句就不再显示上一句的“发音再注意”。
+        practiceHintText = nil
         let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
-        if let recognized = state.recognizedText, recognized.isEmpty == false, missed.isEmpty == false {
+        if state.latestAccepted == false, let recognized = state.recognizedText,
+           recognized.isEmpty == false, missed.isEmpty == false {
             practiceHintText = "发音再注意：\(missed.joined(separator: "、"))"
         }
         if state.completed {
@@ -1445,13 +1449,14 @@ final class AppModel: ObservableObject {
         for message in newAIMessages where chattedRoleplayMessageIDs.contains(message.id) == false {
             chattedRoleplayMessageIDs.insert(message.id)
             let line = state.scenario.lines.first(where: { $0.english == message.content })
-            if showDialogueContent {
-                appendChat(.assistant, "\(message.content)\n\n中文：\(message.translation ?? "")")
+            // 字幕里的中文翻译是否显示，由「中文提示」开关决定
+            if showChineseHint, let tr = message.translation, tr.isEmpty == false {
+                appendChat(.assistant, "\(message.content)\n中文：\(tr)")
             } else {
-                appendChat(.assistant, "我正在扮演 \(roleName(message.role))。请听语音回应。")
+                appendChat(.assistant, message.content)
             }
             if let next = state.nextLine, next.index == (line?.index ?? -1) + 1 {
-                appendChat(.system, showChineseHint ? "轮到你：\(next.sourceText)" : "轮到你（请用英文说）")
+                appendChat(.system, "轮到你：\(next.sourceText)")   // 指导提示永远给中文，与「中文提示」开关无关
             }
         }
         if let next = state.nextLine, newAIMessages.isEmpty {
