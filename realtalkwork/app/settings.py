@@ -110,6 +110,8 @@ class Settings:
     # 默认 30 分钟内没再被用到就删除，下次重新合成。合成并发上限、每用户每分钟上限同段。
     tts_cache_ttl_seconds: int = int(os.getenv("TTS_CACHE_TTL_SECONDS", "1800"))
     tts_max_concurrency: int = int(os.getenv("TTS_MAX_CONCURRENCY", "8"))
+    # 本地 ASR 并发上限：每请求一个独立 whisper 进程(1~2GB 内存)，超出排队，防多用户同时说话挤爆内存
+    asr_max_concurrency: int = int(os.getenv("ASR_MAX_CONCURRENCY", "3"))
     tts_user_rate_per_min: int = int(os.getenv("TTS_USER_RATE_PER_MIN", "30"))
     audio_user_rate_per_min: int = int(os.getenv("AUDIO_USER_RATE_PER_MIN", "30"))
 
@@ -149,7 +151,8 @@ class Settings:
     ai_api_key: str | None = os.getenv("AI_API_KEY") or os.getenv("ARK_API_KEY")
     ai_base_url: str | None = os.getenv("AI_BASE_URL") or os.getenv("ARK_BASE_URL")
     ai_model: str | None = os.getenv("AI_MODEL") or os.getenv("ARK_MODEL")
-    ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "120"))
+    # 普通任务(对话/评分/指导)超时：口语对话要跟手；模型挂死不该让用户干等两分钟
+    ai_timeout_seconds: float = float(os.getenv("AI_TIMEOUT_SECONDS") or os.getenv("ARK_TIMEOUT_SECONDS", "30"))
     # 两档任务参数（管理台可配、存 DB）：长任务=场景生成(采集文字/语音文件→场景)+学习材料；其余(对话/评分)=普通任务。
     ai_timeout_long_seconds: float = float(os.getenv("AI_TIMEOUT_LONG_SECONDS", "1800"))
     ai_max_tokens_normal: int = int(os.getenv("AI_MAX_TOKENS_NORMAL", "4096"))

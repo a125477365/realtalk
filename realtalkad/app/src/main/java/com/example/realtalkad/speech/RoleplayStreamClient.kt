@@ -63,7 +63,9 @@ class RoleplayStreamClient(private val context: Context) {
     private var bargeTicks = 0
     private var aiSpeakMs = 0L                 // AI 已连续朗读时长（用于抢话宽限期）
     private val bargeGraceMs = 1000L            // AI 开口后这段时间内不允许抢话，保证说完开头
+    private var suppressAiAudio = false         // 打断后丢弃该轮迟到的 AI 音频，直到下一次 commit
     private var utteranceMs = 0L
+    private var voicedMs = 0L                   // 本句真正“像在说话”的时长：太短=纯噪音，不上传
     private var noiseFloor = 0.1f            // 自适应环境噪声本底（绝对阈值在有底噪时会一直判成“在说话”）
     private val tickMs = 100L
     private val silenceThresholdMs = 1000L   // 说完到发送的停顿判定，越小越跟手
@@ -103,6 +105,7 @@ class RoleplayStreamClient(private val context: Context) {
         runCatching { recorder?.stop() }; runCatching { recorder?.release() }; recorder = null
         file?.delete(); file = null
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
+        suppressAiAudio = true   // 暂停即打断：该轮迟到音频作废，恢复后从下一次 commit 重新开始
         runCatching { player?.stop() }; runCatching { player?.release() }; player = null
         aiQueue.clear()
         aiSpeaking = false
@@ -167,7 +170,7 @@ class RoleplayStreamClient(private val context: Context) {
             runCatching { rec.release() }; out.delete(); return
         }
         recorder = rec; file = out
-        heardSpeech = false; silentMs = 0; bargeTicks = 0; utteranceMs = 0
+        heardSpeech = false; silentMs = 0; bargeTicks = 0; utteranceMs = 0; voicedMs = 0
         if (meterJob == null) {
             meterJob = scope.launch {
                 while (active) { delay(tickMs); meterTick() }
@@ -196,7 +199,7 @@ class RoleplayStreamClient(private val context: Context) {
         val speechThresh = noiseFloor + speechMargin
         val silenceThresh = noiseFloor + silenceMargin
         if (level >= speechThresh) {
-            heardSpeech = true; silentMs = 0; utteranceMs += tickMs
+            heardSpeech = true; silentMs = 0; utteranceMs += tickMs; voicedMs += tickMs
         } else if (heardSpeech) {
             utteranceMs += tickMs
             if (level <= silenceThresh) silentMs += tickMs else silentMs = 0
@@ -208,6 +211,7 @@ class RoleplayStreamClient(private val context: Context) {
 
     private fun bargeIn() {
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
+        suppressAiAudio = true   // 被打断的这轮就此作废：其后迟到的 AI 音频全部丢弃，直到下一次 commit
         runCatching { player?.stop() }; runCatching { player?.release() }; player = null
         aiQueue.clear()
         aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
@@ -217,10 +221,12 @@ class RoleplayStreamClient(private val context: Context) {
     private fun commitUtterance() {
         runCatching { recorder?.stop() }
         val out = file
-        val heard = heardSpeech
+        // 噪音门槛：真正“像在说话”的时长太短(<400ms)视为纯噪音，静默丢弃回到聆听，不上传也不提示
+        val voicedEnough = heardSpeech && voicedMs >= 400
         file = null
-        if (heard && out != null && out.length() > 1200) {
+        if (voicedEnough && out != null && out.length() > 1200) {
             runCatching {
+                suppressAiAudio = false   // 新一轮开始，恢复接收 AI 音频
                 webSocket?.send(out.readBytes().toByteString())
                 webSocket?.send(JSONObject(mapOf("type" to "commit", "format" to ".m4a", "guidance_mode" to guidanceMode)).toString())
                 scope.launch { onCommitted?.invoke() }
@@ -233,14 +239,21 @@ class RoleplayStreamClient(private val context: Context) {
     // ---- 收 AI 音频并顺序播放 ----
 
     private fun enqueueAi(data: ByteArray) {
-        if (paused) return   // 暂停期间到达的音频直接丢弃
+        if (paused || suppressAiAudio) return   // 暂停/被打断流程的迟到音频直接丢弃
         aiQueue.addLast(data)
         if (player == null) playNextAi()
     }
 
     private fun playNextAi() {
         val data = aiQueue.removeFirstOrNull()
-        if (data == null) { aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f); return }
+        if (data == null) {
+            val wasSpeaking = aiSpeaking
+            aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
+            // 关键：AI 刚说完 → 立刻重开一段干净录音。否则录音文件里带着 AI 从扬声器放出的整段声音，
+            // 转写会把 AI 的话混进用户的话（字幕里用户气泡出现 AI 台词）。
+            if (wasSpeaking && active && connected) startRecording()
+            return
+        }
         val f = File(context.cacheDir, "rt-ai-${UUID.randomUUID()}.mp3")
         f.writeBytes(data)
         try {
@@ -310,6 +323,8 @@ class RoleplayStreamClient(private val context: Context) {
                 else obj.optString("feedback").takeIf { it.isNotBlank() }?.let { onResultMessage?.invoke(it) }
             }
             "completed" -> onCompleted?.invoke()
+            // 可恢复的轻提示（没听清/噪音等）：显示一下即可，流程回到聆听，绝不当错误中断
+            "notice" -> onResultMessage?.invoke(obj.optString("detail"))
             "error" -> onError?.invoke(obj.optString("detail").ifBlank { "对话出错" })
         }
     }

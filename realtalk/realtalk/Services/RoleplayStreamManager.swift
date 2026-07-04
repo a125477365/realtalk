@@ -37,7 +37,9 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var bargeTicks = 0
     private var aiSpeakTicks = 0                      // AI 已连续朗读多少 tick（用于抢话宽限期）
     private let bargeGrace: TimeInterval = 1.0        // AI 开口后这段时间内不允许抢话，保证至少说完一句的开头
+    private var suppressAiAudio = false               // 打断后丢弃该轮迟到的 AI 音频，直到下一次 commit
     private var utteranceTicks = 0
+    private var voicedTicks = 0                       // 本句真正“像在说话”的 tick 数：太少=纯噪音，不上传
     private var noiseFloor: Double = 0.15            // 自适应环境噪声本底（关键：绝对阈值在有底噪时会一直判成“在说话”）
     private let tick: TimeInterval = 0.1
     private let silenceThreshold: TimeInterval = 1.0 // 说完到发送的停顿判定，越小越跟手
@@ -110,6 +112,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         if let u = recURL { try? FileManager.default.removeItem(at: u) }
         recURL = nil
         sendJSON(["type": "interrupt"])
+        suppressAiAudio = true   // 暂停即打断：该轮迟到音频作废，恢复后从下一次 commit 重新开始
         aiPlayer?.stop(); aiPlayer = nil
         aiQueue.removeAll()
         isAISpeaking = false
@@ -162,6 +165,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         silentTicks = 0
         bargeTicks = 0
         utteranceTicks = 0
+        voicedTicks = 0
         if meterTimer == nil {
             meterTimer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.meterTick() }
@@ -206,6 +210,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             heardSpeech = true
             silentTicks = 0
             utteranceTicks += 1
+            voicedTicks += 1
         } else if heardSpeech {
             utteranceTicks += 1
             if level <= silenceThresh { silentTicks += 1 } else { silentTicks = 0 }
@@ -222,6 +227,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     private func bargeIn() {
         sendJSON(["type": "interrupt"])
+        suppressAiAudio = true   // 被打断的这轮就此作废：其后迟到的 AI 音频全部丢弃，直到下一次 commit
         aiPlayer?.stop(); aiPlayer = nil
         aiQueue.removeAll()
         isAISpeaking = false
@@ -232,9 +238,11 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private func commitUtterance() {
         recorder?.stop()
         let url = recURL
-        let heard = heardSpeech
+        // 噪音门槛：真正“像在说话”的时长太短(<0.4s)视为纯噪音，静默丢弃回到聆听，不上传也不提示
+        let voicedEnough = heardSpeech && Double(voicedTicks) * tick >= 0.4
         recURL = nil
-        if heard, let url, let data = try? Data(contentsOf: url), data.count > 1200 {
+        if voicedEnough, let url, let data = try? Data(contentsOf: url), data.count > 1200 {
+            suppressAiAudio = false   // 新一轮开始，恢复接收 AI 音频
             task?.send(.data(data)) { _ in }
             sendJSON(["type": "commit", "format": ".m4a", "guidance_mode": guidanceMode])
             onCommitted?()
@@ -246,15 +254,19 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     // MARK: 收 AI 音频并顺序播放
 
     private func enqueueAI(_ data: Data) {
-        guard isPaused == false else { return }   // 暂停期间到达的音频直接丢弃
+        guard isPaused == false, suppressAiAudio == false else { return }   // 暂停/被打断流程的迟到音频直接丢弃
         aiQueue.append(data)
         if aiPlayer == nil { playNextAI() }
     }
 
     private func playNextAI() {
         guard aiQueue.isEmpty == false else {
+            let wasSpeaking = isAISpeaking
             isAISpeaking = false
             aiAudioLevel = 0
+            // 关键：AI 刚说完 → 立刻重开一段干净录音。否则录音文件里带着 AI 从扬声器放出的整段声音，
+            // 转写会把 AI 的话混进用户的话（字幕里用户气泡出现 AI 台词）。
+            if wasSpeaking, active, connected { startRecording() }
             return
         }
         let data = aiQueue.removeFirst()
@@ -340,6 +352,9 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             }
         case "completed":
             onCompleted?()
+        case "notice":
+            // 可恢复的轻提示（没听清/噪音等）：显示一下即可，流程回到聆听，绝不当错误中断
+            onResultMessage?(obj["detail"] as? String ?? "")
         case "error":
             onError?(obj["detail"] as? String ?? "对话出错")
         default:

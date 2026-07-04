@@ -515,7 +515,7 @@ final class APIClient {
         guard let url = components?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 120   // 大模型生成/评估可能较慢，给足时间避免客户端提前超时
+        request.timeoutInterval = 60   // 与后端普通档(30s)对齐并留余量
         addDefaultHeaders(to: &request, token: token)
         return try await send(request)
     }
@@ -527,7 +527,8 @@ final class APIClient {
     ) async throws -> Response {
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
-        request.timeoutInterval = 120   // 大模型生成/评估可能较慢，给足时间避免客户端提前超时
+        // 与后端两档超时对齐：普通对话后端 30s 上限，App 留 60s 余量即可；长任务(上传/生成)各自单独设更长
+        request.timeoutInterval = 60
         addDefaultHeaders(to: &request, token: token)
         request.httpBody = try encoder.encode(body)
         return try await send(request)

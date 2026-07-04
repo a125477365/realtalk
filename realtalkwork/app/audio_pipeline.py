@@ -10,6 +10,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -102,6 +103,11 @@ async def _transcribe_chunk(client: httpx.AsyncClient, config: dict[str, Any], p
     return str(response.json().get("text", "")).strip()
 
 
+# 本地 ASR 并发上限：每个请求都会起一个独立 whisper 进程(内存 1~2GB)，多用户同时说话时排队而不是挤爆内存。
+# 临时目录均为 mkdtemp 每请求独立，天然不串包；这里只限并发量。
+_ASR_SEM = threading.BoundedSemaphore(max(1, settings.asr_max_concurrency))
+
+
 def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path, language: str | None = None) -> str:
     """用服务器本地命令行工具转写。命令模板支持 {input}/{dir}，
     文本优先取 stdout；若 stdout 为空则读取 {dir} 下生成的 .txt。
@@ -111,8 +117,9 @@ def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path, languag
         raise RuntimeError("本地转写命令未配置")
     cmd = template.replace("{input}", str(path)).replace("{dir}", str(workdir))
     env = {**os.environ, "ASR_LANGUAGE": (language or "")}
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env,
-                          timeout=settings.audio_max_seconds + 600)
+    with _ASR_SEM:
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env,
+                              timeout=settings.audio_max_seconds + 600)
     if proc.returncode != 0:
         # 取 stderr 末尾：Python 回溯的真正错误在最后，开头常是 HF 下载告警等噪音
         detail = (proc.stderr or proc.stdout or "").strip()[-800:]

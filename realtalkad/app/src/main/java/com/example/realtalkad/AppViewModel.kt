@@ -111,6 +111,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.onUserText = { t, tr -> freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("user", t, tr) }
         freeStream.onAIText = { t, tr -> freeTalkWorking.value = false; freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("ai", t, tr) }
         freeStream.onError = { msg -> freeTalkWorking.value = false; freeTalkStatus.value = msg }
+        // 轻提示(没听清/噪音)：清掉“正在思考”红态、显示一下即可，流程已回到聆听
+        freeStream.onResultMessage = { msg -> freeTalkWorking.value = false; freeTalkStatus.value = msg }
         freeStream.onStatus = { msg -> freeTalkStatus.value = msg }
         freeStream.onAiSpeaking = { s -> freeTalkAiSpeaking.value = s }
         freeStream.onUserLevel = { l -> freeTalkLevel.value = l }

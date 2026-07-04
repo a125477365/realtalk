@@ -236,7 +236,9 @@ async def _chat_completion(
     timeout_seconds = timeout_seconds_for_kind(config, kind)
     started = time.monotonic()
     response: httpx.Response | None = None
-    max_attempts = len(_TRANSIENT_RETRY_DELAYS) + 1
+    # 重试等待按档位：普通任务(对话/评分)要跟手,只短暂重试;长任务(场景生成)可以多等
+    retry_delays = _TRANSIENT_RETRY_DELAYS if _is_long_kind(kind) else (1.0, 2.0)
+    max_attempts = len(retry_delays) + 1
     for attempt in range(max_attempts):
         response = await _http_client().post(
             url,
@@ -247,8 +249,8 @@ async def _chat_completion(
             json=payload,
             timeout=httpx.Timeout(timeout_seconds, connect=min(30.0, timeout_seconds)),
         )
-        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(_TRANSIENT_RETRY_DELAYS):
-            await asyncio.sleep(_TRANSIENT_RETRY_DELAYS[attempt])
+        if response.status_code in _TRANSIENT_MODEL_STATUS and attempt < len(retry_delays):
+            await asyncio.sleep(retry_delays[attempt])
             continue
         break
     assert response is not None
@@ -427,6 +429,11 @@ async def generate_freetalk_reply(
     messages.append({"role": "user", "content": user_text})
     try:
         content = await _chat_completion(messages, temperature=0.6, kind="chat", user_id=user_id, config=config)
+    except Exception as exc:  # noqa: BLE001 — 模型 API 层失败(429/超时等)
+        print(f"[ai] 自由对话回复失败：{type(exc).__name__} {str(exc)[:200]}", flush=True)
+        return {"user_display": "", "user_translation": "",
+                "reply_en": "Sorry, I missed that — could you say it again in English?", "reply_zh": "抱歉没听清，可以用英语再说一遍吗？"}
+    try:
         data = _extract_json(content)
         return {
             "user_display": str(data.get("user_display", "")).strip(),
@@ -434,10 +441,11 @@ async def generate_freetalk_reply(
             "reply_en": str(data.get("reply_en", "")).strip() or _FREETALK_FALLBACK["reply_en"],
             "reply_zh": str(data.get("reply_zh", "")).strip(),
         }
-    except Exception as exc:  # noqa: BLE001
-        print(f"[ai] 自由对话回复失败：{str(exc)[:200]}", flush=True)
-        return {"user_display": "", "user_translation": "",
-                "reply_en": "Sorry, I missed that — could you say it again in English?", "reply_zh": "抱歉没听清，可以用英语再说一遍吗？"}
+    except Exception:  # noqa: BLE001 — 模型没按 JSON 输出(flash 偶发)：内容仍是老师的话，直接当回复用，
+        # 绝不能反复回“Sorry, I missed that”把正常回复全丢掉
+        plain = content.strip().strip("`").strip()
+        print(f"[ai] 自由对话回复非JSON，按纯文本采用：{plain[:80]!r}", flush=True)
+        return {"user_display": "", "user_translation": "", "reply_en": plain or _FREETALK_FALLBACK["reply_en"], "reply_zh": ""}
 
 
 async def update_freetalk_memory(user_id: str) -> None:

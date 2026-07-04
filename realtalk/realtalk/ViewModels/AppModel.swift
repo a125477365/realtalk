@@ -174,6 +174,11 @@ final class AppModel: ObservableObject {
             self?.freeTalkWorking = false
             self?.freeTalkStatus = msg
         }
+        // 轻提示(没听清/噪音)：清掉“正在思考”红态、显示一下即可，流程已回到聆听
+        freeStream.onResultMessage = { [weak self] msg in
+            self?.freeTalkWorking = false
+            self?.freeTalkStatus = msg
+        }
         freeStream.onStatus = { [weak self] msg in self?.freeTalkStatus = msg }
         showFreeTalk = true
         freeStream.start(streamURL: url, guidanceMode: "realtime")

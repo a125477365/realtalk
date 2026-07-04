@@ -324,14 +324,15 @@ struct ImmersiveRoleplayView: View {
                 .padding(.horizontal, 40)
             }
             ZStack {
+                // 等待按下：绿底 + 红色麦克风 = 轮到你说、但麦克风还没打开；按下后：绿底白色波形（录音中）
                 Circle()
-                    .fill(willCancel ? Color.red : (manualPressing ? Palette.listen : Palette.thinking))
+                    .fill(willCancel ? Color.red : Palette.listen)
                     .frame(width: 88, height: 88)
                     .scaleEffect(manualPressing ? 1.08 : 1)
                     .shadow(color: .black.opacity(0.3), radius: 20, y: 8)
                 Image(systemName: manualPressing ? (willCancel ? "xmark" : "waveform") : "mic.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(manualPressing ? .white : Color(red: 0.85, green: 0.12, blue: 0.12))
             }
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -367,7 +368,10 @@ struct ImmersiveRoleplayView: View {
     private var controlText: String {
         if model.roleplay?.completed == true { return "本轮已完成" }
         if model.isWorking { return "已发送，正在识别评分…" }        // 红：后端处理，不能打断
-        if aiSpeakingNow { return "AI 正在说话，开口即可打断" }       // 黄：可打断
+        if aiSpeakingNow {
+            // 手工触发式没有语音抢话，只能点按打断；沉浸式才是开口即可打断
+            return model.conversationMode == .manual ? "AI 正在说话，点击可打断" : "AI 正在说话，开口即可打断"
+        }
         if model.isVoiceConversationActive == false { return "已暂停，点击继续" }
         if model.conversationMode == .manual {
             return practiceSpeech.isListening ? "松开发送 · 向左滑取消" : "请长按并说话"

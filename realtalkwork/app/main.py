@@ -2832,11 +2832,10 @@ async def roleplay_stream(
         async with send_lock:
             await websocket.send_bytes(data)
 
-    async def _send_tts(text: str) -> None:
+    async def _send_tts(text: str, use_cache: bool = True) -> None:
         try:
-            # 先查 Redis（多半已被 roleplay_start/roleplay_message 的「提前生成」预热过）→ 命中秒回；
-            # 未命中则现合成并写回缓存，再推流给 App。下一段在每轮 roleplay_message 里已提前生成。
-            audio, ct = await voice_io.synthesize(text, voice, use_cache=True)
+            # 场景台词先查 Redis（多半已被「提前生成」预热过）→ 命中秒回；指导内容动态唯一传 use_cache=False。
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=use_cache)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
@@ -2845,8 +2844,11 @@ async def roleplay_stream(
             await _sb(audio[i:i + 16384])
         await _sj({"type": "ai_audio_end"})
 
-    async def _speak_new(messages) -> None:
+    async def _speak_new(messages, guidance: str | None = None) -> None:
         nonlocal spoken_count
+        # 实时指导：本句没通过时先把中文纠正念出来（动态内容不入缓存），再念（不会有的）新 AI 台词
+        if guidance:
+            await _send_tts(guidance, use_cache=False)
         for msg in messages[spoken_count:]:
             if getattr(msg, "speaker", "") == "ai":
                 await _sj({"type": "ai_line", "role": msg.role, "text": msg.content, "translation": msg.translation})
@@ -2912,12 +2914,13 @@ async def roleplay_stream(
                 recognized = (await voice_io.transcribe(
                     audio, suffix=data.get("format", ".m4a"), reference_text=reference
                 )).strip()
-            except Exception as exc:  # noqa: BLE001
-                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[-200:]}"})
+            except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
+                print(f"[stream] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
+                await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             if not recognized:
-                await _sj({"type": "result", "accepted": False, "recognized_text": "",
-                           "feedback": "没听清，请再说一次", "pronunciation": []})
+                # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
+                await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             gm = "final" if data.get("guidance_mode") == "final" else "realtime"
             resp = await roleplay_message(
@@ -2929,7 +2932,10 @@ async def roleplay_stream(
                 resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
             # 整轮完整状态回客户端：客户端据此直接刷新字幕/进度/评分（与 HTTP 回合同构）
             await _sj({"type": "result", "state": resp.model_dump(mode="json")})
-            tts_task = asyncio.create_task(_speak_new(resp.messages))
+            # 实时指导：本句没通过 → 把中文纠正也念出来（此前只显示不发声）
+            fb = (resp.latest_feedback or "").strip()
+            guidance_speech = fb if (gm == "realtime" and resp.latest_accepted is False and fb) else None
+            tts_task = asyncio.create_task(_speak_new(resp.messages, guidance=guidance_speech))
             if resp.completed:
                 await _sj({"type": "completed"})
     except WebSocketDisconnect:
@@ -3048,11 +3054,13 @@ async def freetalk_stream(
                 continue
             try:
                 recognized = (await voice_io.transcribe(audio, suffix=data.get("format", ".m4a"))).strip()
-            except Exception as exc:  # noqa: BLE001
-                await _sj({"type": "error", "detail": f"识别失败：{str(exc)[-200:]}"})
+            except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
+                print(f"[freetalk] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
+                await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             if not recognized:
-                await _sj({"type": "error", "detail": "没听清，请再说一次"})
+                # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
+                await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             result = await generate_freetalk_reply(
                 recognized,

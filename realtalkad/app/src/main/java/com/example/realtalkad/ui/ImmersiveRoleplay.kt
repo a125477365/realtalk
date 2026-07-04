@@ -158,6 +158,7 @@ fun ImmersiveRoleplayScreen(model: AppViewModel) {
                     isSpeaking = isSpeaking,
                     isListening = isListening,
                     isVoiceActive = isVoiceActive,
+                    isManual = conversationMode == "manual",
                     guidanceMode = guidanceMode,
                     level = level,
                     aiLevel = aiLevel,
@@ -304,6 +305,7 @@ private fun PromptCircle(
     isSpeaking: Boolean,
     isListening: Boolean,
     isVoiceActive: Boolean,
+    isManual: Boolean,
     guidanceMode: String,
     level: Float,
     aiLevel: Float,
@@ -329,7 +331,8 @@ private fun PromptCircle(
     val label = when {
         completed -> "本轮已完成"
         isWorking -> "已发送，正在识别评分…"
-        isSpeaking -> "AI 正在说话，开口即可打断"
+        // 手工触发式没有语音抢话，只能点按打断；沉浸式才是开口即可打断
+        isSpeaking -> if (isManual) "AI 正在说话，点击可打断" else "AI 正在说话，开口即可打断"
         !isVoiceActive -> "已暂停，点击继续"
         else -> "正在聆听，说完停顿即可发送"
     }
@@ -438,9 +441,10 @@ private fun ManualTalkControl(
             }
         }
         Box(
+            // 等待按下：绿底 + 红色麦克风 = 轮到你说、但麦克风还没打开；按下后：绿底白色图标（录音中）
             Modifier.size(92.dp)
                 .scale(if (pressing) 1.08f else 1f)
-                .background(if (willCancel) RTImm.Speak else if (pressing) RTImm.Listen else RTImm.Thinking, CircleShape)
+                .background(if (willCancel) RTImm.Thinking else RTImm.Listen, CircleShape)
                 .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
                 .pointerInput(Unit) {
                     awaitEachGesture {
@@ -465,7 +469,7 @@ private fun ManualTalkControl(
             Icon(
                 painter = painterResource(if (pressing && willCancel) R.drawable.ic_stop else R.drawable.ic_mic),
                 contentDescription = null,
-                tint = Color.White,
+                tint = if (pressing) Color.White else Color(0xFFD92B2B),   // 未按下=红麦克风(未开麦)
                 modifier = Modifier.size(32.dp),
             )
         }
