@@ -107,6 +107,17 @@ fun ImmersiveVoiceLLMScreen(model: AppViewModel) {
                 ReviewCard(model, review, phase, statusText, fontScale)
             } else {
                 VoiceControls(phase, statusText, inputLevel, aiSpeaking, fontScale) { model.endVoiceLLMPractice() }
+                // 实时指导：后端对每句话音生成的简短中文提示（不打断语音）
+                val guidance by model.realtime.guidanceText.collectAsState()
+                if (guidance.isNotBlank()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "💡 $guidance",
+                        color = Color(0xFFF3D268),
+                        fontSize = (14 * fontScale).sp,
+                        modifier = Modifier.padding(horizontal = 28.dp),
+                    )
+                }
             }
             Spacer(Modifier.weight(1f))
         }

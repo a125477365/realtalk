@@ -201,11 +201,27 @@ def build_session_instructions(scenario, selected_role: str) -> str:
     )
 
 
-async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) -> tuple[list[dict], dict]:
-    """在客户端与上游 Realtime API 之间转发；返回 (转写, token 用量) 用于评分与计费。"""
+async def proxy_session(client_ws, instructions: str, config: RealtimeConfig, guidance_fn=None) -> tuple[list[dict], dict]:
+    """在客户端与上游 Realtime API 之间转发；返回 (转写, token 用量) 用于评分与计费。
+    guidance_fn: 可选 async (用户转写文本)->str|None —— 实时指导：每句用户话音落地后异步生成
+    简短中文指导并以 {"type":"realtalk.guidance"} 事件推给客户端（不阻塞语音转发）。"""
     import websockets
 
     transcript: list[dict] = []
+    send_lock = asyncio.Lock()          # 客户端方向的发送互斥：转发帧与指导事件来自不同任务
+    guidance_tasks: list[asyncio.Task] = []
+
+    async def _send_client(text: str) -> None:
+        async with send_lock:
+            await client_ws.send_text(text)
+
+    async def _emit_guidance(user_text: str) -> None:
+        try:
+            tip = await guidance_fn(user_text)
+            if tip:
+                await _send_client(json.dumps({"type": "realtalk.guidance", "text": tip}, ensure_ascii=False))
+        except Exception:  # noqa: BLE001 — 指导失败不影响对话
+            pass
     # 累积 token 用量（来自上游 response.done 事件的 usage，文本/音频分开）
     usage = {"input_text": 0, "input_audio": 0, "output_text": 0, "output_audio": 0}
     url = _realtime_url(config)
@@ -252,16 +268,20 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
                     try:
                         ev = json.loads(raw)
                     except ValueError:
-                        await client_ws.send_text(raw)
+                        await _send_client(raw)
                         continue
                     kind = ev.get("type", "")
                     if kind == "conversation.item.input_audio_transcription.completed":
-                        transcript.append({"role": "user", "text": ev.get("transcript", "")})
+                        user_text = ev.get("transcript", "")
+                        transcript.append({"role": "user", "text": user_text})
+                        # 实时指导：异步生成，不阻塞语音转发
+                        if guidance_fn and user_text.strip():
+                            guidance_tasks.append(asyncio.create_task(_emit_guidance(user_text)))
                     elif kind == "response.audio_transcript.done":
                         transcript.append({"role": "ai", "text": ev.get("transcript", "")})
                     elif kind == "response.done":
                         _accumulate_usage(usage, ev)
-                    await client_ws.send_text(raw)
+                    await _send_client(raw)
             except Exception:  # noqa: BLE001
                 pass
             finally:
@@ -269,10 +289,10 @@ async def proxy_session(client_ws, instructions: str, config: RealtimeConfig) ->
 
         tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
         await stop.wait()
-        for task in tasks:
+        for task in tasks + guidance_tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, *guidance_tasks, return_exceptions=True)
     return transcript, usage
 
 

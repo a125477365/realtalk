@@ -45,6 +45,7 @@ class RealtimeVoiceClient(private val context: Context) {
 
     val phase = MutableStateFlow(Phase.IDLE)
     val transcript = MutableStateFlow<List<Line>>(emptyList())
+    val guidanceText = MutableStateFlow("")   // 实时指导：后端对每句话音生成的简短中文提示
     val review = MutableStateFlow<Review?>(null)
     val statusText = MutableStateFlow("")
     val inputLevel = MutableStateFlow(0f)
@@ -178,6 +179,9 @@ class RealtimeVoiceClient(private val context: Context) {
             "response.audio.done", "response.done", "output_audio_buffer.stopped" -> aiSpeaking.value = false
             "conversation.item.input_audio_transcription.completed" -> appendLine("user", obj.optString("transcript"))
             "response.audio_transcript.done" -> appendLine("ai", obj.optString("transcript"))
+            "realtalk.guidance" -> {
+                obj.optString("text").takeIf { it.isNotBlank() }?.let { guidanceText.value = it }
+            }
             "realtalk.review" -> {
                 review.value = Review(obj.optInt("score", 0), obj.optString("analysis"))
                 finishWithReview()

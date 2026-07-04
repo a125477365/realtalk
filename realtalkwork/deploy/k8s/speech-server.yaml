@@ -1,0 +1,70 @@
+# 本地实时语音模型服务器（可选组件）：ASR+TTS+LLM，OpenAI 兼容 API。
+# 多副本安全：实时上下文存 Redis；模型 PVC 建议 ReadWriteMany（多副本共享只读），或每副本独立盘各自预拉。
+# GPU：镜像构建 --build-arg DEVICE=cuda，并解开 resources.limits 的 nvidia.com/gpu 注释。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: speech-models
+spec:
+  accessModes: ["ReadWriteOnce"]   # 多副本共享请改 ReadWriteMany（需支持的 StorageClass）
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: realtalk-speech
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: realtalk-speech }
+  template:
+    metadata:
+      labels: { app: realtalk-speech }
+    spec:
+      containers:
+        - name: speech
+          image: realtalk-speech:latest   # 用 speechserver/Dockerfile 构建并推到你的镜像仓库
+          ports: [{ containerPort: 9100 }]
+          env:
+            - { name: SPEECH_DEVICE, value: "cpu" }
+            - { name: SPEECH_ASR_MODEL, value: "small" }
+            - { name: SPEECH_LLM_REPO, value: "Qwen/Qwen2.5-1.5B-Instruct-GGUF" }
+            - { name: SPEECH_LLM_FILE, value: "qwen2.5-1.5b-instruct-q4_k_m.gguf" }
+            - { name: SPEECH_TTS_VOICE_EN, value: "en_US-lessac-medium" }
+            - { name: SPEECH_TTS_VOICE_ZH, value: "zh_CN-huayan-medium" }
+            - { name: HF_ENDPOINT, value: "" }        # 受限网络填 https://hf-mirror.com
+            - { name: REDIS_URL, value: "redis://realtalk-redis:6379/1" }   # 多活实时上下文
+          volumeMounts:
+            - { name: models, mountPath: /models }
+          # 首次启动要下载 whisper/gguf/piper 模型 → startupProbe 给足时间
+          startupProbe:
+            httpGet: { path: /health, port: 9100 }
+            periodSeconds: 15
+            failureThreshold: 80   # 最长 20 分钟
+          readinessProbe:
+            httpGet: { path: /health, port: 9100 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 9100 }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              # nvidia.com/gpu: 1
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: speech-models }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: realtalk-speech
+spec:
+  selector: { app: realtalk-speech }
+  ports:
+    - port: 9100
+      targetPort: 9100

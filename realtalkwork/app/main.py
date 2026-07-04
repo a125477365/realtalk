@@ -26,6 +26,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicC
 from .ark_client import (
     ai_timeout_policy,
     evaluate_roleplay_turn,
+    realtime_voice_guidance,
     generate_ai_chat_reply,
     generate_freetalk_reply,
     generate_learning,
@@ -544,6 +545,10 @@ async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict
         "effective_timeouts": ai_timeout_policy(config),
         "input_price_per_1m_cents": config.input_price_per_1m_cents,
         "output_price_per_1m_cents": config.output_price_per_1m_cents,
+        # 场景生成独立模型槽位（留空=跟随上面的对话模型）
+        "scenario_base_url": db.get_app_setting_str("ai_scenario_base_url") or "",
+        "scenario_model": db.get_app_setting_str("ai_scenario_model") or "",
+        "scenario_api_key_configured": bool(db.get_app_setting_str("ai_scenario_api_key")),
     }
 
 
@@ -577,6 +582,13 @@ async def admin_update_model_settings(
         updates["ai_input_price_per_1m_cents"] = str(request.input_price_per_1m_cents)
     if request.output_price_per_1m_cents is not None:
         updates["ai_output_price_per_1m_cents"] = str(request.output_price_per_1m_cents)
+    # 场景生成独立模型（可清空=回到跟随对话模型）
+    if request.scenario_base_url is not None:
+        updates["ai_scenario_base_url"] = request.scenario_base_url.strip().rstrip("/")
+    if request.scenario_model is not None:
+        updates["ai_scenario_model"] = request.scenario_model.strip()
+    if request.scenario_api_key is not None:
+        updates["ai_scenario_api_key"] = request.scenario_api_key.strip()
     for key, value in updates.items():
         db.set_app_setting(key, value)
     return await admin_get_model_settings(admin)
@@ -2829,10 +2841,15 @@ async def roleplay_voice(
         return
 
     instructions = build_session_instructions(scenario, session.selected_role)
+
+    async def _voice_guidance(user_text: str) -> str:
+        # 实时指导（#4）：每句话音落地后用文字模型生成一条简短中文提示，事件推给客户端指导区
+        return await realtime_voice_guidance(user_text, scenario, user_id=user.id)
+
     usage: dict = {}
     _rt_started = _time.monotonic()
     try:
-        transcript, usage = await proxy_session(websocket, instructions, config)
+        transcript, usage = await proxy_session(websocket, instructions, config, guidance_fn=_voice_guidance)
     except Exception:  # noqa: BLE001 — 转发期间任一端异常即结束并评分
         transcript = []
     _rt_seconds = _time.monotonic() - _rt_started

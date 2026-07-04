@@ -240,29 +240,27 @@ if $DEPLOY_BACKEND; then
       ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
     fi
 
-    # ---- 语音转写 ASR（高级会员上传录音转文字，DB 存储参数，仅新建库时配置）----
+    # ---- 语音转写 ASR（api 后端不再内置 TTS/ASR 引擎；语音能力由「本地语音服务器」或云端提供）----
+    # 例外：本节点若要支持「高级会员上传语音文件生成场景」，可选装 whisper 用于长音频转文字。
     echo
-    note "高级会员上传录音的转文字方式："
-    echo "    1) 云端语音模型（OpenAI 兼容 API，需密钥，质量稳定）"
-    echo "    2) 服务器本地 whisper（自动安装，免密钥，占用本机算力）"
-    echo "    3) 暂不配置（之后在管理台或重跑本脚本再设）"
+    note "语音转写 ASR（对话转写建议指向本地语音服务器或云端；见后面「本地实时语音模型」一节）："
+    echo "    1) 云端/本地语音服务器（OpenAI 兼容 /audio/transcriptions，填地址）"
+    echo "    2) 本后端内置 whisper（仅当本节点要支持「上传语音文件生成场景」且不装语音服务器时选）"
+    echo "    3) 暂不配置（之后在管理台「系统设置 → 语音转写」再设）"
     ask "选择 ASR 方式" "3"
     ASR_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_ASR=true   # 本地引擎随镜像默认装好（与 API 同容器）；菜单只决定用云端还是本地
+    WITH_LOCAL_ASR=false   # api 后端默认不再安装本地引擎
     ASR_MODE_VAL="cloud"; ASR_BASE=""; ASR_KEY=""; ASR_MODEL_VAL="whisper-1"
-    # 命令始终写入（内置脚本，引擎默认随镜像装好）→ 以后切 ASR_MODE=local 即生效，无需重建/重配
     ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="$DEV"
     if [ "$ASR_CHOICE" = "1" ]; then
-      ask "ASR Base URL" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
-      ask_secret "ASR API Key"; ASR_KEY="$REPLY_VALUE"
+      ask "ASR Base URL（本地语音服务器填 http://<IP>:9100/v1）" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
+      ask_secret "ASR API Key（本地语音服务器可留空）"; ASR_KEY="$REPLY_VALUE"
       ask "ASR 模型名称" "whisper-1"; ASR_MODEL_VAL="$REPLY_VALUE"
     elif [ "$ASR_CHOICE" = "2" ]; then
-      note "将自动在后端镜像中安装 faster-whisper（CPU），首次转写会下载模型到 ./data/whisper-models。"
-      note "模型越大越准也越慢：tiny/base/small/medium（小机器建议 small）。"
+      note "将在后端镜像中安装 faster-whisper（仅供上传语音文件生成场景）。模型 tiny/base/small/medium。"
       ask "本地 whisper 模型大小" "small"; ASR_LOCAL_MODEL_VAL="$REPLY_VALUE"
       WITH_LOCAL_ASR=true
       ASR_MODE_VAL="local"
-      ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"
     else
       ASR_DEV="$DEV"
     fi
@@ -274,35 +272,27 @@ if $DEPLOY_BACKEND; then
       "ASR_DEV_MODE=$ASR_DEV"
     )
 
-    # ---- 语音合成 TTS（方式1/2 对练用后端朗读，云端凭据入库，仅新建库时配置）----
+    # ---- 语音合成 TTS（api 后端不再内置 Piper；朗读由本地语音服务器或云端提供）----
     echo
-    note "AI 朗读（TTS）：手工触发 / 沉浸式对练由后端合成语音。"
-    echo "    1) 云端 TTS（OpenAI 兼容 /audio/speech，需密钥，质量稳定）"
-    echo "    2) 服务器本地 Piper（自动安装，免密钥，占用本机算力；输出 WAV）"
+    note "AI 朗读（TTS）：指向本地语音服务器或云端 OpenAI 兼容 /audio/speech。"
+    echo "    1) 本地语音服务器（http://<IP>:9100/v1，输出 WAV，见后面「本地实时语音模型」一节）"
+    echo "    2) 云端 TTS（OpenAI 兼容，需密钥）"
     echo "    3) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
     ask "选择 TTS 方式" "3"
     TTS_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_TTS=true   # Piper 随镜像默认装好（与 API 同容器）；菜单只决定用云端还是本地
-    # 命令始终写入（内置 Piper 脚本）→ 以后切 TTS_MODE=local（+ TTS_FORMAT=wav）即生效，无需重建
-    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
+    WITH_LOCAL_TTS=false   # api 后端不再安装本地 Piper（由语音服务器承担）
+    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD=""
     TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
-    # 音色：用户在 App 里从「可选音色清单」自选(自选优先)，后端只提供清单 + 兜底默认。
-    # 清单是【引擎相关】的(云端 OpenAI=alloy… / 本地 Piper=en_US-lessac-medium…)，App 拉 /tts/voices 获取，
-    # 故由后端按引擎给合理默认即可，无需在此逐个询问；需要增删可到管理台「系统设置 → 语音合成」。
     if [ "$TTS_CHOICE" = "1" ]; then
+      ask "本地语音服务器地址" "http://127.0.0.1:9100/v1"; TTS_BASE="$REPLY_VALUE"
+      TTS_KEY="local"; TTS_MODEL_VAL="piper"; TTS_FORMAT_VAL="wav"
+      TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
+      TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium"
+    elif [ "$TTS_CHOICE" = "2" ]; then
       ask "TTS Base URL" "https://api.openai.com/v1"; TTS_BASE="$REPLY_VALUE"
       ask_secret "TTS API Key"; TTS_KEY="$REPLY_VALUE"
       ask "TTS 模型名称" "tts-1"; TTS_MODEL_VAL="$REPLY_VALUE"
-      # 云端清单/兜底默认用 OpenAI 标准音色（即上面 init 值）
-    elif [ "$TTS_CHOICE" = "2" ]; then
-      note "将自动在镜像中安装 piper-tts（CPU）；音色模型启动时预拉到模型目录（与本地 ASR 共用卷）。"
-      WITH_LOCAL_TTS=true
-      TTS_MODE_VAL="local"; TTS_FORMAT_VAL="wav"
-      TTS_LOCAL_CMD="python /app/app/tts_local.py {voice} {out}"
-      # 本地清单/兜底默认用一组英文 Piper 音色（管理台可增删；更多见 rhasspy/piper）
-      TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
-      TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium"
     fi
     ENV_LINES+=(
       "WITH_LOCAL_TTS=$WITH_LOCAL_TTS"
@@ -314,15 +304,16 @@ if $DEPLOY_BACKEND; then
     note "额度参数已设为默认值（非会员每天 1000 token / 5 分钟录音，基础 12 万 / 高级 40 万），可在管理台「系统设置 → 额度」调整。"
   else
     note "连接已有数据库：AI 模型 / 实时语音 / ASR / TTS 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
-    # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户
+    # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户。
+    # api 后端默认不再内置 TTS/ASR（语音能力指向本地语音服务器或云端，管理台可改地址）。
     ENV_LINES+=(
-      "WITH_LOCAL_ASR=true"
+      "WITH_LOCAL_ASR=false"
       "ASR_MODE=cloud"
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
       "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=small"
       "ASR_DEV_MODE=false"
-      "WITH_LOCAL_TTS=true"
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND=python /app/app/tts_local.py {voice} {out}"
+      "WITH_LOCAL_TTS=false"
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND="
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
     )
@@ -519,6 +510,27 @@ if $DEPLOY_WEB; then
   fi
 fi
 
+# ============ 本地实时语音模型服务器（可选组件：ASR+TTS+LLM，OpenAI 兼容 API） ============
+echo; say "[4.5] 本地实时语音模型（独立容器：faster-whisper + Piper + llama.cpp，OpenAI 兼容接口）"
+note "安装后把管理台「语音转写/语音合成/模型」的 Base URL 指到本服务，即可全量切换到本地模型（提速+免云端费用）；"
+note "高级会员「实时语音大模型」可保持 OpenAI/GLM 不变（本地异常时高级会员不受影响）。"
+ask "是否安装本地实时语音模型服务器？(yes/no)" "no"
+DEPLOY_SPEECH=false
+if [ "$REPLY_VALUE" = "yes" ]; then
+  DEPLOY_SPEECH=true
+  ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
+  ask "whisper 模型大小 (tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
+  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4，CPU 可跑；机器强可换 7B）。"
+  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  ask "英文音色 (Piper)" "en_US-lessac-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
+  ask "中文音色 (Piper)" "zh_CN-huayan-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
+  ask "模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
+  ask "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
+  SPEECH_PORT_VAL="$REPLY_VALUE"
+  # 实时通道的用户上下文临时保存在 Redis（多活/多副本可互相接管），复用主 Redis 的 1 号库，无需额外配置
+fi
+
 ENV_LINES+=("API_UPSTREAM=$API_UPSTREAM_DEFAULT")
 IFS=,; ENV_LINES+=("COMPOSE_PROFILES=${PROFILES[*]}"); unset IFS
 
@@ -531,7 +543,11 @@ echo
 ask "是否立即构建并启动？(yes/no)" "yes"
 if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
-  docker compose up -d --build
+  if $DEPLOY_SPEECH; then
+    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+  else
+    docker compose up -d --build
+  fi
   if $DEPLOY_BACKEND; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
     # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。
@@ -557,6 +573,18 @@ say "=============================================="
 say " 部署完成，本机入口："
 say "=============================================="
 $DEPLOY_BACKEND && echo "  后端 API：    http://<本机IP>:${API_PORT:-8000}  （App 服务地址指向这里）"
+if $DEPLOY_SPEECH; then
+  echo "  本地语音模型：http://<本机IP>:${SPEECH_PORT_VAL:-9100}/v1  （OpenAI 兼容 API）"
+  echo
+  say "本地语音模型 API 调用方式："
+  note "语音→文字:  curl -F file=@a.wav -F language=en http://<IP>:${SPEECH_PORT_VAL:-9100}/v1/audio/transcriptions"
+  note "文字→语音:  POST /v1/audio/speech  {\"input\":\"Hello 你好\"}  → WAV（中英混读）"
+  note "文字对话:   POST /v1/chat/completions  （OpenAI 消息格式）"
+  note "实时通道:   WS /v1/realtime?session=<id>  语音流+文字上下文 → 转写+文本流+语音流（上下文存 Redis，多活可接管）"
+  note "在 RealTalk 启用：管理台「系统设置」把 语音转写/语音合成/模型 的 Base URL 填 http://<IP>:${SPEECH_PORT_VAL:-9100}/v1"
+  note "（TTS 格式选 wav，音色用 en_US-lessac-medium 等；高级会员实时语音保持 OpenAI/GLM 配置不变即可）"
+  note "详细文档：speechserver/README.md；首次启动会下载模型（受限网络在 .env 加 HF_ENDPOINT=https://hf-mirror.com）"
+fi
 $DEPLOY_BACKEND && [ -n "$REDIS_PORT_VAL" ] && echo "  Redis 对外：  <本机IP>:${REDIS_PORT_VAL}  （内置 Redis，不建议暴露公网）"
 $DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
 $DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"

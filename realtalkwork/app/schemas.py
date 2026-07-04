@@ -749,6 +749,10 @@ class ModelSettingsUpdateRequest(BaseModel):
     max_tokens_long: int | None = Field(default=None, ge=256, le=1000000)       # 长任务输出上限
     input_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
+    # 场景生成独立模型槽位（留空字符串=清除，回到跟随对话模型）
+    scenario_base_url: str | None = Field(default=None, max_length=500)
+    scenario_api_key: str | None = Field(default=None, max_length=500)
+    scenario_model: str | None = Field(default=None, max_length=200)
 
 
 class RealtimeSettingsRequest(BaseModel):

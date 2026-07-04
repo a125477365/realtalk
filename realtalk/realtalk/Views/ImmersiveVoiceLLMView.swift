@@ -25,9 +25,21 @@ struct ImmersiveVoiceLLMView: View {
                 if isFinished {
                     reviewCard
                 } else {
-                    // 纯语音流对接：不做文字/语音转换，不显示字幕与指导，
-                    // 界面中央只有一个跟随语音频率跳动的提示圈。
+                    // 纯语音流对接：界面中央是跟随语音频率跳动的提示圈；
+                    // 下方实时指导：后端对每句话音生成的简短中文提示（不打断语音）。
                     orb
+                    if realtime.guidanceText.isEmpty == false {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "lightbulb")
+                                .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.42))
+                            Text(realtime.guidanceText)
+                                .font(.system(size: 14 * model.fontScale))
+                                .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.42))
+                                .multilineTextAlignment(.leading)
+                        }
+                        .padding(.horizontal, 28)
+                        .padding(.top, 10)
+                    }
                     statusLine
                     endButton
                 }

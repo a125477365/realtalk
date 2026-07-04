@@ -1,0 +1,34 @@
+# 本地实时语音模型服务器（可选组件，setup.sh 选装）：
+#   docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build speech
+# 与 api 同一网络；上下文临时保存复用主 Redis（多活/多副本安全）。
+# GPU 部署：把 build.args.DEVICE 改为 cuda，并解开 deploy.resources 注释（需 nvidia-container-toolkit）。
+services:
+  speech:
+    build:
+      context: ./speechserver
+      args:
+        DEVICE: ${SPEECH_DEVICE:-cpu}
+    restart: unless-stopped
+    ports:
+      - "${SPEECH_PORT:-9100}:9100"
+    environment:
+      SPEECH_DEVICE: ${SPEECH_DEVICE:-cpu}
+      SPEECH_ASR_MODEL: ${SPEECH_ASR_MODEL:-small}
+      SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
+      SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      SPEECH_TTS_VOICE_EN: ${SPEECH_TTS_VOICE_EN:-en_US-lessac-medium}
+      SPEECH_TTS_VOICE_ZH: ${SPEECH_TTS_VOICE_ZH:-zh_CN-huayan-medium}
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      PIPER_VOICES_BASE: ${PIPER_VOICES_BASE:-}
+      REDIS_URL: redis://redis:6379/1
+    volumes:
+      - ${SPEECH_MODELS_DIR:-./speech-models}:/models
+    depends_on:
+      - redis
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]

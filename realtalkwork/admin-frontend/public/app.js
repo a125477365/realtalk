@@ -1145,23 +1145,17 @@ function loadPlanQuotaAsr() {
       var banner = getEl("asr-mode-banner");
       var cloud = getEl("asr-cloud-fields");
       var saveBtn = getEl("asr-save-btn");
-      if (local) {
-        // 本地转写由部署时（setup.sh）安装并配置，管理台只读展示
-        if (banner) banner.innerHTML =
-          '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
-          '当前为<b>服务器本地转写</b>模式，由部署脚本（setup.sh）自动安装 whisper 并配置，' +
-          '无需在此设置。如需改用云端模型，请在服务器重新运行 setup.sh 并选择云端方式。</div>';
-        if (cloud) cloud.style.display = "none";
-        if (saveBtn) saveBtn.style.display = "none";
-      } else {
-        if (banner) banner.innerHTML = "";
-        if (cloud) cloud.style.display = "";
-        if (saveBtn) saveBtn.style.display = "";
-        if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
-        if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
-        var ks = getEl("asr-key-status");
-        if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
-      }
+      if (banner) banner.innerHTML = local
+        ? '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
+          '本节点启用了内置 whisper（仅供上传语音文件生成场景）。推荐部署「本地实时语音模型服务器」后，' +
+          '在下方填 http://&lt;IP&gt;:9100/v1 统一切换（见 speechserver/README.md）。</div>'
+        : '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1（Key 随意填如 local）。</div>';
+      if (cloud) cloud.style.display = "";
+      if (saveBtn) saveBtn.style.display = "";
+      if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
+      if (getEl("asr-model")) getEl("asr-model").value = d.model || "";
+      var ks = getEl("asr-key-status");
+      if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时使用示例转写）" : "（未配置）");
     });
   });
   apiGet("/admin/api/settings/tts").then(function(r) {
@@ -1171,23 +1165,17 @@ function loadPlanQuotaAsr() {
       var banner = getEl("tts-mode-banner");
       var cloud = getEl("tts-cloud-fields");
       var saveBtn = getEl("tts-save-btn");
-      if (local) {
-        if (banner) banner.innerHTML =
-          '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
-          '当前为<b>服务器本地合成</b>模式（Piper/Coqui 等），由部署脚本配置 TTS_LOCAL_COMMAND，无需在此设置。</div>';
-        if (cloud) cloud.style.display = "none";
-        if (saveBtn) saveBtn.style.display = "none";
-      } else {
-        if (banner) banner.innerHTML = "";
-        if (cloud) cloud.style.display = "";
-        if (saveBtn) saveBtn.style.display = "";
-        if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
-        if (getEl("tts-model")) getEl("tts-model").value = d.model || "";
-        if (getEl("tts-voices")) getEl("tts-voices").value = d.voices || "";
-        if (getEl("tts-default-voice")) getEl("tts-default-voice").value = d.default_voice || "";
-        var tks = getEl("tts-key-status");
-        if (tks) tks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时返回静音占位）" : "（未配置）");
-      }
+      if (banner) banner.innerHTML =
+        '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1' +
+        '（Key 随意填如 local，格式选 wav，音色如 en_US-lessac-medium；中英混读自动双音色）。</div>';
+      if (cloud) cloud.style.display = "";
+      if (saveBtn) saveBtn.style.display = "";
+      if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
+      if (getEl("tts-model")) getEl("tts-model").value = d.model || "";
+      if (getEl("tts-voices")) getEl("tts-voices").value = d.voices || "";
+      if (getEl("tts-default-voice")) getEl("tts-default-voice").value = d.default_voice || "";
+      var tks = getEl("tts-key-status");
+      if (tks) tks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : (d.dev_mode ? "（开发模式：未配置时返回静音占位）" : "（未配置）");
     });
   });
   apiGet("/admin/api/settings/voice-servers").then(function(r) {
@@ -1534,6 +1522,9 @@ function renderSettingsPage() {
     '    <div class="form-group"><label>\u957f\u4efb\u52a1\u00b7\u8f93\u51fa\u4e0a\u9650 max_tokens</label><input type="number" id="ms-maxtok-long" min="256" max="1000000" step="1" /></div>',
     '    <div class="form-group"><label>\u8f93\u5165\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-in-price" min="0" step="0.01" /></div>',
     '    <div class="form-group"><label>\u8f93\u51fa\u4ef7\u683c\uff08\u5206/\u767e\u4e07 tokens\uff09</label><input type="number" id="ms-out-price" min="0" step="0.01" /></div>',
+    '    <div class="form-group"><label>\u573a\u666f\u751f\u6210\u00b7Base URL <span class="subtitle">\u53ef\u9009\uff1a\u573a\u666f\u751f\u6210\u5355\u72ec\u7528\u53e6\u4e00\u6a21\u578b(\u5982\u672c\u5730\u8bed\u97f3\u670d\u52a1\u5668\u8dd1\u5bf9\u8bdd\u3001\u4e91\u7aef\u5f3a\u6a21\u578b\u751f\u6210\u573a\u666f)\uff1b\u7559\u7a7a=\u8ddf\u968f\u4e0a\u65b9\u5bf9\u8bdd\u6a21\u578b</span></label><input type="text" id="ms-sc-base" placeholder="\u7559\u7a7a=\u8ddf\u968f\u5bf9\u8bdd\u6a21\u578b" /></div>',
+    '    <div class="form-group"><label>\u573a\u666f\u751f\u6210\u00b7\u6a21\u578b</label><input type="text" id="ms-sc-model" placeholder="\u7559\u7a7a=\u8ddf\u968f\u5bf9\u8bdd\u6a21\u578b" /></div>',
+    '    <div class="form-group"><label>\u573a\u666f\u751f\u6210\u00b7API Key <span class="hint" id="ms-sc-key-status"></span></label><input type="password" id="ms-sc-key" placeholder="\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8/\u8ddf\u968f\u5bf9\u8bdd\u6a21\u578b" autocomplete="new-password" /></div>',
     "  </div>",
     '  <div class="hint" style="margin:6px 0">\u8be5\u503c\u4f5c\u4e3a\u666e\u901a\u6587\u5b57\u6a21\u578b\u8bf7\u6c42\u9ed8\u8ba4\u8d85\u65f6\uff1b\u8fde\u63a5\u6d4b\u8bd5\u3001\u7ea0\u9519\u3001\u804a\u5929\u4fdd\u6301\u5feb\u8def\u5f84\uff0c\u5b66\u4e60\u6750\u6599\u548c\u573a\u666f\u751f\u6210\u4f1a\u6309\u4e1a\u52a1\u81ea\u52a8\u653e\u5bbd\uff08\u771f\u5b9e\u91c7\u96c6\u573a\u666f\u9ed8\u8ba4\u53ef\u7b49\u5f85\u5230 1800 \u79d2\uff09\u3002</div>',
     '  <div class="hint" style="margin:6px 0 12px">\u4ef7\u683c\u4ec5\u7528\u4e8e\u300c\u6570\u636e\u6982\u89c8\u300d\u4e2d\u7684\u652f\u51fa\u4f30\u7b97\uff0c\u8bf7\u6309\u6240\u9009\u6a21\u578b\u7684\u5b98\u65b9\u62a5\u4ef7\u586b\u5199\u3002</div>',
@@ -1659,6 +1650,10 @@ function loadModelSettings() {
       if (getEl("ms-timeout-long")) getEl("ms-timeout-long").value = d.timeout_long_seconds || 1800;
       if (getEl("ms-maxtok")) getEl("ms-maxtok").value = d.max_tokens_normal || 4096;
       if (getEl("ms-maxtok-long")) getEl("ms-maxtok-long").value = d.max_tokens_long || 16384;
+      if (getEl("ms-sc-base")) getEl("ms-sc-base").value = d.scenario_base_url || "";
+      if (getEl("ms-sc-model")) getEl("ms-sc-model").value = d.scenario_model || "";
+      var scKeyStatus = getEl("ms-sc-key-status");
+      if (scKeyStatus) scKeyStatus.textContent = d.scenario_api_key_configured ? "（已配置）" : "";
       if (getEl("ms-in-price")) getEl("ms-in-price").value = d.input_price_per_1m_cents;
       if (getEl("ms-out-price")) getEl("ms-out-price").value = d.output_price_per_1m_cents;
       var keyStatus = getEl("ms-key-status");
@@ -1688,6 +1683,11 @@ function saveModelSettings() {
   if (!isNaN(maxTok)) body.max_tokens_normal = maxTok;
   var maxTokLong = parseInt((getEl("ms-maxtok-long") || { value: "" }).value, 10);
   if (!isNaN(maxTokLong)) body.max_tokens_long = maxTokLong;
+  // 场景生成独立模型：始终提交 base/model（空串=清除，回到跟随对话模型）；key 只在填写时提交
+  body.scenario_base_url = (getEl("ms-sc-base") || { value: "" }).value.trim();
+  body.scenario_model = (getEl("ms-sc-model") || { value: "" }).value.trim();
+  var scKey = (getEl("ms-sc-key") || { value: "" }).value.trim();
+  if (scKey) body.scenario_api_key = scKey;
   var inPrice = parseFloat((getEl("ms-in-price") || { value: "" }).value);
   if (!isNaN(inPrice)) body.input_price_per_1m_cents = inPrice;
   var outPrice = parseFloat((getEl("ms-out-price") || { value: "" }).value);
@@ -1700,6 +1700,7 @@ function saveModelSettings() {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
     getEl("ms-api-key").value = "";
+    if (getEl("ms-sc-key")) getEl("ms-sc-key").value = "";
     toast("\u6a21\u578b\u914d\u7f6e\u5df2\u4fdd\u5b58", "success");
     loadModelSettings();
   });

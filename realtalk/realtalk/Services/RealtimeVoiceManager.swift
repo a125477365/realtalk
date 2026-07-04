@@ -37,6 +37,7 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var transcript: [Line] = []
     @Published private(set) var review: Review?
+    @Published private(set) var guidanceText = ""   // 实时指导：后端对每句话音生成的简短中文提示
     @Published private(set) var statusText = ""
     @Published private(set) var inputLevel: Double = 0
     @Published private(set) var aiSpeaking = false
@@ -331,6 +332,8 @@ final class RealtimeVoiceManager: NSObject, ObservableObject {
             if let value = object["transcript"] as? String { appendLine(.user, value) }
         case "response.audio_transcript.done":
             if let value = object["transcript"] as? String { appendLine(.ai, value) }
+        case "realtalk.guidance":
+            if let tip = object["text"] as? String, tip.isEmpty == false { guidanceText = tip }
         case "realtalk.review":
             let score = (object["score"] as? Int) ?? Int((object["score"] as? Double) ?? 0)
             let analysis = (object["analysis"] as? String) ?? ""
