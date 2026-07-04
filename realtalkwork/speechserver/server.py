@@ -14,13 +14,19 @@ from __future__ import annotations
 
 import time
 
-from fastapi import FastAPI, File, Form, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 import engine
 import realtime
 
 app = FastAPI(title="RealTalk Speech Server", version="1.0")
+
+
+@app.exception_handler(Exception)
+async def _err(request: Request, exc: Exception) -> JSONResponse:
+    # OpenAI 风格错误体：调用方(api 后端)能解析出可读原因，而不是裸 500 文本
+    return JSONResponse({"error": {"message": str(exc)[:300], "type": type(exc).__name__}}, status_code=500)
 
 
 @app.get("/health")
