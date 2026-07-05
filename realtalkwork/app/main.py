@@ -551,6 +551,10 @@ async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict
         "scenario_base_url": db.get_app_setting_str("ai_scenario_base_url") or "",
         "scenario_model": db.get_app_setting_str("ai_scenario_model") or "",
         "scenario_api_key_configured": bool(db.get_app_setting_str("ai_scenario_api_key")),
+        # 分端点计费单价（a/b/d；c=上面的 token 单价）
+        "asr_price_per_minute_cents": float(db.get_app_setting_str("asr_price_per_minute_cents") or settings.asr_price_per_minute_cents),
+        "tts_price_per_1m_chars_cents": float(db.get_app_setting_str("tts_price_per_1m_chars_cents") or settings.tts_price_per_1m_chars_cents),
+        "conv_voice_price_per_minute_cents": float(db.get_app_setting_str("conv_voice_price_per_minute_cents") or settings.conv_voice_price_per_minute_cents),
     }
 
 
@@ -584,6 +588,12 @@ async def admin_update_model_settings(
         updates["ai_input_price_per_1m_cents"] = str(request.input_price_per_1m_cents)
     if request.output_price_per_1m_cents is not None:
         updates["ai_output_price_per_1m_cents"] = str(request.output_price_per_1m_cents)
+    if request.asr_price_per_minute_cents is not None:
+        updates["asr_price_per_minute_cents"] = str(request.asr_price_per_minute_cents)
+    if request.tts_price_per_1m_chars_cents is not None:
+        updates["tts_price_per_1m_chars_cents"] = str(request.tts_price_per_1m_chars_cents)
+    if request.conv_voice_price_per_minute_cents is not None:
+        updates["conv_voice_price_per_minute_cents"] = str(request.conv_voice_price_per_minute_cents)
     # 场景生成独立模型（可清空=回到跟随对话模型）
     if request.scenario_base_url is not None:
         updates["ai_scenario_base_url"] = request.scenario_base_url.strip().rstrip("/")
@@ -883,19 +893,15 @@ def admin_update_support_ticket(
 def admin_get_asr(scope: str = Query(default=""), admin: dict = Depends(current_admin)) -> dict:
     """scope=scenario→A类场景生成ASR(scenario_asr_*)；scope=conv→B类对话ASR(conv_asr_*)；空=通用旧键。
     返回的是该 scope 生效配置（专用为空时回退通用）。"""
-    from .audio_pipeline import resolve_asr_config, resolve_conv_asr_config
+    from .audio_pipeline import resolve_asr_config
 
-    config = resolve_conv_asr_config() if scope == "conv" else resolve_asr_config()
-    dedicated = ""
-    if scope in ("conv", "scenario"):
-        dedicated = db.get_app_setting_str("conv_asr_base_url" if scope == "conv" else "scenario_asr_base_url") or ""
+    config = resolve_asr_config()
+    dedicated = db.get_app_setting_str("scenario_asr_base_url") or "" if scope == "scenario" else ""
     return {
         "scope": scope,
         "dedicated_base_url": dedicated,
-        "mode": config["mode"],
         "base_url": config["base_url"],
         "model": config["model"],
-        "local_command": config["local_command"],
         "api_key_masked": _masked_key(config["api_key"]),
         "api_key_configured": bool(config["api_key"]),
         "dev_mode": config["dev_mode"],
@@ -910,7 +916,7 @@ def admin_set_asr(
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     # scope=scenario/conv 写各自专用键（A/B 类分开维护）；空 scope 写通用旧键
-    prefix = {"scenario": "scenario_asr", "conv": "conv_asr"}.get(request.scope or "", "asr")
+    prefix = "scenario_asr" if (request.scope or "") == "scenario" else "asr"
     if request.base_url is not None:
         db.set_app_setting(f"{prefix}_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
@@ -922,21 +928,23 @@ def admin_set_asr(
 
 @app.get("/admin/api/settings/tts")
 def admin_get_tts(admin: dict = Depends(current_admin)) -> dict:
-    """B 类对话 TTS 生效配置（conv_tts_* 优先，回退通用 tts_*）+ 实时通道地址。"""
-    config = voice_io.resolve_tts_config()
+    """B 类【对话语音模型】一张卡：一个 base_url 派生 ASR/TTS/LLM/实时通道四个端点。"""
+    cv = voice_io.resolve_conv_voice()
+    tts = voice_io.resolve_tts_config()
     return {
-        "dedicated_base_url": db.get_app_setting_str("conv_tts_base_url") or "",
-        "realtime_channel_url": db.get_app_setting_str("conv_realtime_base_url") or "",
-        "format": config["format"],
-        "mode": config["mode"],
-        "base_url": config["base_url"],
-        "model": config["model"],
-        "voices": config["voices"],
+        "base_url": cv["base_url"],
+        "model": cv["model"],
+        "voice": cv["voice"],
+        "api_key_configured": bool(cv["api_key"]),
+        "realtime_channel_url": voice_io.conv_realtime_url(),   # 只读展示：自动派生
+        "format": tts["format"],
+        "voices": tts["voices"],
         "default_voice": voice_io.default_voice(),
-        "api_key_masked": _masked_key(config["api_key"]),
-        "api_key_configured": bool(config["api_key"]),
         "configured": voice_io.tts_configured(),
-        "dev_mode": config["dev_mode"],
+        "dev_mode": tts["dev_mode"],
+        # 兼容旧前端字段
+        "api_key_masked": "",
+        "mode": "cloud",
     }
 
 
@@ -947,21 +955,17 @@ def admin_set_tts(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    # B 类对话 TTS 写 conv_tts_* 专用键（留空=清除回退通用）；音色清单/默认音色共用；实时通道地址一并保存
+    # B 类【对话语音模型】一张卡：写 conv_voice_*（ASR/TTS/LLM/实时通道由此派生，无需分别配置）
     if request.base_url is not None:
-        db.set_app_setting("conv_tts_base_url", request.base_url.strip().rstrip("/"))
+        db.set_app_setting("conv_voice_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
-        db.set_app_setting("conv_tts_api_key", request.api_key.strip())
+        db.set_app_setting("conv_voice_api_key", request.api_key.strip())
     if request.model is not None:
-        db.set_app_setting("conv_tts_model", request.model.strip())
-    if request.format is not None:
-        db.set_app_setting("conv_tts_format", request.format.strip())
-    if request.realtime_channel_url is not None:
-        db.set_app_setting("conv_realtime_base_url", request.realtime_channel_url.strip().rstrip("/"))
+        db.set_app_setting("conv_voice_model", request.model.strip())
+    if request.default_voice is not None:
+        db.set_app_setting("conv_voice_voice", request.default_voice.strip())
     if request.voices is not None:
         db.set_app_setting("tts_voices", request.voices.strip())
-    if request.default_voice is not None:
-        db.set_app_setting("tts_default_voice", request.default_voice.strip())
     return admin_get_tts(admin)
 
 
@@ -1013,7 +1017,7 @@ async def tts_speak(
     _enforce_user_rate(user.id, "tts", settings.tts_user_rate_per_min)
     voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
     try:
-        audio, content_type = await voice_io.synthesize(text, voice, use_cache=cache)
+        audio, content_type = await voice_io.synthesize(text, voice, use_cache=cache, user_id=user.id)
     except voice_io.TTSOverloaded as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     return Response(content=audio, media_type=content_type)
@@ -1634,7 +1638,11 @@ async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user))
         # 涉政话题不进入模型，直接引导回口语练习
         return AIChatResponse(reply="这个话题我们就不展开了。我们继续练英语吧，你想还原哪段真实对话？")
     scenario = db.get_scenario(user.id, request.scene_id) if request.scene_id else None
-    reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario, user_id=user.id)
+    try:
+        reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario, user_id=user.id)
+    except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不做兜底回复
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
     return AIChatResponse(reply=reply)
 
 
@@ -2416,7 +2424,10 @@ async def learning_generate(
     items = materialize_items(user.id, request.start, request.end, request.items)
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-    return await generate_learning(items, user_id=user.id)
+    try:
+        return await generate_learning(items, user_id=user.id)
+    except Exception as exc:  # noqa: BLE001 — #9
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
 
 
 @app.post("/scenario/generate", response_model=ScenarioResponse)
@@ -2428,7 +2439,10 @@ async def scenario_generate(
     items = materialize_items(user.id, request.start, request.end, request.items)
     if not items:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前时间范围没有对话")
-    scenario = await generate_scenario(items, user_id=user.id)
+    try:
+        scenario = await generate_scenario(items, user_id=user.id)
+    except Exception as exc:  # noqa: BLE001 — #9
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
     return db.create_scenario(user.id, request.start, request.end, scenario)
 
 
@@ -2676,13 +2690,17 @@ async def roleplay_message(
         review = format_final_roleplay_review(session, db.list_roleplay_messages(user.id, session.session_id))
         return roleplay_state_response(user.id, session, scenario, latest_feedback=review)
 
-    evaluation = await evaluate_roleplay_turn(
-        request.message.strip(),
-        target_line,
-        scenario,
-        db.list_roleplay_messages(user.id, session.session_id),
-        user_id=user.id,
-    )
+    try:
+        evaluation = await evaluate_roleplay_turn(
+            request.message.strip(),
+            target_line,
+            scenario,
+            db.list_roleplay_messages(user.id, session.session_id),
+            user_id=user.id,
+        )
+    except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不做兜底评分
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
     score = evaluation.score
     final_guidance = request.guidance_mode == "final"
     # 更宽松、更看重「意思是否表达到位」：模型判定通过(意思对)即通过；
@@ -2781,7 +2799,7 @@ async def roleplay_message_audio(
     if not audio:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="录音为空")
     try:
-        recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference)).strip()
+        recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference, user_id=user.id)).strip()
     except Exception as exc:  # noqa: BLE001 — ASR 故障(如本地模型未就绪)返回可读 503，不要 500
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -2941,7 +2959,7 @@ async def roleplay_stream(
     async def _send_tts(text: str, use_cache: bool = True) -> None:
         try:
             # 场景台词先查 Redis（多半已被「提前生成」预热过）→ 命中秒回；指导内容动态唯一传 use_cache=False。
-            audio, ct = await voice_io.synthesize(text, voice, use_cache=use_cache)
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=use_cache, user_id=user.id)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
@@ -2970,6 +2988,20 @@ async def roleplay_stream(
     # 开场/重连：回完整状态（客户端据此恢复字幕/进度/评分），并只朗读「当前待回应的那段 AI 台词」。
     # 把已朗读游标设到「最后一条用户消息之后」：首次进入=朗读开场 AI 台词；断线重连=只补当前待回应这句，
     # 既不会把整段历史重念一遍，又能把断线时漏掉的那句语音补给客户端。
+    # #10 沉浸式流式：配置 B 语音模型后，音频帧【边说边转发】到实时通道做流式转写；
+    # 评分/进度判断/指导/台词朗读逻辑完全不变（转写回来仍走 roleplay_message 同一套）。
+    # 通道故障自动回退分步管线（整段音频在 commit 时转写），沉浸式不中断。
+    rp_upstream = None
+    rp_upstream_started = 0.0
+    _rp_rt_url = resolve_conv_realtime_url()
+    if _rp_rt_url:
+        try:
+            rp_upstream = await ConvRealtimeSession(_rp_rt_url, f"rp-{session_id}").connect()
+            rp_upstream_started = _time.monotonic()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[stream] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
+            rp_upstream = None
+
     state0 = roleplay_state_response(user.id, session, scenario)
     for _i, _m in enumerate(state0.messages):
         if getattr(_m, "speaker", "") == "user":
@@ -2988,7 +3020,14 @@ async def roleplay_stream(
             if event.get("type") == "websocket.disconnect":
                 break
             if event.get("bytes") is not None:
-                utterance.extend(event["bytes"])
+                if rp_upstream is not None:
+                    try:
+                        await rp_upstream.append_audio(event["bytes"])   # 边说边转发（流式上行）
+                    except Exception:  # noqa: BLE001 — 通道断了回退分步管线
+                        rp_upstream = None
+                        utterance.extend(event["bytes"])
+                else:
+                    utterance.extend(event["bytes"])
                 continue
             text = event.get("text")
             if not text:
@@ -3000,6 +3039,14 @@ async def roleplay_stream(
             mtype = data.get("type")
             if mtype == "interrupt":          # 抢话：用户开始说话 → 立刻停 AI 朗读
                 _cancel_tts()
+                continue
+            if mtype == "reset_audio":        # 噪音废弃：清掉本轮已积累的帧（本地+上游通道）
+                utterance.clear()
+                if rp_upstream is not None:
+                    try:
+                        await rp_upstream.send({"type": "input_audio_buffer.clear"})
+                    except Exception:  # noqa: BLE001
+                        rp_upstream = None
                 continue
             if mtype == "bye":
                 break
@@ -3017,11 +3064,20 @@ async def roleplay_stream(
             target = next_user_line(session, scenario)
             reference = target.english if target else None
             try:
-                recognized = (await voice_io.transcribe(
-                    audio, suffix=data.get("format", ".m4a"), reference_text=reference
-                )).strip()
-            except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
+                if rp_upstream is not None:
+                    recognized = (await rp_upstream.commit_and_transcribe(
+                        timeout=60,
+                        audio_format=data.get("format", "pcm16").lstrip("."),
+                        sample_rate=int(data.get("sample_rate") or 16000),
+                    )).strip()
+                else:
+                    recognized = (await voice_io.transcribe(
+                        audio, suffix="." + str(data.get("format", "m4a")).lstrip("."), reference_text=reference, user_id=user.id
+                    )).strip()
+            except Exception as exc:  # noqa: BLE001 — 识别失败(噪音/空音频/通道故障)：轻提示回到聆听
                 print(f"[stream] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
+                if rp_upstream is not None:
+                    rp_upstream = None   # 通道故障 → 下一句回退分步管线
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             if not recognized:
@@ -3029,10 +3085,14 @@ async def roleplay_stream(
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
             gm = "final" if data.get("guidance_mode") == "final" else "realtime"
-            resp = await roleplay_message(
-                RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
-                user,
-            )
+            try:
+                resp = await roleplay_message(
+                    RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
+                    user,
+                )
+            except HTTPException as exc:  # noqa: PERF203 — #9：模型不可用 → 明确报错给用户，会话保持可重试
+                await _sj({"type": "notice", "detail": str(exc.detail)[:160]})
+                continue
             resp.recognized_text = recognized
             if reference:
                 resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
@@ -3053,6 +3113,10 @@ async def roleplay_stream(
             pass
     finally:
         _cancel_tts()
+        if rp_upstream is not None:
+            await rp_upstream.close(wipe_context=True)   # 沉浸式转写会话无需保留上下文
+            if rp_upstream_started:
+                voice_io.record_conv_voice_cost(user.id, _time.monotonic() - rp_upstream_started)  # d 类按分钟
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001
@@ -3092,7 +3156,7 @@ async def freetalk_stream(
     async def _send_tts(text: str) -> None:
         try:
             # 自由对话回复每句唯一且动态 → 不入 Redis(与指导内容同策略)，实时合成推流
-            audio, ct = await voice_io.synthesize(text, voice, use_cache=False)
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=False, user_id=user.id)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：字幕仍在
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
@@ -3115,10 +3179,12 @@ async def freetalk_stream(
     # 音频帧边收边转发、上下文由语音服务器持有（Redis 5 分钟滑动，主动退出立即清理）；
     # 连接失败自动回退下面的分步管线（ASR→LLM→TTS），私教不因本地服务异常中断。
     upstream = None
+    upstream_started = 0.0
     rt_url = resolve_conv_realtime_url()
     if rt_url:
         try:
             upstream = await ConvRealtimeSession(rt_url, f"ft-{user.id}").connect()
+            upstream_started = _time.monotonic()
             if not upstream.restored:
                 await upstream.seed(
                     freetalk_instructions(db.get_user_memory(user.id)),
@@ -3177,6 +3243,14 @@ async def freetalk_stream(
                 if upstream is not None:
                     await upstream.cancel_response()
                 continue
+            if mtype == "reset_audio":        # 噪音废弃：清掉本轮已积累的帧（本地+上游通道）
+                utterance.clear()
+                if upstream is not None:
+                    try:
+                        await upstream.send({"type": "input_audio_buffer.clear"})
+                    except Exception:  # noqa: BLE001
+                        upstream = None
+                continue
             if mtype == "bye":
                 user_ended = True
                 break
@@ -3186,16 +3260,18 @@ async def freetalk_stream(
             if upstream is not None:
                 # ---- 实时通道路径：转写与推理都在语音服务器，上下文由其 Redis 持有 ----
                 try:
-                    recognized = await upstream.commit_and_transcribe(timeout=60)
+                    recognized = await upstream.commit_and_transcribe(
+                        timeout=60, audio_format=data.get("format", "pcm16").lstrip("."), sample_rate=int(data.get("sample_rate") or 16000)
+                    )
                     if not recognized:
                         await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                         continue
                     db.add_freetalk_message(user.id, "user", recognized)
                     await _sj({"type": "user_text", "text": recognized, "translation": ""})
-                    reply, wav = await upstream.create_response(timeout=120)
+                    reply, reply_zh, wav = await upstream.create_response(timeout=120)
                     if reply:
                         db.add_freetalk_message(user.id, "ai", reply)
-                        await _sj({"type": "ai_text", "text": reply, "translation": ""})
+                        await _sj({"type": "ai_text", "text": reply, "translation": reply_zh})
                         if wav:
                             await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
                             for i in range(0, len(wav), 16384):
@@ -3205,10 +3281,10 @@ async def freetalk_stream(
                     if turns_since_memory >= 6:
                         turns_since_memory = 0
                         asyncio.create_task(update_freetalk_memory(user.id))
-                except Exception as exc:  # noqa: BLE001 — 通道故障：本轮提示并回退分步管线
+                except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
                     print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
                     upstream = None
-                    await _sj({"type": "notice", "detail": "没听清，请再说一次"})
+                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
                 continue
             # ---- 分步管线路径（未配实时通道/通道故障时）----
             audio = bytes(utterance)
@@ -3216,7 +3292,7 @@ async def freetalk_stream(
             if not audio:
                 continue
             try:
-                recognized = (await voice_io.transcribe(audio, suffix=data.get("format", ".m4a"))).strip()
+                recognized = (await voice_io.transcribe(audio, suffix="." + str(data.get("format", "m4a")).lstrip("."), user_id=user.id)).strip()
             except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
                 print(f"[freetalk] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
@@ -3225,12 +3301,16 @@ async def freetalk_stream(
                 # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
-            result = await generate_freetalk_reply(
-                recognized,
-                db.get_user_memory(user.id),
-                db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史(200条)都给上下文，按预算裁剪在模型侧做
-                user_id=user.id,
-            )
+            try:
+                result = await generate_freetalk_reply(
+                    recognized,
+                    db.get_user_memory(user.id),
+                    db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史，按预算裁剪在模型侧做
+                    user_id=user.id,
+                )
+            except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+                await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                continue
             # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
             user_display = result.get("user_display", "").strip() or recognized
             db.add_freetalk_message(user.id, "user", user_display)
@@ -3255,6 +3335,9 @@ async def freetalk_stream(
         if upstream is not None:
             # 用户主动结束(bye) → 通知语音服务器立即删除 Redis 上下文；断线则留 5 分钟 TTL 供重连续聊
             await upstream.close(wipe_context=user_ended)
+            # d 类计费：实时通道按会话分钟整体计费（通道内已含 ASR/LLM/TTS，绝不重复计 a/b/c）
+            if upstream_started:
+                voice_io.record_conv_voice_cost(user.id, _time.monotonic() - upstream_started)
         if turns_since_memory > 0:   # 会话结束把余下轮次也并进记忆
             asyncio.create_task(update_freetalk_memory(user.id))
         try:
@@ -3668,7 +3751,7 @@ def _prewarm_tts(user_id: str, texts: list[str]) -> None:
     async def _run() -> None:
         for t in texts:
             try:
-                await voice_io.synthesize(t, voice, use_cache=True)
+                await voice_io.synthesize(t, voice, use_cache=True, user_id=user_id)
             except Exception:  # noqa: BLE001 — 预热失败静默
                 pass
 

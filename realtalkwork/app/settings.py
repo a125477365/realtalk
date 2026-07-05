@@ -81,45 +81,36 @@ class Settings:
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     audio_max_bytes: int = int(os.getenv("AUDIO_MAX_BYTES", str(300 * 1024 * 1024)))
     audio_max_seconds: int = int(os.getenv("AUDIO_MAX_SECONDS", str(6 * 3600)))
-    # 语音转写：cloud=OpenAI 兼容 API，local=服务器本地命令行工具
-    asr_mode: str = os.getenv("ASR_MODE", "cloud")
+    # 语音转写：全部走 OpenAI 兼容 API（api 后端不再内置引擎）
     asr_base_url: str | None = os.getenv("ASR_BASE_URL")
     asr_api_key: str | None = os.getenv("ASR_API_KEY")
     asr_model: str = os.getenv("ASR_MODEL", "whisper-1")
-    # 本地转写命令模板：{input}=音频路径，{dir}=可写目录；命令需把文本打到 stdout 或在 {dir} 生成同名 .txt
-    # 默认即镜像自带的内置脚本(faster-whisper)，故 ASR_MODE=local 开箱即用、无需另配命令。
-    asr_local_command: str | None = os.getenv("ASR_LOCAL_COMMAND", "python /app/app/asr_local.py {input}")
-    # 本地 whisper 模型大小（faster-whisper：tiny/base/small/medium/large-v3）
-    asr_local_model: str = os.getenv("ASR_LOCAL_MODEL", "small")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
 
-    # ==== 按功能归属分开配置（A/B 类，DB 可改、每次调用现读；留空回退上面的通用 asr_/tts_ 键）====
-    # A 场景生成（高级会员上传音频文件→场景）专用 ASR
+    # ==== 按功能归属分开配置（A/B 类，DB 可改、每次调用现读）====
+    # A 场景生成（高级会员上传音频文件→场景）专用 ASR（留空回退通用 asr_ 键）
     scenario_asr_base_url: str | None = os.getenv("SCENARIO_ASR_BASE_URL")
     scenario_asr_api_key: str | None = os.getenv("SCENARIO_ASR_API_KEY")
     scenario_asr_model: str = os.getenv("SCENARIO_ASR_MODEL", "whisper-1")
-    # B 对话（手动触发式/沉浸式/私教）专用 ASR / TTS
-    conv_asr_base_url: str | None = os.getenv("CONV_ASR_BASE_URL")
-    conv_asr_api_key: str | None = os.getenv("CONV_ASR_API_KEY")
-    conv_asr_model: str = os.getenv("CONV_ASR_MODEL", "whisper-1")
-    conv_tts_base_url: str | None = os.getenv("CONV_TTS_BASE_URL")
-    conv_tts_api_key: str | None = os.getenv("CONV_TTS_API_KEY")
-    conv_tts_model: str = os.getenv("CONV_TTS_MODEL", "")
-    conv_tts_format: str = os.getenv("CONV_TTS_FORMAT", "")
-    # B 对话·实时通道（本地语音服务器 WS /v1/realtime）：配了后沉浸式/私教走流式通道
-    conv_realtime_base_url: str | None = os.getenv("CONV_REALTIME_BASE_URL")
+    # B 对话（手动触发式/沉浸式/私教）语音模型【一张卡】：本地语音服务器或 OpenAI，
+    # 填一个 base_url 即可——ASR(/audio/transcriptions)、TTS(/audio/speech)、LLM(/chat/completions)、
+    # 实时通道(ws .../realtime) 四个端点由后端自动派生，不再分别配置。
+    conv_voice_base_url: str | None = os.getenv("CONV_VOICE_BASE_URL")
+    conv_voice_api_key: str | None = os.getenv("CONV_VOICE_API_KEY")
+    conv_voice_model: str = os.getenv("CONV_VOICE_MODEL", "")     # 实时/对话主模型名（本地服务器可留空）
+    conv_voice_voice: str = os.getenv("CONV_VOICE_VOICE", "")     # 默认音色（本地=en_US-lessac-medium 等）
+    # ==== 分端点计费单价（调用一次算一次；实时通道按分钟整体计费，绝不与 ASR/TTS/LLM 重复计）====
+    asr_price_per_minute_cents: float = float(os.getenv("ASR_PRICE_PER_MINUTE_CENTS", "0"))        # a 语音→文字
+    tts_price_per_1m_chars_cents: float = float(os.getenv("TTS_PRICE_PER_1M_CHARS_CENTS", "0"))    # b 文字→语音
+    conv_voice_price_per_minute_cents: float = float(os.getenv("CONV_VOICE_PRICE_PER_MINUTE_CENTS", "0"))  # d 实时通道
 
-    # 语音合成（TTS）：cloud=OpenAI 兼容 /audio/speech，local=服务器本地命令行（Piper/Coqui 等）
-    tts_mode: str = os.getenv("TTS_MODE", "cloud")
+    # 语音合成：全部走 OpenAI 兼容 /audio/speech（api 后端不再内置引擎）
     tts_base_url: str | None = os.getenv("TTS_BASE_URL")
     tts_api_key: str | None = os.getenv("TTS_API_KEY")
     tts_model: str = os.getenv("TTS_MODEL", "tts-1")
     # 可选音色列表（逗号分隔，供用户选择）与默认音色
     tts_voices: str = os.getenv("TTS_VOICES", "alloy,echo,fable,onyx,nova,shimmer")
     tts_default_voice: str = os.getenv("TTS_DEFAULT_VOICE", "alloy")
-    # 本地合成命令模板：{voice}=音色，{out}=输出音频路径，文本经 stdin 传入；命令需在 {out} 生成音频
-    # 默认即镜像自带的内置脚本(Piper)，故 TTS_MODE=local 开箱即用、无需另配命令。
-    tts_local_command: str | None = os.getenv("TTS_LOCAL_COMMAND", "python /app/app/tts_local.py {voice} {out}")
     tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
     tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
     # TTS 结果缓存：作为「提前生成下一句」的暂存。滑动过期——每次被取用就续期，

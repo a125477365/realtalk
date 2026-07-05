@@ -59,17 +59,23 @@ if [ -f .env ]; then
 fi
 
 # ============ 第 1 步：选择本机要部署的应用 ============
-say "[1] 选择本机要部署的应用（逗号分隔可多选）"
-echo "    1) 后端 API（含可选内置 PostgreSQL）"
+say "[1] 选择本机要部署的应用（逗号分隔可多选；各应用可拆机独立部署）"
+echo "    1) 后端 API"
 echo "    2) 管理台（运营/财务/模型配置）"
 echo "    3) 用户 Web 端（充值/会员/场景/录音上传）"
-ask "要部署哪些应用？" "1,2,3"
+echo "    4) 本地实时语音模型服务器（ASR+TTS+LLM，OpenAI 兼容接口）"
+echo "    5) Redis（采集暂存/缓存/实时上下文）"
+echo "    6) PostgreSQL 数据库"
+ask "要部署哪些应用？" "1,2,3,5,6"
 SEL=",$REPLY_VALUE,"
-DEPLOY_BACKEND=false; DEPLOY_ADMIN=false; DEPLOY_WEB=false
+DEPLOY_BACKEND=false; DEPLOY_ADMIN=false; DEPLOY_WEB=false; DEPLOY_SPEECH=false; DEPLOY_REDIS=false; DEPLOY_PG=false
 [[ "$SEL" == *",1,"* ]] && DEPLOY_BACKEND=true
 [[ "$SEL" == *",2,"* ]] && DEPLOY_ADMIN=true
 [[ "$SEL" == *",3,"* ]] && DEPLOY_WEB=true
-$DEPLOY_BACKEND || $DEPLOY_ADMIN || $DEPLOY_WEB || { say "未选择任何应用，退出。"; exit 1; }
+[[ "$SEL" == *",4,"* ]] && DEPLOY_SPEECH=true
+[[ "$SEL" == *",5,"* ]] && DEPLOY_REDIS=true
+[[ "$SEL" == *",6,"* ]] && DEPLOY_PG=true
+$DEPLOY_BACKEND || $DEPLOY_ADMIN || $DEPLOY_WEB || $DEPLOY_SPEECH || $DEPLOY_REDIS || $DEPLOY_PG || { say "未选择任何应用，退出。"; exit 1; }
 
 PROFILES=()
 ENV_LINES=("# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====")
@@ -88,9 +94,7 @@ if $DEPLOY_BACKEND; then
   # 是否为「全新数据库」：只有新建库时才需要把模型/语音等 DB 存储参数初始化进库；
   # 连接已有库（外部库，或沿用已初始化的内置数据目录）则这些配置库里已有，不再重复询问。
   FRESH_DB=false
-  note "数据库二选一：内置 PostgreSQL 容器，或填写已有数据库连接串（分布式/托管库）。"
-  ask "使用内置 PostgreSQL 容器？(yes=内置 / no=外部数据库)" "yes"
-  if [ "$REPLY_VALUE" = "yes" ]; then
+  if $DEPLOY_PG; then
     PROFILES+=("backend-db")
     ask "PostgreSQL 数据目录" "./data/postgres"
     PG_DATA_DIR="$REPLY_VALUE"
@@ -154,6 +158,7 @@ if $DEPLOY_BACKEND; then
       "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
     )
   else
+    note "未选择本机部署 PostgreSQL(菜单 6)：填写远程数据库连接串。"
     note "示例：postgresql+psycopg://user:pass@db.example.com:5432/realtalk?sslmode=require"
     ask "数据库连接串 DATABASE_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "外部数据库必须填写连接串"; exit 1; }
@@ -163,15 +168,8 @@ if $DEPLOY_BACKEND; then
   # ---- 采集分块暂存 Redis（强制配置：内置容器 / 远程地址）----
   echo
   note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
-  echo "    1) 内置 Redis 容器（与内置数据库一样在本机起一个）"
-  echo "    2) 远程 / 已有 Redis（填写连接串）"
-  ask "选择 Redis 部署方式" "1"
-  REDIS_CHOICE="$REPLY_VALUE"
-  if [ "$REDIS_CHOICE" != "1" ] && [ "$REDIS_CHOICE" != "2" ]; then
-    say "Redis 是必选项，只能选择 1 或 2。"; exit 1
-  fi
   REDIS_PORT_VAL=""
-  if [ "$REDIS_CHOICE" = "1" ]; then
+  if $DEPLOY_REDIS; then
     PROFILES+=("backend-redis")
     ask "Redis 数据目录" "./data/redis"
     ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
@@ -181,6 +179,7 @@ if $DEPLOY_BACKEND; then
     ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
     ENV_LINES+=("REDIS_URL=redis://redis:6379/0")
   else
+    note "未选择本机部署 Redis(菜单 5)：填写远程 Redis 连接串。"
     note "示例：redis://:你的密码@redis.example.com:6379/0（走 TLS 用 rediss://）"
     ask "Redis 连接串 REDIS_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "Redis 是必选项，必须填写连接串"; exit 1; }
@@ -251,49 +250,34 @@ if $DEPLOY_BACKEND; then
       ask "A·ASR 模型名称" "whisper-1"; SASR_MODEL="$REPLY_VALUE"
     fi
     ENV_LINES+=("SCENARIO_ASR_BASE_URL=$SASR_BASE" "SCENARIO_ASR_API_KEY=$SASR_KEY" "SCENARIO_ASR_MODEL=$SASR_MODEL")
-    # 例外：不装语音服务器、又要本节点支持上传语音转写 → 内置 whisper（仅此用途）
-    ask "本后端是否内置 whisper 供上传语音转写（无语音服务器时选 yes）？(yes/no)" "no"
-    WITH_LOCAL_ASR=false; ASR_MODE_VAL="cloud"; ASR_LOCAL_MODEL_VAL="small"
-    if [ "$REPLY_VALUE" = "yes" ]; then
-      WITH_LOCAL_ASR=true; ASR_MODE_VAL="local"
-      ask "内置 whisper 模型大小 (tiny/base/small/medium)" "small"; ASR_LOCAL_MODEL_VAL="$REPLY_VALUE"
-    fi
-    ENV_LINES+=(
-      "WITH_LOCAL_ASR=$WITH_LOCAL_ASR" "ASR_MODE=$ASR_MODE_VAL"
-      "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
-      "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=$ASR_LOCAL_MODEL_VAL"
-      "ASR_DEV_MODE=$DEV"
-    )
+    # api 后端不内置任何语音引擎：全部走 A/B 配置的模型地址（本地语音服务器或云端）
+    ENV_LINES+=("ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_DEV_MODE=$DEV")
 
-    # B 对话（手动触发式/沉浸式/私教）：ASR + TTS + 实时通道（文字模型在上面「AI 模型」一节已配）
+    # B 对话（手动/沉浸式/私教）语音模型【一张卡】：一个地址派生 ASR/TTS/LLM/实时通道四个端点
     echo
-    note "B · 对话 — 语音转写/合成/实时通道（手动/沉浸式/私教；建议全指本地语音服务器提速）："
-    ask "B·对话 ASR Base URL（留空=跟随 A 类）" ""; CASR_BASE="$REPLY_VALUE"
-    CASR_KEY=""; CASR_MODEL="whisper-1"
-    if [ -n "$CASR_BASE" ]; then
-      ask_secret "B·对话 ASR API Key"; CASR_KEY="$REPLY_VALUE"
-      ask "B·对话 ASR 模型名称" "whisper-1"; CASR_MODEL="$REPLY_VALUE"
-    fi
-    ENV_LINES+=("CONV_ASR_BASE_URL=$CASR_BASE" "CONV_ASR_API_KEY=$CASR_KEY" "CONV_ASR_MODEL=$CASR_MODEL")
-    ask "B·对话 TTS Base URL（本地语音服务器 http://<IP>:9100/v1；留空=之后在管理台配）" ""; CTTS_BASE="$REPLY_VALUE"
-    CTTS_KEY=""; CTTS_MODEL=""; CTTS_FORMAT=""
+    note "B · 对话语音模型（手动/沉浸式/私教）：本地语音服务器填 http://<IP>:9100/v1（Key=local），"
+    note "或 OpenAI 填 https://api.openai.com/v1；转写/合成/对话/实时通道自动派生，无需分别配置。"
+    ask "B·语音模型 Base URL（留空=之后在管理台配）" ""; CV_BASE="$REPLY_VALUE"
+    CV_KEY=""; CV_MODEL=""; CV_VOICE=""
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
-    if [ -n "$CTTS_BASE" ]; then
-      ask_secret "B·对话 TTS API Key（本地可填 local）"; CTTS_KEY="$REPLY_VALUE"
-      ask "B·对话 TTS 模型名称" "piper"; CTTS_MODEL="$REPLY_VALUE"
-      ask "B·对话 TTS 输出格式 (wav/mp3，本地=wav)" "wav"; CTTS_FORMAT="$REPLY_VALUE"
-      case "$CTTS_BASE" in
-        *9100*) TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
-                TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium" ;;
+    if [ -n "$CV_BASE" ]; then
+      ask_secret "B·语音模型 API Key（本地填 local）"; CV_KEY="$REPLY_VALUE"
+      ask "B·实时模型名（OpenAI 如 gpt-4o-realtime-preview；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
+      case "$CV_BASE" in
+        *openai*) ask "B·默认音色" "alloy"; CV_VOICE="$REPLY_VALUE" ;;
+        *) ask "B·默认音色" "en_US-lessac-medium"; CV_VOICE="$REPLY_VALUE"
+           TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
+           TTS_DEFAULT_VOICE_VAL="$CV_VOICE" ;;
       esac
     fi
-    ENV_LINES+=("CONV_TTS_BASE_URL=$CTTS_BASE" "CONV_TTS_API_KEY=$CTTS_KEY" "CONV_TTS_MODEL=$CTTS_MODEL" "CONV_TTS_FORMAT=$CTTS_FORMAT")
-    ask "B·对话 实时通道地址（本地语音服务器 ws://<IP>:9100/v1/realtime；留空=不启用流式）" ""
-    ENV_LINES+=("CONV_REALTIME_BASE_URL=$REPLY_VALUE")
-    # 通用旧键兜底（A/B 留空时回退这里；api 后端不再内置 Piper）
+    ENV_LINES+=("CONV_VOICE_BASE_URL=$CV_BASE" "CONV_VOICE_API_KEY=$CV_KEY" "CONV_VOICE_MODEL=$CV_MODEL" "CONV_VOICE_VOICE=$CV_VOICE")
+    # 分端点计费单价（a=转写分/分钟、b=合成分/百万字符、d=实时通道分/分钟；c=token 单价在模型卡）
+    ask "a·语音转写单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("ASR_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
+    ask "b·语音合成单价（分/百万字符，0=不计费）" "0"; ENV_LINES+=("TTS_PRICE_PER_1M_CHARS_CENTS=$REPLY_VALUE")
+    ask "d·实时通道单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("CONV_VOICE_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
+    # 通用旧键兜底（B 留空时回退；api 后端无内置引擎）
     ENV_LINES+=(
-      "WITH_LOCAL_TTS=false"
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND="
+      "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV"
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=$TTS_VOICES_VAL" "TTS_DEFAULT_VOICE=$TTS_DEFAULT_VOICE_VAL"
     )
@@ -301,16 +285,10 @@ if $DEPLOY_BACKEND; then
     note "额度参数已设为默认值（非会员每天 1000 token / 5 分钟录音，基础 12 万 / 高级 40 万），可在管理台「系统设置 → 额度」调整。"
   else
     note "连接已有数据库：AI 模型 / 实时语音 / ASR / TTS 等配置沿用库中已有值（如需修改请到管理台「系统设置」）。"
-    # 已有库时 ASR/TTS 仍需写入 .env（WITH_LOCAL_ASR 影响 Docker 构建、mode 等是每节点项），但不询问用户。
-    # api 后端默认不再内置 TTS/ASR（语音能力指向本地语音服务器或云端，管理台可改地址）。
+    # 已有库：A/B 模型配置沿用库中值（管理台可改）；这里只写通用兜底 env（api 后端无内置引擎）
     ENV_LINES+=(
-      "WITH_LOCAL_ASR=false"
-      "ASR_MODE=cloud"
-      "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
-      "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=small"
-      "ASR_DEV_MODE=false"
-      "WITH_LOCAL_TTS=false"
-      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND="
+      "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_DEV_MODE=false"
+      "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV"
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
     )
@@ -339,19 +317,6 @@ if $DEPLOY_BACKEND; then
   ask "采集录音上传目录" "./data/uploads"
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
 
-  # ---- 本地 ASR/TTS 模型目录（映射到容器 /app/models）----
-  note "本地 whisper(ASR) 与 Piper(TTS) 模型【容器启动时预拉】到这（下到宿主目录，重启即用、不再重复下载），可达数 GB，建议放数据盘；纯云端方式则用不到。"
-  ask "本地 ASR/TTS 模型目录" "./data/whisper-models"
-  ENV_LINES+=("WHISPER_MODEL_DIR=$REPLY_VALUE")
-
-  # ---- HuggingFace 镜像站（受限网络下载本地模型用）----
-  note "本地模型从 HuggingFace 下载。服务器直连 HF 受限（国内常见）就走镜像站 hf-mirror.com（全球可用）。"
-  ask "用 HuggingFace 镜像站下本地模型？(yes=hf-mirror.com / no=官方直连)" "yes"
-  if [ "$REPLY_VALUE" = "yes" ]; then
-    ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com" "PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main")
-  else
-    ENV_LINES+=("HF_ENDPOINT=" "PIPER_VOICES_BASE=")
-  fi
 
   # ---- 微信登录（高级，可选）----
   echo
@@ -507,25 +472,28 @@ if $DEPLOY_WEB; then
   fi
 fi
 
-# ============ 本地实时语音模型服务器（可选组件：ASR+TTS+LLM，OpenAI 兼容 API） ============
-echo; say "[4.5] 本地实时语音模型（独立容器：faster-whisper + Piper + llama.cpp，OpenAI 兼容接口）"
-note "安装后把管理台「语音转写/语音合成/模型」的 Base URL 指到本服务，即可全量切换到本地模型（提速+免云端费用）；"
-note "高级会员「实时语音大模型」可保持 OpenAI/GLM 不变（本地异常时高级会员不受影响）。"
-ask "是否安装本地实时语音模型服务器？(yes/no)" "no"
-DEPLOY_SPEECH=false
-if [ "$REPLY_VALUE" = "yes" ]; then
-  DEPLOY_SPEECH=true
+# ============ [4] 本地实时语音模型服务器（菜单选 4 时配置：ASR+TTS+LLM，OpenAI 兼容 API） ============
+if $DEPLOY_SPEECH; then
+  echo; say "[4] 本地实时语音模型服务器参数"
+  note "对外 4 个 OpenAI 兼容端点：/audio/transcriptions、/audio/speech、/chat/completions、WS /realtime；"
+  note "api 后端在 A/B 配置里填本服务地址即可全量切换到本地模型。"
   ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ask "whisper 模型大小 (tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
-  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4，CPU 可跑；机器强可换 7B）。"
-  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
-  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-0.5B-Instruct Q4：最小最快；机器强可换 1.5B/7B）。"
+  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-0.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-0.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
   ask "英文音色 (Piper)" "en_US-lessac-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
   ask "中文音色 (Piper)" "zh_CN-huayan-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
   ask "模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
   ask "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
   SPEECH_PORT_VAL="$REPLY_VALUE"
-  # 实时通道的用户上下文临时保存在 Redis（多活/多副本可互相接管），复用主 Redis 的 1 号库，无需额外配置
+  ask "用 HuggingFace 镜像站下模型？(yes=hf-mirror.com / no=官方直连)" "yes"
+  if [ "$REPLY_VALUE" = "yes" ]; then
+    ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com" "PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main")
+  else
+    ENV_LINES+=("HF_ENDPOINT=" "PIPER_VOICES_BASE=")
+  fi
+  # 实时通道的用户上下文临时保存在 Redis（5 分钟滑动、主动结束即清；多副本可互相接管）
 fi
 
 ENV_LINES+=("API_UPSTREAM=$API_UPSTREAM_DEFAULT")

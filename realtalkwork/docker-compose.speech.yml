@@ -14,8 +14,8 @@ services:
     environment:
       SPEECH_DEVICE: ${SPEECH_DEVICE:-cpu}
       SPEECH_ASR_MODEL: ${SPEECH_ASR_MODEL:-small}
-      SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
-      SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-0.5B-Instruct-GGUF}
+      SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-0.5b-instruct-q4_k_m.gguf}
       SPEECH_TTS_VOICE_EN: ${SPEECH_TTS_VOICE_EN:-en_US-lessac-medium}
       SPEECH_TTS_VOICE_ZH: ${SPEECH_TTS_VOICE_ZH:-zh_CN-huayan-medium}
       HF_ENDPOINT: ${HF_ENDPOINT:-}

@@ -49,23 +49,20 @@ wscat -c "$BASE/realtime?session=abc&language=en"
 < {"type":"response.text.delta","delta":"..."} ... {"type":"response.audio.delta","delta":"<b64 pcm16>","sample_rate":22050}
 ```
 
-## 在 RealTalk 中启用（管理台 → 系统设置，按 A/B/C 分类分开设置）
+## 在 RealTalk 中启用（管理台 → 系统设置，按 A/B/C 三类）
 
-| 分类 | 卡片 | 填什么 | 用在哪 |
+| 类 | 卡片 | 填什么 | 端点 |
 |---|---|---|---|
-| A 场景生成 | A·场景生成-语音转写 | `http://<IP>:9100/v1` 或云端 | 上传音频文件→场景 的转写 |
-| A 场景生成 | 模型卡「场景生成」槽位 | 本地或云端（留空=跟随对话模型） | 场景/学习材料生成 LLM |
-| B 对话 | B·对话-语音转写 | `http://<IP>:9100/v1`（留空=跟随 A） | 手动/沉浸式/私教逐句转写 |
-| B 对话 | B·对话-语音合成 | `http://<IP>:9100/v1`，格式 wav | 手动/沉浸式/私教朗读 |
-| B 对话 | B·对话-实时通道 | `ws://<IP>:9100/v1/realtime` | 私教流式（音频边说边传，上下文在本服 Redis，5 分钟滑动、退出即清） |
-| B 对话 | 模型卡（对话文字模型） | `http://<IP>:9100/v1` | 对话回复/评分/指导 LLM |
-| C 高级实时语音 | C·高级会员实时语音 | 保持 OpenAI/GLM（独立预留） | 本地异常不影响高级会员 |
+| **A 场景生成** | A·场景生成-语音转写 + 模型卡「场景生成」槽位 | `http://<IP>:9100/v1`（或云端） | `/audio/transcriptions` + `/chat/completions` |
+| **B 对话** | **B·对话语音模型（一张卡）** | 填**一个** `http://<IP>:9100/v1`（Key=`local`） | 自动派生 4 端点：转写/合成/对话/实时通道 |
+| **C 高级实时语音** | C·高级会员实时语音 | 保持 OpenAI/GLM 或填 `http://<IP>:9100/v1` | `WS /realtime` |
 
-接口与功能对应：`/audio/transcriptions`+`/chat/completions` → 上传音频生成场景、手动触发式；
-`/audio/speech` → 手动触发式朗读；`WS /realtime` → 沉浸式/私教流式（沉浸式因逐句评分/进度判断，当前仍走分步管线+可选流式转写，后续切换）。
+> **B 类只填一个地址**：手动触发式用 `/audio/transcriptions`+`/audio/speech`+`/chat/completions`，
+> 沉浸式/私教用 `WS /realtime`（流式：边说边传，一条连接内完成转写+对话+合成，上下文在本服 Redis）。
+> 换成 OpenAI 只需把地址填 `https://api.openai.com/v1`、Key 填 OpenAI key——四个端点仍自动派生。
 
 ## 多活 / 高并发 / k8s
 
-- 引擎无进程间共享状态；实时会话上下文存 **Redis**（`spx:ctx:<session>`，30 分钟滑动 TTL）→ 任意副本可接管；
+- 引擎无进程间共享状态；实时会话上下文存 **Redis**（`spx:ctx:<session>`，5 分钟滑动 TTL、主动结束即清）→ 任意副本可接管；
 - ASR/LLM/TTS 各自并发信号量排队，防止把节点打挂；模型目录可多副本共享（只读加载）；
 - k8s：`deploy/k8s/speech-server.yaml`（Deployment+Service+PVC），探针已带 `start-period`（首启要下载模型）。

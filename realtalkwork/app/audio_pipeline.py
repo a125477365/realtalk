@@ -10,7 +10,6 @@ import asyncio
 import os
 import shutil
 import subprocess
-import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,7 +31,7 @@ _SCENARIO_BATCH_MAX_CHARS = 18000
 
 def resolve_asr_config() -> dict[str, Any]:
     """A 类【场景生成】ASR（高级会员上传音频文件→场景）：优先 scenario_asr_* 专用配置，
-    留空回退通用 asr_*。每次调用现读 DB、实时生效。mode/本地命令仍是每节点 env（本后端内置 whisper 例外场景）。"""
+    留空回退通用 asr_*。每次调用现读 DB、实时生效。api 后端不再内置引擎，全部走 OpenAI 兼容 API。"""
     overrides = db.get_app_settings_map([
         "scenario_asr_base_url", "scenario_asr_api_key", "scenario_asr_model",
         "asr_base_url", "asr_api_key", "asr_model",
@@ -40,40 +39,16 @@ def resolve_asr_config() -> dict[str, Any]:
     dedicated = bool((overrides.get("scenario_asr_base_url") or "").strip())
     prefix = "scenario_asr" if dedicated else "asr"
     return {
-        "mode": settings.asr_mode,                             # 每节点（部署控制，env）
         "base_url": overrides.get(f"{prefix}_base_url"),        # 系统共享：只读 DB
         "api_key": overrides.get(f"{prefix}_api_key"),
-        "model": overrides.get(f"{prefix}_model"),
-        "local_command": settings.asr_local_command,           # 每节点（env）
+        "model": overrides.get(f"{prefix}_model") or "whisper-1",
         "dev_mode": settings.asr_dev_mode,                     # 每节点（env）
-    }
-
-
-def resolve_conv_asr_config() -> dict[str, Any]:
-    """B 类【对话】ASR（手动触发式/沉浸式/私教的逐句转写）：优先 conv_asr_* 专用配置，留空回退通用 asr_*。"""
-    overrides = db.get_app_settings_map([
-        "conv_asr_base_url", "conv_asr_api_key", "conv_asr_model",
-        "asr_base_url", "asr_api_key", "asr_model",
-    ])
-    dedicated = bool((overrides.get("conv_asr_base_url") or "").strip())
-    prefix = "conv_asr" if dedicated else "asr"
-    return {
-        "mode": settings.asr_mode,
-        "base_url": overrides.get(f"{prefix}_base_url"),
-        "api_key": overrides.get(f"{prefix}_api_key"),
-        "model": overrides.get(f"{prefix}_model"),
-        "local_command": settings.asr_local_command,
-        "dev_mode": settings.asr_dev_mode,
     }
 
 
 def asr_configured() -> bool:
     config = resolve_asr_config()
-    if config["dev_mode"]:
-        return True
-    if config["mode"] == "local":
-        return bool(config["local_command"])
-    return bool(config["base_url"] and config["api_key"])
+    return config["dev_mode"] or bool(config["base_url"] and config["api_key"])
 
 
 def _ffmpeg_path() -> str | None:
@@ -126,56 +101,19 @@ async def _transcribe_chunk(client: httpx.AsyncClient, config: dict[str, Any], p
     return str(response.json().get("text", "")).strip()
 
 
-# 本地 ASR 并发上限：每个请求都会起一个独立 whisper 进程(内存 1~2GB)，多用户同时说话时排队而不是挤爆内存。
-# 临时目录均为 mkdtemp 每请求独立，天然不串包；这里只限并发量。
-_ASR_SEM = threading.BoundedSemaphore(max(1, settings.asr_max_concurrency))
-
-
-def _transcribe_local(config: dict[str, Any], path: Path, workdir: Path, language: str | None = None) -> str:
-    """用服务器本地命令行工具转写。命令模板支持 {input}/{dir}，
-    文本优先取 stdout；若 stdout 为空则读取 {dir} 下生成的 .txt。
-    language 经 ASR_LANGUAGE 环境变量传给脚本(en=英语练习 / zh=日常采集 / None=自动)。"""
-    template = config["local_command"]
-    if not template:
-        raise RuntimeError("本地转写命令未配置")
-    cmd = template.replace("{input}", str(path)).replace("{dir}", str(workdir))
-    env = {**os.environ, "ASR_LANGUAGE": (language or "")}
-    with _ASR_SEM:
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, env=env,
-                              timeout=settings.audio_max_seconds + 600)
-    if proc.returncode != 0:
-        # 取 stderr 末尾：Python 回溯的真正错误在最后，开头常是 HF 下载告警等噪音
-        detail = (proc.stderr or proc.stdout or "").strip()[-800:]
-        raise RuntimeError(f"本地转写命令失败（{proc.returncode}）：{detail}")
-    text = proc.stdout.strip()
-    if text:
-        return text
-    txts = sorted(workdir.glob("*.txt"))
-    if txts:
-        return "\n".join(p.read_text(encoding="utf-8", errors="ignore").strip() for p in txts)
-    raise RuntimeError("本地转写未产生文本输出")
-
-
 async def transcribe_file(path: Path) -> str:
     config = resolve_asr_config()
     is_cloud_ready = bool(config["base_url"] and config["api_key"])
-    is_local_ready = bool(config["mode"] == "local" and config["local_command"])
 
-    if config["dev_mode"] and not is_cloud_ready and not is_local_ready:
+    if config["dev_mode"] and not is_cloud_ready:
         # 开发模式：无 ASR 服务时返回示例文本，保证管线可端到端联调
         return "今天上午我们开了项目例会。这个版本周五之前要提测。测试环境今天下午给你。辛苦大家了。"
 
     workdir = path.parent / f"{path.stem}_segs"
     workdir.mkdir(exist_ok=True)
     try:
-        if config["mode"] == "local":
-            if not is_local_ready:
-                raise RuntimeError("本地转写命令未配置，请在管理台「系统设置 → 语音转写」中配置")
-            # 本地工具自行处理整段音频，无需切片；日常对话采集是中文 → 传 zh
-            return await asyncio.to_thread(_transcribe_local, config, path, workdir, "zh")
-
         if not is_cloud_ready:
-            raise RuntimeError("语音转写服务未配置，请在管理台「系统设置」中配置 ASR")
+            raise RuntimeError("A·场景生成语音转写未配置，请在管理台「系统设置」中配置")
         segments = await asyncio.to_thread(_split_audio, path, workdir)
         texts: list[str] = []
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=30)) as client:
@@ -233,6 +171,13 @@ async def process_audio_job(job_id: str, user_id: str, path: Path) -> None:
             raise RuntimeError(f"音频时长 {duration / 3600:.1f} 小时，超过 {settings.audio_max_seconds // 3600} 小时上限")
 
         text = await transcribe_file(path)
+        # a 类计费：语音→文字按分钟（时长已探测；单价 DB 可改）
+        try:
+            from .voice_io import record_asr_cost
+
+            record_asr_cost(user_id, duration or 0.0, kind="asr_scenario")
+        except Exception:  # noqa: BLE001 — 计费失败不影响主流程
+            pass
         now = datetime.now(timezone.utc)
         # 与 App 文字上传同一条清洗链路：噪声剔除 + 涉政内容过滤
         items = clean_transcript_items(_text_to_items(text, now))

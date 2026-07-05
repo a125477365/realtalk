@@ -28,10 +28,12 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
 
-    // 录音 + VAD
-    private var recorder: AVAudioRecorder?
-    private var recURL: URL?
-    private var meterTimer: Timer?
+    // 采集（PCM 流式：AVAudioEngine tap → 16kHz mono Int16，边说边发）+ VAD
+    private let engine = AVAudioEngine()
+    private var engineRunning = false
+    private var preroll: [Data] = []                  // 说话起点前的短暂预滚（避免吞掉句首）
+    private let prerollMax = 5                        // ~0.5s
+    private var streamingUtterance = false            // 说话已开始 → 帧实时发往后端
     private var heardSpeech = false
     private var silentTicks = 0
     private var bargeTicks = 0
@@ -108,9 +110,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             return
         }
         isPaused = true
-        recorder?.stop(); recorder = nil
-        if let u = recURL { try? FileManager.default.removeItem(at: u) }
-        recURL = nil
+        resetUtterance(sendReset: true)
         sendJSON(["type": "interrupt"])
         suppressAiAudio = true   // 暂停即打断：该轮迟到音频作废，恢复后从下一次 commit 重新开始
         aiPlayer?.stop(); aiPlayer = nil
@@ -125,10 +125,12 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         isPaused = false
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
-        meterTimer?.invalidate(); meterTimer = nil
-        recorder?.stop(); recorder = nil
-        if let u = recURL { try? FileManager.default.removeItem(at: u) }
-        recURL = nil
+        if engineRunning {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            engineRunning = false
+        }
+        preroll.removeAll()
         aiPlayer?.stop(); aiPlayer = nil
         aiQueue.removeAll()
         task?.cancel(with: .normalClosure, reason: nil)
@@ -144,41 +146,58 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         try? s.setActive(true, options: .notifyOthersOnDeactivation)
     }
 
-    // MARK: 录音 + VAD + 抢话
+    // MARK: 采集（PCM 流式）+ VAD + 抢话
 
+    /// 启动/恢复采集：AVAudioEngine tap → 转 16kHz mono Int16 → 计电平驱动 VAD + 边说边发帧。
     private func startRecording() {
-        recorder?.stop()
-        if let u = recURL { try? FileManager.default.removeItem(at: u) }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("rt-stream-\(UUID().uuidString).m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
-        ]
-        guard let r = try? AVAudioRecorder(url: url, settings: settings) else { return }
-        r.isMeteringEnabled = true
-        guard r.record() else { return }
-        recorder = r
-        recURL = url
+        resetUtterance(sendReset: false)
+        guard engineRunning == false else { return }
+        let input = engine.inputNode
+        try? input.setVoiceProcessingEnabled(true)   // 系统回声消除：AI 外放不再混进麦克风
+        let inFormat = input.outputFormat(forBus: 0)
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: inFormat, to: outFormat) else { return }
+        input.installTap(onBus: 0, bufferSize: 1600, format: inFormat) { [weak self] buffer, _ in
+            let ratio = 16000.0 / inFormat.sampleRate
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+            guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else { return }
+            var err: NSError?
+            var fed = false
+            converter.convert(to: out, error: &err) { _, status in
+                if fed { status.pointee = .noDataNow; return nil }
+                fed = true
+                status.pointee = .haveData
+                return buffer
+            }
+            guard err == nil, out.frameLength > 0, let ch = out.int16ChannelData else { return }
+            let count = Int(out.frameLength)
+            let data = Data(bytes: ch[0], count: count * 2)
+            var acc: Double = 0
+            for i in 0..<count { let v = Double(ch[0][i]) / 32768.0; acc += v * v }
+            let level = min(1.0, (acc / Double(max(count, 1))).squareRoot() * 8.0)
+            Task { @MainActor in self?.processChunk(data, level: level) }
+        }
+        engine.prepare()
+        try? engine.start()
+        engineRunning = true
+    }
+
+    private func resetUtterance(sendReset: Bool) {
         heardSpeech = false
+        streamingUtterance = false
         silentTicks = 0
         bargeTicks = 0
         utteranceTicks = 0
         voicedTicks = 0
-        if meterTimer == nil {
-            meterTimer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.meterTick() }
-            }
-        }
+        preroll.removeAll()
+        if sendReset { sendJSON(["type": "reset_audio"]) }   // 噪音废弃：清掉后端已积累的帧
     }
 
-    private func meterTick() {
-        guard let r = recorder, active else { return }
-        r.updateMeters()
-        let level = max(0, min(1, (Double(r.averagePower(forChannel: 0)) + 50) / 50))
+    /// 每 ~0.1s 一个 PCM 块：电平/VAD/抢话 + 说话中把帧实时发给后端（边说边传）。
+    private func processChunk(_ data: Data, level: Double) {
+        guard active else { return }
         audioLevel = level
-        guard connected else { return }   // 断线/重连期间只显示电平，不提交（避免把断线时的话丢进虚空）
+        guard connected, isPaused == false else { return }
 
         if isAISpeaking {
             if let p = aiPlayer, p.isPlaying {
@@ -186,28 +205,37 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                 aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
             }
             aiSpeakTicks += 1
-            // 抢话：仅在宽限期后、且麦克风电平明显高于 AI 当前输出(排除残余回声)、且持续多个 tick 才算
             let grace = Double(aiSpeakTicks) * tick >= bargeGrace
             if grace && level >= bargeLevel && level > aiAudioLevel + 0.12 {
                 bargeTicks += 1
-                if bargeTicks >= bargeNeeded {
-                    bargeIn()
-                }
+                if bargeTicks >= bargeNeeded { bargeIn() }
             } else {
                 bargeTicks = 0
             }
-            return
+            return   // AI 说话期间不上传帧（防 AI 声音混进用户话）
         }
         aiSpeakTicks = 0
 
-        // 自适应 VAD：以「相对环境本底」判定说话/静音，避免安静房间底噪(level≈0.2>固定阈值)被误判为一直在说话
         if !heardSpeech {
-            noiseFloor = min(0.5, noiseFloor * 0.92 + level * 0.08)   // 只在未说话时缓慢跟踪本底
+            noiseFloor = min(0.5, noiseFloor * 0.92 + level * 0.08)
         }
         let speechThresh = noiseFloor + speechMargin
         let silenceThresh = noiseFloor + silenceMargin
+
+        if streamingUtterance {
+            sendFrame(data)   // 边说边发
+        } else {
+            preroll.append(data)   // 说话前的预滚缓冲（保住句首）
+            if preroll.count > prerollMax { preroll.removeFirst() }
+        }
+
         if level >= speechThresh {
-            heardSpeech = true
+            if !heardSpeech {
+                heardSpeech = true
+                streamingUtterance = true
+                for chunk in preroll { sendFrame(chunk) }
+                preroll.removeAll()
+            }
             silentTicks = 0
             utteranceTicks += 1
             voicedTicks += 1
@@ -219,10 +247,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                 return
             }
         }
-        // 兜底：一句(含持续噪声)说太久 → 强制提交，避免永远卡在“聆听”从不变红
         if heardSpeech && Double(utteranceTicks) * tick >= maxUtterance {
             commitUtterance()
         }
+    }
+
+    private func sendFrame(_ data: Data) {
+        task?.send(.data(data)) { _ in }
     }
 
     private func bargeIn() {
@@ -232,24 +263,22 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         aiQueue.removeAll()
         isAISpeaking = false
         aiAudioLevel = 0
-        startRecording()   // 干净录这次抢话的内容
+        resetUtterance(sendReset: true)   // 干净开始这次抢话（清后端残留帧）
     }
 
     private func commitUtterance() {
-        recorder?.stop()
-        let url = recURL
-        // 噪音门槛：真正“像在说话”的时长太短(<0.4s)视为纯噪音，静默丢弃回到聆听，不上传也不提示
+        // 噪音门槛：真人声时长太短(<0.4s)视为纯噪音——通知后端清掉已发帧，静默回到聆听
         let voicedEnough = heardSpeech && Double(voicedTicks) * tick >= 0.4
-        recURL = nil
-        if voicedEnough, let url, let data = try? Data(contentsOf: url), data.count > 1200 {
+        if voicedEnough {
             suppressAiAudio = false   // 新一轮开始，恢复接收 AI 音频
-            task?.send(.data(data)) { _ in }
-            sendJSON(["type": "commit", "format": ".m4a", "guidance_mode": guidanceMode])
+            sendJSON(["type": "commit", "format": "pcm16", "sample_rate": 16000, "guidance_mode": guidanceMode])
             onCommitted?()
+            resetUtterance(sendReset: false)
+        } else {
+            resetUtterance(sendReset: true)
         }
-        if let url { try? FileManager.default.removeItem(at: url) }
-        startRecording()
     }
+
 
     // MARK: 收 AI 音频并顺序播放
 

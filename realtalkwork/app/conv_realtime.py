@@ -1,6 +1,6 @@
 """B 类对话·实时通道：私教对话经「本地实时语音模型服务器」的 WS /v1/realtime 流式进行。
 
-配置 conv_realtime_base_url（DB，管理台可改，现读生效）后启用；未配置/连接失败时调用方回退
+配置「B·对话语音模型」base_url 后自动派生实时通道地址启用；未配置/连接失败时调用方回退
 原有分步管线（ASR→LLM→TTS），私教不因本地服务异常而中断。
 
 工作方式（App 协议不变，见 main.freetalk_stream）：
@@ -20,11 +20,12 @@ import wave
 
 
 def resolve_conv_realtime_url() -> str:
-    """现读 DB：B 类对话实时通道地址（如 ws://speech:9100/v1/realtime）。空=未启用。"""
-    from .storage import db
+    """B 类对话实时通道地址：由「B·对话语音模型」一张卡的 base_url 自动派生（ws(s)…/realtime）。
+    空=未配置（沉浸式/私教回退分步管线）。"""
+    from .voice_io import conv_realtime_url
 
     try:
-        return (db.get_app_setting_str("conv_realtime_base_url") or "").strip()
+        return conv_realtime_url()
     except Exception:  # noqa: BLE001
         return ""
 
@@ -43,17 +44,42 @@ class ConvRealtimeSession:
     """与本地语音服务器实时通道的一条上游连接（每个私教 WS 一条）。"""
 
     def __init__(self, url: str, session_id: str, language: str = "en"):
+        from .voice_io import resolve_conv_voice
+
+        cv = resolve_conv_voice()
+        self.is_openai = cv["is_openai"]
+        self.api_key = cv["api_key"]
+        self.model = cv["model"]
+        self.voice = cv["voice"]
         sep = "&" if "?" in url else "?"
-        self.url = f"{url}{sep}session={session_id}&language={language}"
+        if self.is_openai:
+            self.url = f"{url}{sep}model={self.model or 'gpt-4o-realtime-preview'}"
+        else:
+            self.url = f"{url}{sep}session={session_id}&language={language}"
         self.ws = None
         self.restored = False
 
     async def connect(self, timeout: float = 8.0):
         import websockets
 
-        self.ws = await asyncio.wait_for(websockets.connect(self.url, max_size=None), timeout=timeout)
+        headers = [("Authorization", f"Bearer {self.api_key}")]
+        if self.is_openai:
+            headers.append(("OpenAI-Beta", "realtime=v1"))
+        self.ws = await asyncio.wait_for(
+            websockets.connect(self.url, additional_headers=headers, max_size=None), timeout=timeout
+        )
         created = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
         self.restored = bool((created.get("session") or {}).get("restored"))
+        if self.is_openai:
+            # OpenAI：显式开转写 + 关服务端 VAD（由我们 commit/response.create 驱动），pcm16 上行
+            await self.send({"type": "session.update", "session": {
+                "voice": self.voice or "alloy",
+                "modalities": ["audio", "text"],
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "input_audio_transcription": {"model": "whisper-1"},
+                "turn_detection": None,
+            }})
         return self
 
     async def send(self, obj: dict) -> None:
@@ -71,9 +97,9 @@ class ConvRealtimeSession:
     async def append_audio(self, chunk: bytes) -> None:
         await self.send({"type": "input_audio_buffer.append", "audio": base64.b64encode(chunk).decode()})
 
-    async def commit_and_transcribe(self, timeout: float) -> str:
-        """commit 后等待转写事件（其余事件忽略）。"""
-        await self.send({"type": "input_audio_buffer.commit"})
+    async def commit_and_transcribe(self, timeout: float, audio_format: str = "pcm16", sample_rate: int = 16000) -> str:
+        """commit 后等待转写事件（其余事件忽略）。audio_format 告知服务器如何封包（pcm16/m4a）。"""
+        await self.send({"type": "input_audio_buffer.commit", "format": audio_format, "sample_rate": sample_rate})
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
             if ev.get("type") == "conversation.item.input_audio_transcription.completed":
@@ -81,17 +107,22 @@ class ConvRealtimeSession:
             if ev.get("type") == "error":
                 raise RuntimeError(ev.get("message") or "实时通道转写失败")
 
-    async def create_response(self, timeout: float) -> tuple[str, bytes | None]:
-        """response.create 后收文本流+语音流；返回 (回复文本, WAV字节或None)。"""
+    async def create_response(self, timeout: float) -> tuple[str, str, bytes | None]:
+        """response.create 后收文本流+语音流；返回 (回复文本, 中文翻译, WAV字节或None)。
+        兼容本地(response.text.done 带 translation)与 OpenAI(response.audio_transcript.done)事件名。"""
         await self.send({"type": "response.create"})
         text = ""
+        translation = ""
         pcm = bytearray()
-        rate = 22050
+        rate = 24000 if self.is_openai else 22050
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
             kind = ev.get("type")
             if kind == "response.text.done":
                 text = (ev.get("text") or "").strip()
+                translation = (ev.get("translation") or "").strip()
+            elif kind == "response.audio_transcript.done":   # OpenAI：口播文本
+                text = text or (ev.get("transcript") or "").strip()
             elif kind == "response.audio.delta":
                 rate = int(ev.get("sample_rate") or rate)
                 try:
@@ -99,9 +130,9 @@ class ConvRealtimeSession:
                 except Exception:  # noqa: BLE001
                     pass
             elif kind == "response.done":
-                return text, (_pcm_to_wav(bytes(pcm), rate) if pcm else None)
+                return text, translation, (_pcm_to_wav(bytes(pcm), rate) if pcm else None)
             elif kind == "error":
-                raise RuntimeError(ev.get("message") or "实时通道推理失败")
+                raise RuntimeError(str(ev.get("message") or ev.get("error") or "实时通道推理失败")[:200])
 
     async def cancel_response(self) -> None:
         try:

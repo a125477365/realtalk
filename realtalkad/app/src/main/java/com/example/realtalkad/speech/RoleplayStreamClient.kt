@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -55,9 +56,13 @@ class RoleplayStreamClient(private val context: Context) {
     private val maxReconnect = 5
     private var reconnectJob: Job? = null
 
-    private var recorder: MediaRecorder? = null
-    private var file: File? = null
-    private var meterJob: Job? = null
+    // 采集（PCM 流式：AudioRecord 16kHz mono Int16，边说边发）
+    private var audioRecord: android.media.AudioRecord? = null
+    private var echoCanceler: android.media.audiofx.AcousticEchoCanceler? = null
+    private var captureJob: Job? = null
+    private val preroll = ArrayDeque<ByteArray>()     // 说话起点前的预滚（保住句首）
+    private val prerollMax = 5
+    private var streamingUtterance = false
     private var heardSpeech = false
     private var silentMs = 0L
     private var bargeTicks = 0
@@ -102,8 +107,7 @@ class RoleplayStreamClient(private val context: Context) {
             return false
         }
         paused = true
-        runCatching { recorder?.stop() }; runCatching { recorder?.release() }; recorder = null
-        file?.delete(); file = null
+        resetUtterance(sendReset = true)
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
         suppressAiAudio = true   // 暂停即打断：该轮迟到音频作废，恢复后从下一次 commit 重新开始
         runCatching { player?.stop() }; runCatching { player?.release() }; player = null
@@ -139,9 +143,10 @@ class RoleplayStreamClient(private val context: Context) {
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "bye")).toString()) }
         runCatching { webSocket?.close(1000, null) }
         webSocket = null
-        meterJob?.cancel(); meterJob = null
-        runCatching { recorder?.stop() }; runCatching { recorder?.release() }; recorder = null
-        file?.delete(); file = null
+        captureJob?.cancel(); captureJob = null
+        runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }; audioRecord = null
+        runCatching { echoCanceler?.release() }; echoCanceler = null
+        preroll.clear()
         runCatching { player?.stop() }; runCatching { player?.release() }; player = null
         aiQueue.clear()
         aiSpeaking = false
@@ -152,62 +157,95 @@ class RoleplayStreamClient(private val context: Context) {
     // ---- 录音 + VAD + 抢话 ----
 
     private fun startRecording() {
-        runCatching { recorder?.stop() }; runCatching { recorder?.release() }
-        file?.delete()
-        val out = File(context.cacheDir, "rt-stream-${UUID.randomUUID()}.m4a")
-        val rec = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
-        try {
-            // VOICE_COMMUNICATION 启用系统回声消除(AEC)/降噪：否则扬声器放的 AI 声音被麦克风拾到→被当成抢话→AI 刚说一个词就被打断
-            rec.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
-            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            rec.setAudioSamplingRate(16000)
-            rec.setAudioChannels(1)
-            rec.setOutputFile(out.absolutePath)
-            rec.prepare()
-            rec.start()
-        } catch (e: Exception) {
-            runCatching { rec.release() }; out.delete(); return
+        resetUtterance(sendReset = false)
+        if (audioRecord != null) return
+        val rate = 16000
+        val minBuf = android.media.AudioRecord.getMinBufferSize(
+            rate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT)
+        val rec = try {
+            // VOICE_COMMUNICATION：系统回声消除，AI 外放不混进麦克风
+            android.media.AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate,
+                android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
+                maxOf(minBuf, rate))
+        } catch (e: Exception) { return }
+        if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { runCatching { rec.release() }; return }
+        runCatching {
+            if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                echoCanceler = android.media.audiofx.AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true }
+            }
         }
-        recorder = rec; file = out
-        heardSpeech = false; silentMs = 0; bargeTicks = 0; utteranceMs = 0; voicedMs = 0
-        if (meterJob == null) {
-            meterJob = scope.launch {
-                while (active) { delay(tickMs); meterTick() }
+        audioRecord = rec
+        rec.startRecording()
+        captureJob = scope.launch(Dispatchers.IO) {
+            val buf = ByteArray(3200)   // ~100ms @16k16bit
+            while (active && audioRecord === rec) {
+                val n = rec.read(buf, 0, buf.size)
+                if (n <= 0) continue
+                val chunk = buf.copyOf(n)
+                // RMS 电平（0-1 归一）
+                var acc = 0.0
+                var idx = 0
+                while (idx + 1 < n) {
+                    val v = ((chunk[idx + 1].toInt() shl 8) or (chunk[idx].toInt() and 0xFF)).toShort().toDouble() / 32768.0
+                    acc += v * v
+                    idx += 2
+                }
+                val level = kotlin.math.min(1.0, kotlin.math.sqrt(acc / maxOf(n / 2, 1)) * 8.0).toFloat()
+                withContext(Dispatchers.Main) { processChunk(chunk, level) }
             }
         }
     }
 
-    private fun meterTick() {
-        val r = recorder ?: return
-        val amp = runCatching { r.maxAmplitude }.getOrDefault(0)
-        val level = (amp / 12000f).coerceIn(0f, 1f)
+    private fun resetUtterance(sendReset: Boolean) {
+        heardSpeech = false
+        streamingUtterance = false
+        silentMs = 0; bargeTicks = 0; utteranceMs = 0; voicedMs = 0
+        preroll.clear()
+        if (sendReset) runCatching { webSocket?.send(JSONObject(mapOf("type" to "reset_audio")).toString()) }
+    }
+
+    /** 每 ~100ms 一个 PCM 块：电平/VAD/抢话 + 说话中把帧实时发给后端（边说边传）。 */
+    private fun processChunk(chunk: ByteArray, level: Float) {
+        if (!active) return
         onUserLevel?.invoke(level)
-        if (!connected) return   // 断线/重连期间只显示电平，不提交
+        if (!connected || paused) return
         if (aiSpeaking) {
             aiSpeakMs += tickMs
-            // 抢话：AEC 已消回声；再加宽限期 + 更高阈值，保证 AI 至少说完开头不被自己的声音打断
             if (aiSpeakMs >= bargeGraceMs && level >= bargeLevel) {
                 bargeTicks++
                 if (bargeTicks >= bargeNeeded) bargeIn()
             } else bargeTicks = 0
-            return
+            return   // AI 说话期间不上传帧（防 AI 声音混进用户话）
         }
         aiSpeakMs = 0
-        // 自适应 VAD：以「相对环境本底」判定，避免安静房间底噪被误判为一直在说话（从不提交、从不变红）
         if (!heardSpeech) noiseFloor = (noiseFloor * 0.92f + level * 0.08f).coerceAtMost(0.5f)
         val speechThresh = noiseFloor + speechMargin
         val silenceThresh = noiseFloor + silenceMargin
+
+        if (streamingUtterance) {
+            runCatching { webSocket?.send(chunk.toByteString()) }   // 边说边发
+        } else {
+            preroll.addLast(chunk)
+            if (preroll.size > prerollMax) preroll.removeFirst()
+        }
+
         if (level >= speechThresh) {
-            heardSpeech = true; silentMs = 0; utteranceMs += tickMs; voicedMs += tickMs
+            if (!heardSpeech) {
+                heardSpeech = true
+                streamingUtterance = true
+                while (preroll.isNotEmpty()) runCatching { webSocket?.send(preroll.removeFirst().toByteString()) }
+            }
+            silentMs = 0; utteranceMs += tickMs; voicedMs += tickMs
         } else if (heardSpeech) {
             utteranceMs += tickMs
             if (level <= silenceThresh) silentMs += tickMs else silentMs = 0
             if (silentMs >= silenceThresholdMs) { commitUtterance(); return }
         }
-        // 兜底：一句(含持续噪声)说太久 → 强制提交
         if (heardSpeech && utteranceMs >= maxUtteranceMs) commitUtterance()
     }
+
+
+
 
     private fun bargeIn() {
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
@@ -215,26 +253,26 @@ class RoleplayStreamClient(private val context: Context) {
         runCatching { player?.stop() }; runCatching { player?.release() }; player = null
         aiQueue.clear()
         aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
-        startRecording()
+        resetUtterance(sendReset = true)   // 干净开始这次抢话（清后端残留帧）
     }
 
     private fun commitUtterance() {
-        runCatching { recorder?.stop() }
-        val out = file
-        // 噪音门槛：真正“像在说话”的时长太短(<400ms)视为纯噪音，静默丢弃回到聆听，不上传也不提示
+        // 噪音门槛：真人声时长太短(<400ms)视为纯噪音——通知后端清掉已发帧，静默回到聆听
         val voicedEnough = heardSpeech && voicedMs >= 400
-        file = null
-        if (voicedEnough && out != null && out.length() > 1200) {
+        if (voicedEnough) {
             runCatching {
                 suppressAiAudio = false   // 新一轮开始，恢复接收 AI 音频
-                webSocket?.send(out.readBytes().toByteString())
-                webSocket?.send(JSONObject(mapOf("type" to "commit", "format" to ".m4a", "guidance_mode" to guidanceMode)).toString())
+                webSocket?.send(JSONObject(mapOf(
+                    "type" to "commit", "format" to "pcm16", "sample_rate" to 16000,
+                    "guidance_mode" to guidanceMode)).toString())
                 scope.launch { onCommitted?.invoke() }
             }
+            resetUtterance(sendReset = false)
+        } else {
+            resetUtterance(sendReset = true)
         }
-        out?.delete()
-        startRecording()
     }
+
 
     // ---- 收 AI 音频并顺序播放 ----
 

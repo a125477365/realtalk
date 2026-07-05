@@ -19,8 +19,8 @@ import wave
 MODELS_DIR = os.getenv("MODELS_DIR", "/models")
 DEVICE = os.getenv("SPEECH_DEVICE", "cpu")                      # cpu / cuda
 ASR_MODEL = os.getenv("SPEECH_ASR_MODEL", "small")              # whisper 尺寸 tiny/base/small/medium/large-v3
-LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
-LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-0.5b-instruct-q4_k_m.gguf")
 LLM_BASE_URL = os.getenv("SPEECH_LLM_BASE_URL", "")             # 设了则代理外部 OpenAI 兼容 LLM，不在本进程加载
 LLM_CTX = int(os.getenv("SPEECH_LLM_CTX", "8192"))
 TTS_VOICE_EN = os.getenv("SPEECH_TTS_VOICE_EN", "en_US-lessac-medium")

@@ -24,6 +24,19 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import engine
 
+
+def _pcm16_to_wav(pcm: bytes, rate: int = 16000) -> bytes:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
 _CTX_TTL = int(os.getenv("SPEECH_CTX_TTL_SECONDS", "300"))   # 5 分钟滑动：每次使用重算；主动结束立即删除
 _HISTORY_BUDGET_CHARS = int(os.getenv("SPEECH_CTX_BUDGET_CHARS", "12000"))
 _redis = None
@@ -125,7 +138,11 @@ async def handle_session(ws: WebSocket) -> None:
                 asyncio.run_coroutine_threadsafe(_sj({"type": "response.text.delta", "delta": d}), loop)
 
             reply = await engine.chat(messages, stream_cb=on_delta)
-            await _sj({"type": "response.text.done", "text": reply})
+            translation = ""
+            if "⟦ZH⟧" in reply:
+                reply, _, translation = reply.partition("⟦ZH⟧")
+                reply, translation = reply.strip(), translation.strip()
+            await _sj({"type": "response.text.done", "text": reply, "translation": translation})
             if user_text:
                 ctx["history"].append({"role": "user", "content": user_text})
             ctx["history"].append({"role": "assistant", "content": reply})
@@ -176,6 +193,8 @@ async def handle_session(ws: WebSocket) -> None:
                 if text:
                     ctx["history"].append({"role": item.get("role", "user"), "content": text})
                     _save_ctx(session, ctx)
+            elif kind == "input_audio_buffer.clear":
+                audio_buf.clear()
             elif kind == "input_audio_buffer.append":
                 try:
                     audio_buf.extend(base64.b64decode(ev.get("audio", "")))
@@ -187,6 +206,8 @@ async def handle_session(ws: WebSocket) -> None:
                 audio_buf.clear()
                 if not audio:
                     continue
+                if (ev.get("format") or "").lstrip(".") in ("pcm16", "pcm"):
+                    audio = _pcm16_to_wav(audio, int(ev.get("sample_rate") or 16000))
                 text = await engine.transcribe(audio, language)
                 await _sj({"type": "conversation.item.input_audio_transcription.completed", "transcript": text})
                 # 对齐 OpenAI 语义：commit 只转写；等调用方发 response.create 才推理

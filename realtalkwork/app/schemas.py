@@ -756,6 +756,10 @@ class ModelSettingsUpdateRequest(BaseModel):
     scenario_base_url: str | None = Field(default=None, max_length=500)
     scenario_api_key: str | None = Field(default=None, max_length=500)
     scenario_model: str | None = Field(default=None, max_length=200)
+    # 分端点计费单价：a=ASR(分/分钟)、b=TTS(分/百万字符)、d=实时通道(分/分钟)；c 用上面的 token 单价
+    asr_price_per_minute_cents: float | None = Field(default=None, ge=0, le=100000)
+    tts_price_per_1m_chars_cents: float | None = Field(default=None, ge=0, le=10000000)
+    conv_voice_price_per_minute_cents: float | None = Field(default=None, ge=0, le=100000)
 
 
 class RealtimeSettingsRequest(BaseModel):

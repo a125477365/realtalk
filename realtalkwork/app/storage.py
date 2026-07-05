@@ -1376,18 +1376,18 @@ class Database:
             "asr_base_url": getattr(s, "asr_base_url", None),
             "asr_api_key": getattr(s, "asr_api_key", None),
             "asr_model": getattr(s, "asr_model", None),
-            # 按功能归属分开的 A/B 类语音配置（留空回退通用 asr_/tts_ 键）
+            # 按功能归属分开的 A/B 类配置：A=场景生成专用 ASR；B=对话语音模型一张卡（派生全部端点）
             "scenario_asr_base_url": getattr(s, "scenario_asr_base_url", None),
             "scenario_asr_api_key": getattr(s, "scenario_asr_api_key", None),
             "scenario_asr_model": getattr(s, "scenario_asr_model", None),
-            "conv_asr_base_url": getattr(s, "conv_asr_base_url", None),
-            "conv_asr_api_key": getattr(s, "conv_asr_api_key", None),
-            "conv_asr_model": getattr(s, "conv_asr_model", None),
-            "conv_tts_base_url": getattr(s, "conv_tts_base_url", None),
-            "conv_tts_api_key": getattr(s, "conv_tts_api_key", None),
-            "conv_tts_model": getattr(s, "conv_tts_model", None),
-            "conv_tts_format": getattr(s, "conv_tts_format", None),
-            "conv_realtime_base_url": getattr(s, "conv_realtime_base_url", None),
+            "conv_voice_base_url": getattr(s, "conv_voice_base_url", None),
+            "conv_voice_api_key": getattr(s, "conv_voice_api_key", None),
+            "conv_voice_model": getattr(s, "conv_voice_model", None),
+            "conv_voice_voice": getattr(s, "conv_voice_voice", None),
+            # 分端点计费单价（a=ASR分/分钟、b=TTS分/百万字符、d=实时通道分/分钟；c 用原 token 单价）
+            "asr_price_per_minute_cents": getattr(s, "asr_price_per_minute_cents", None),
+            "tts_price_per_1m_chars_cents": getattr(s, "tts_price_per_1m_chars_cents", None),
+            "conv_voice_price_per_minute_cents": getattr(s, "conv_voice_price_per_minute_cents", None),
             # TTS 云端配置（管理台可改；mode/本地命令是每节点的，不入库）
             "tts_base_url": getattr(s, "tts_base_url", None),
             "tts_api_key": getattr(s, "tts_api_key", None),
