@@ -465,6 +465,7 @@ class QuotaSettingsRequest(BaseModel):
 
 
 class AsrSettingsRequest(BaseModel):
+    scope: str | None = Field(default=None, max_length=20)  # scenario=A场景生成 / conv=B对话 / 空=通用旧键
     mode: str | None = Field(default=None, max_length=20)  # cloud | local
     base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, max_length=500)
@@ -481,6 +482,8 @@ class TtsSettingsRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, max_length=500)
     model: str | None = Field(default=None, max_length=200)
+    format: str | None = Field(default=None, max_length=10)          # wav/mp3（本地语音服务器=wav）
+    realtime_channel_url: str | None = Field(default=None, max_length=500)  # B类对话实时通道 ws 地址
     voices: str | None = Field(default=None, max_length=500)         # 逗号分隔的可选音色
     default_voice: str | None = Field(default=None, max_length=100)
 

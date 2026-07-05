@@ -240,64 +240,61 @@ if $DEPLOY_BACKEND; then
       ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
     fi
 
-    # ---- 语音转写 ASR（api 后端不再内置 TTS/ASR 引擎；语音能力由「本地语音服务器」或云端提供）----
-    # 例外：本节点若要支持「高级会员上传语音文件生成场景」，可选装 whisper 用于长音频转文字。
+    # ==== 按功能归属分开配置模型（A/B 类，入库、管理台可改、现读生效；C 类高级实时语音在上面已配） ====
+    # A 场景生成（高级会员上传音频文件→场景）：ASR + 文字模型（文字模型槽位在管理台「模型」卡，可留空跟随对话模型）
     echo
-    note "语音转写 ASR（对话转写建议指向本地语音服务器或云端；见后面「本地实时语音模型」一节）："
-    echo "    1) 云端/本地语音服务器（OpenAI 兼容 /audio/transcriptions，填地址）"
-    echo "    2) 本后端内置 whisper（仅当本节点要支持「上传语音文件生成场景」且不装语音服务器时选）"
-    echo "    3) 暂不配置（之后在管理台「系统设置 → 语音转写」再设）"
-    ask "选择 ASR 方式" "3"
-    ASR_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_ASR=false   # api 后端默认不再安装本地引擎
-    ASR_MODE_VAL="cloud"; ASR_BASE=""; ASR_KEY=""; ASR_MODEL_VAL="whisper-1"
-    ASR_LOCAL_CMD="python /app/app/asr_local.py {input}"; ASR_LOCAL_MODEL_VAL="small"; ASR_DEV="$DEV"
-    if [ "$ASR_CHOICE" = "1" ]; then
-      ask "ASR Base URL（本地语音服务器填 http://<IP>:9100/v1）" "https://api.openai.com/v1"; ASR_BASE="$REPLY_VALUE"
-      ask_secret "ASR API Key（本地语音服务器可留空）"; ASR_KEY="$REPLY_VALUE"
-      ask "ASR 模型名称" "whisper-1"; ASR_MODEL_VAL="$REPLY_VALUE"
-    elif [ "$ASR_CHOICE" = "2" ]; then
-      note "将在后端镜像中安装 faster-whisper（仅供上传语音文件生成场景）。模型 tiny/base/small/medium。"
-      ask "本地 whisper 模型大小" "small"; ASR_LOCAL_MODEL_VAL="$REPLY_VALUE"
-      WITH_LOCAL_ASR=true
-      ASR_MODE_VAL="local"
-    else
-      ASR_DEV="$DEV"
+    note "A · 场景生成 — 语音转写 ASR（上传音频文件→场景；可指本地语音服务器 http://<IP>:9100/v1 或云端）："
+    ask "A·ASR Base URL（留空=之后在管理台配）" ""; SASR_BASE="$REPLY_VALUE"
+    SASR_KEY=""; SASR_MODEL="whisper-1"
+    if [ -n "$SASR_BASE" ]; then
+      ask_secret "A·ASR API Key（本地语音服务器可填 local）"; SASR_KEY="$REPLY_VALUE"
+      ask "A·ASR 模型名称" "whisper-1"; SASR_MODEL="$REPLY_VALUE"
+    fi
+    ENV_LINES+=("SCENARIO_ASR_BASE_URL=$SASR_BASE" "SCENARIO_ASR_API_KEY=$SASR_KEY" "SCENARIO_ASR_MODEL=$SASR_MODEL")
+    # 例外：不装语音服务器、又要本节点支持上传语音转写 → 内置 whisper（仅此用途）
+    ask "本后端是否内置 whisper 供上传语音转写（无语音服务器时选 yes）？(yes/no)" "no"
+    WITH_LOCAL_ASR=false; ASR_MODE_VAL="cloud"; ASR_LOCAL_MODEL_VAL="small"
+    if [ "$REPLY_VALUE" = "yes" ]; then
+      WITH_LOCAL_ASR=true; ASR_MODE_VAL="local"
+      ask "内置 whisper 模型大小 (tiny/base/small/medium)" "small"; ASR_LOCAL_MODEL_VAL="$REPLY_VALUE"
     fi
     ENV_LINES+=(
-      "WITH_LOCAL_ASR=$WITH_LOCAL_ASR"
-      "ASR_MODE=$ASR_MODE_VAL"
-      "ASR_BASE_URL=$ASR_BASE" "ASR_API_KEY=$ASR_KEY" "ASR_MODEL=$ASR_MODEL_VAL"
-      "ASR_LOCAL_COMMAND=$ASR_LOCAL_CMD" "ASR_LOCAL_MODEL=$ASR_LOCAL_MODEL_VAL"
-      "ASR_DEV_MODE=$ASR_DEV"
+      "WITH_LOCAL_ASR=$WITH_LOCAL_ASR" "ASR_MODE=$ASR_MODE_VAL"
+      "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1"
+      "ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}" "ASR_LOCAL_MODEL=$ASR_LOCAL_MODEL_VAL"
+      "ASR_DEV_MODE=$DEV"
     )
 
-    # ---- 语音合成 TTS（api 后端不再内置 Piper；朗读由本地语音服务器或云端提供）----
+    # B 对话（手动触发式/沉浸式/私教）：ASR + TTS + 实时通道（文字模型在上面「AI 模型」一节已配）
     echo
-    note "AI 朗读（TTS）：指向本地语音服务器或云端 OpenAI 兼容 /audio/speech。"
-    echo "    1) 本地语音服务器（http://<IP>:9100/v1，输出 WAV，见后面「本地实时语音模型」一节）"
-    echo "    2) 云端 TTS（OpenAI 兼容，需密钥）"
-    echo "    3) 暂不配置（之后在管理台「系统设置 → 语音合成」再设）"
-    ask "选择 TTS 方式" "3"
-    TTS_CHOICE="$REPLY_VALUE"
-    WITH_LOCAL_TTS=false   # api 后端不再安装本地 Piper（由语音服务器承担）
-    TTS_MODE_VAL="cloud"; TTS_FORMAT_VAL="mp3"; TTS_LOCAL_CMD=""
-    TTS_BASE=""; TTS_KEY=""; TTS_MODEL_VAL="tts-1"
-    TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
-    if [ "$TTS_CHOICE" = "1" ]; then
-      ask "本地语音服务器地址" "http://127.0.0.1:9100/v1"; TTS_BASE="$REPLY_VALUE"
-      TTS_KEY="local"; TTS_MODEL_VAL="piper"; TTS_FORMAT_VAL="wav"
-      TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
-      TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium"
-    elif [ "$TTS_CHOICE" = "2" ]; then
-      ask "TTS Base URL" "https://api.openai.com/v1"; TTS_BASE="$REPLY_VALUE"
-      ask_secret "TTS API Key"; TTS_KEY="$REPLY_VALUE"
-      ask "TTS 模型名称" "tts-1"; TTS_MODEL_VAL="$REPLY_VALUE"
+    note "B · 对话 — 语音转写/合成/实时通道（手动/沉浸式/私教；建议全指本地语音服务器提速）："
+    ask "B·对话 ASR Base URL（留空=跟随 A 类）" ""; CASR_BASE="$REPLY_VALUE"
+    CASR_KEY=""; CASR_MODEL="whisper-1"
+    if [ -n "$CASR_BASE" ]; then
+      ask_secret "B·对话 ASR API Key"; CASR_KEY="$REPLY_VALUE"
+      ask "B·对话 ASR 模型名称" "whisper-1"; CASR_MODEL="$REPLY_VALUE"
     fi
+    ENV_LINES+=("CONV_ASR_BASE_URL=$CASR_BASE" "CONV_ASR_API_KEY=$CASR_KEY" "CONV_ASR_MODEL=$CASR_MODEL")
+    ask "B·对话 TTS Base URL（本地语音服务器 http://<IP>:9100/v1；留空=之后在管理台配）" ""; CTTS_BASE="$REPLY_VALUE"
+    CTTS_KEY=""; CTTS_MODEL=""; CTTS_FORMAT=""
+    TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
+    if [ -n "$CTTS_BASE" ]; then
+      ask_secret "B·对话 TTS API Key（本地可填 local）"; CTTS_KEY="$REPLY_VALUE"
+      ask "B·对话 TTS 模型名称" "piper"; CTTS_MODEL="$REPLY_VALUE"
+      ask "B·对话 TTS 输出格式 (wav/mp3，本地=wav)" "wav"; CTTS_FORMAT="$REPLY_VALUE"
+      case "$CTTS_BASE" in
+        *9100*) TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
+                TTS_DEFAULT_VOICE_VAL="en_US-lessac-medium" ;;
+      esac
+    fi
+    ENV_LINES+=("CONV_TTS_BASE_URL=$CTTS_BASE" "CONV_TTS_API_KEY=$CTTS_KEY" "CONV_TTS_MODEL=$CTTS_MODEL" "CONV_TTS_FORMAT=$CTTS_FORMAT")
+    ask "B·对话 实时通道地址（本地语音服务器 ws://<IP>:9100/v1/realtime；留空=不启用流式）" ""
+    ENV_LINES+=("CONV_REALTIME_BASE_URL=$REPLY_VALUE")
+    # 通用旧键兜底（A/B 留空时回退这里；api 后端不再内置 Piper）
     ENV_LINES+=(
-      "WITH_LOCAL_TTS=$WITH_LOCAL_TTS"
-      "TTS_MODE=$TTS_MODE_VAL" "TTS_FORMAT=$TTS_FORMAT_VAL" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND=$TTS_LOCAL_CMD"
-      "TTS_BASE_URL=$TTS_BASE" "TTS_API_KEY=$TTS_KEY" "TTS_MODEL=$TTS_MODEL_VAL"
+      "WITH_LOCAL_TTS=false"
+      "TTS_MODE=cloud" "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV" "TTS_LOCAL_COMMAND="
+      "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
       "TTS_VOICES=$TTS_VOICES_VAL" "TTS_DEFAULT_VOICE=$TTS_DEFAULT_VOICE_VAL"
     )
 

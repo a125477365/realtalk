@@ -980,24 +980,37 @@ function renderPlanQuotaCards() {
     '  <button class="btn btn-primary" onclick="saveQuota()">保存限额</button>',
     "</div>",
     '<div class="card">',
-    "  <h2>语音转写（ASR）<span class=\"subtitle\">高级会员上传录音转文字的方式</span></h2>",
+    "  <h2>A · 场景生成 — 语音转写<span class=\"subtitle\">高级会员上传音频文件→场景 用的 ASR（可指本地语音服务器或云端）</span></h2>",
     '  <div id="asr-mode-banner"></div>',
     '  <div id="asr-cloud-fields" class="form-grid">',
-    '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="https://api.openai.com/v1" /></div>',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="http://<IP>:9100/v1 或云端地址" /></div>',
     '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label>',
-    '      <input type="password" id="asr-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '      <input type="password" id="asr-api-key" placeholder="留空保持不变（本地服务器可填 local）" autocomplete="new-password" /></div>',
     "  </div>",
-    '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 ASR 配置</button>',
+    '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 A·场景生成 ASR</button>',
     "</div>",
     '<div class="card">',
-    "  <h2>语音合成（TTS）<span class=\"subtitle\">对练时朗读 AI 台词的声音；用户可选音色</span></h2>",
+    "  <h2>B · 对话 — 语音转写<span class=\"subtitle\">手动触发式/沉浸式/私教 逐句转写用的 ASR</span></h2>",
+    '  <div class="hint">留空=跟随上方 A 类通用配置；对话建议指本地语音服务器降低延迟。</div>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="casr-base-url" placeholder="http://<IP>:9100/v1" /></div>',
+    '    <div class="form-group"><label>模型</label><input type="text" id="casr-model" placeholder="whisper-1" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="casr-key-status"></span></label>',
+    '      <input type="password" id="casr-api-key" placeholder="留空保持不变（本地服务器可填 local）" autocomplete="new-password" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" style="margin-top:10px" onclick="saveConvAsr()">保存 B·对话 ASR</button>',
+    "</div>",
+    '<div class="card">',
+    "  <h2>B · 对话 — 语音合成 / 实时通道<span class=\"subtitle\">手动/沉浸式/私教朗读；实时通道配置后沉浸式/私教走流式</span></h2>",
     '  <div id="tts-mode-banner"></div>',
     '  <div id="tts-cloud-fields" class="form-grid">',
     '    <div class="form-group"><label>Base URL</label><input type="text" id="tts-base-url" placeholder="https://api.openai.com/v1" /></div>',
     '    <div class="form-group"><label>模型</label><input type="text" id="tts-model" placeholder="tts-1" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="tts-key-status"></span></label>',
     '      <input type="password" id="tts-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>输出格式 <span class="subtitle">本地语音服务器选 wav</span></label><select id="tts-format"><option value="">默认</option><option value="mp3">mp3</option><option value="wav">wav</option></select></div>',
+    '    <div class="form-group"><label>实时通道地址 <span class="subtitle">本地语音服务器 ws://<IP>:9100/v1/realtime；配置后私教走流式(上下文在其Redis,5分钟滑动)</span></label><input type="text" id="tts-rt-url" placeholder="留空=不启用流式通道" /></div>',
     '    <div class="form-group"><label>可选音色（逗号分隔）</label><input type="text" id="tts-voices" placeholder="alloy,echo,fable,onyx,nova,shimmer" /></div>',
     '    <div class="form-group"><label>默认音色</label><input type="text" id="tts-default-voice" placeholder="alloy" /></div>',
     "  </div>",
@@ -1138,7 +1151,16 @@ function loadPlanQuotaAsr() {
       if (getEl("q-nm-cap-sec")) getEl("q-nm-cap-sec").value = d.nonmember_daily_capture_seconds;
     });
   });
-  apiGet("/admin/api/settings/asr").then(function(r) {
+  apiGet("/admin/api/settings/asr?scope=conv").then(function(r) {
+    if (!r || !r.ok) return;
+    r.json().then(function(d) {
+      if (getEl("casr-base-url")) getEl("casr-base-url").value = d.dedicated_base_url || "";
+      if (getEl("casr-model")) getEl("casr-model").value = d.dedicated_base_url ? (d.model || "") : "";
+      var cks = getEl("casr-key-status");
+      if (cks) cks.textContent = d.dedicated_base_url ? "" : "（未单独配置，跟随 A 类）";
+    });
+  });
+  apiGet("/admin/api/settings/asr?scope=scenario").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
       var local = d.mode === "local";
@@ -1170,7 +1192,9 @@ function loadPlanQuotaAsr() {
         '（Key 随意填如 local，格式选 wav，音色如 en_US-lessac-medium；中英混读自动双音色）。</div>';
       if (cloud) cloud.style.display = "";
       if (saveBtn) saveBtn.style.display = "";
-      if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
+      if (getEl("tts-base-url")) getEl("tts-base-url").value = d.dedicated_base_url || d.base_url || "";
+      if (getEl("tts-format")) getEl("tts-format").value = d.format || "";
+      if (getEl("tts-rt-url")) getEl("tts-rt-url").value = d.realtime_channel_url || "";
       if (getEl("tts-model")) getEl("tts-model").value = d.model || "";
       if (getEl("tts-voices")) getEl("tts-voices").value = d.voices || "";
       if (getEl("tts-default-voice")) getEl("tts-default-voice").value = d.default_voice || "";
@@ -1345,6 +1369,8 @@ function saveTts() {
   var body = {
     base_url: (getEl("tts-base-url") || { value: "" }).value.trim(),
     model: (getEl("tts-model") || { value: "" }).value.trim(),
+    format: (getEl("tts-format") || { value: "" }).value,
+    realtime_channel_url: (getEl("tts-rt-url") || { value: "" }).value.trim(),
     voices: (getEl("tts-voices") || { value: "" }).value.trim(),
     default_voice: (getEl("tts-default-voice") || { value: "" }).value.trim(),
   };
@@ -1407,8 +1433,9 @@ function saveQuota() {
 }
 
 function saveAsr() {
-  // 管理台只管理云端方式；本地方式由部署脚本配置
+  // A 类·场景生成 ASR（scenario_asr_*）
   var body = {
+    scope: "scenario",
     mode: "cloud",
     base_url: (getEl("asr-base-url") || { value: "" }).value.trim(),
     model: (getEl("asr-model") || { value: "" }).value.trim(),
@@ -1419,7 +1446,25 @@ function saveAsr() {
     if (!r) return;
     if (!r.ok) { handleApiError(r); return; }
     if (getEl("asr-api-key")) getEl("asr-api-key").value = "";
-    toast("ASR 配置已保存", "success");
+    toast("A·场景生成 ASR 已保存", "success");
+    loadPlanQuotaAsr();
+  });
+}
+
+function saveConvAsr() {
+  // B 类·对话 ASR（conv_asr_*，留空=跟随通用）
+  var body = {
+    scope: "conv",
+    base_url: (getEl("casr-base-url") || { value: "" }).value.trim(),
+    model: (getEl("casr-model") || { value: "" }).value.trim(),
+  };
+  var key = (getEl("casr-api-key") || { value: "" }).value.trim();
+  if (key) body.api_key = key;
+  apiPost("/admin/api/settings/asr", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    if (getEl("casr-api-key")) getEl("casr-api-key").value = "";
+    toast("B·对话 ASR 已保存", "success");
     loadPlanQuotaAsr();
   });
 }
@@ -1536,7 +1581,7 @@ function renderSettingsPage() {
     "</div>",
 
     '<div class="card">',
-    '  <h2>高级会员实时语音大模型 <span class="subtitle">支持 OpenAI 兼容 Realtime 与 智谱 GLM-Realtime（按 Base URL 自动识别）；后端只转发+注入场景/护栏，结束评分</span></h2>',
+    '  <h2>C · 高级会员实时语音大模型 <span class="subtitle">独立预留通道：OpenAI 兼容 Realtime / GLM-Realtime；沉浸式本地流式验证稳定后可下线</span></h2>',
     '  <div class="form-grid">',
     '    <div class="form-group"><label>Base URL（wss://）<span class="subtitle">GLM: wss://open.bigmodel.cn/api/paas/v4/realtime</span></label><input type="text" id="rt-base-url" placeholder="wss://api.openai.com/v1/realtime" /></div>',
     '    <div class="form-group"><label>模型 <span class="subtitle">GLM: glm-realtime</span></label><input type="text" id="rt-model" placeholder="gpt-4o-realtime-preview" /></div>',

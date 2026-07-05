@@ -7,7 +7,8 @@
                 / response.created / response.text.delta|done / response.audio.delta(base64 pcm16)|done
                 / response.done / error
 
-多活/高并发：会话上下文（instructions + 历史）存 Redis（key spx:ctx:<session>，30 分钟滑动 TTL）——
+多活/高并发：会话上下文（instructions + 历史）存 Redis（key spx:ctx:<session>，5 分钟滑动 TTL，
+每次使用重算；收到 session.close 立即删除）——
 连接断开换到任何一个副本，带同一个 ?session= 重连即可续聊；未配 REDIS_URL 时退化为进程内存（单机可用）。
 音频缓冲只存在于当前 WS 连接内（一句话的生命周期），无需跨节点。
 """
@@ -23,7 +24,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import engine
 
-_CTX_TTL = int(os.getenv("SPEECH_CTX_TTL_SECONDS", "1800"))
+_CTX_TTL = int(os.getenv("SPEECH_CTX_TTL_SECONDS", "300"))   # 5 分钟滑动：每次使用重算；主动结束立即删除
 _HISTORY_BUDGET_CHARS = int(os.getenv("SPEECH_CTX_BUDGET_CHARS", "12000"))
 _redis = None
 _local_ctx: dict[str, dict] = {}   # 无 Redis 时的单机退化
@@ -55,6 +56,16 @@ def _load_ctx(session: str) -> dict:
     return _local_ctx.setdefault(session, {"instructions": "", "history": []})
 
 
+def _delete_ctx(session: str) -> None:
+    r = _redis_client()
+    if r is not None:
+        try:
+            r.delete(f"spx:ctx:{session}")
+        except Exception:  # noqa: BLE001
+            pass
+    _local_ctx.pop(session, None)
+
+
 def _save_ctx(session: str, ctx: dict) -> None:
     # 历史按字符预算裁剪（保最近），防上下文无限膨胀
     used, kept = 0, []
@@ -82,6 +93,7 @@ async def handle_session(ws: WebSocket) -> None:
     voice = ""
     language = ws.query_params.get("language") or "en"
     audio_buf = bytearray()
+    pending_user_text: str | None = None
     response_task: asyncio.Task | None = None
     send_lock = asyncio.Lock()
 
@@ -136,7 +148,8 @@ async def handle_session(ws: WebSocket) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-    await _sj({"type": "session.created", "session": {"id": session}})
+    restored = bool(ctx.get("history")) or bool(ctx.get("instructions"))
+    await _sj({"type": "session.created", "session": {"id": session, "restored": restored}})
     try:
         while True:
             raw = await ws.receive_text()
@@ -176,13 +189,19 @@ async def handle_session(ws: WebSocket) -> None:
                     continue
                 text = await engine.transcribe(audio, language)
                 await _sj({"type": "conversation.item.input_audio_transcription.completed", "transcript": text})
-                if text:
-                    response_task = asyncio.create_task(_respond(text))
+                # 对齐 OpenAI 语义：commit 只转写；等调用方发 response.create 才推理
+                # （api 后端沉浸式要先做评分/进度判断再决定说什么，必须能只拿转写）
+                pending_user_text = text
             elif kind == "response.create":
                 _cancel_response()
-                response_task = asyncio.create_task(_respond(None))
+                response_task = asyncio.create_task(_respond(pending_user_text))
+                pending_user_text = None
             elif kind == "response.cancel":
                 _cancel_response()
+            elif kind == "session.close":
+                # 用户主动结束：立即删除 Redis 上下文（不等 TTL）
+                _delete_ctx(session)
+                break
     except WebSocketDisconnect:
         pass
     finally:

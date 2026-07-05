@@ -94,18 +94,26 @@ def content_type_for(fmt: str) -> str:
 
 
 def resolve_tts_config() -> dict[str, Any]:
+    """B 类【对话】TTS（手动/沉浸式/私教朗读）：优先 conv_tts_* 专用配置，留空回退通用 tts_*。
+    每次调用现读 DB、实时生效。格式：conv_tts_format 优先（本地语音服务器=wav），否则每节点 env。"""
     from .storage import db
 
-    overrides = db.get_app_settings_map(["tts_base_url", "tts_api_key", "tts_model", "tts_voices", "tts_default_voice"])
+    overrides = db.get_app_settings_map([
+        "conv_tts_base_url", "conv_tts_api_key", "conv_tts_model", "conv_tts_format",
+        "tts_base_url", "tts_api_key", "tts_model", "tts_voices", "tts_default_voice",
+    ])
+    dedicated = bool((overrides.get("conv_tts_base_url") or "").strip())
+    prefix = "conv_tts" if dedicated else "tts"
+    fmt = (overrides.get("conv_tts_format") or "").strip() if dedicated else ""
     return {
         "mode": settings.tts_mode,                          # 每节点（env）
-        "base_url": overrides.get("tts_base_url"),           # 系统共享：只读 DB
-        "api_key": overrides.get("tts_api_key"),
-        "model": overrides.get("tts_model"),
-        "voices": overrides.get("tts_voices") or settings.tts_voices,  # 音色清单留内置默认兜底（非密钥、纯展示）
+        "base_url": overrides.get(f"{prefix}_base_url"),     # 系统共享：只读 DB
+        "api_key": overrides.get(f"{prefix}_api_key"),
+        "model": overrides.get(f"{prefix}_model"),
+        "voices": overrides.get("tts_voices") or settings.tts_voices,  # 音色清单共用（纯展示）
         "default_voice": overrides.get("tts_default_voice"),
         "local_command": settings.tts_local_command,        # 每节点（env）
-        "format": settings.tts_format,                      # 每节点（env）
+        "format": fmt or settings.tts_format,
         "dev_mode": settings.tts_dev_mode,                  # 每节点（env）
     }
 
@@ -241,10 +249,11 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
 
 async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: str | None = None,
                      language: str = "en") -> str:
-    """把一小段练习录音转成文字。cloud 用参考句 prompt 做偏置（宽容识别），local 直接转写，dev 回参考句。"""
-    from .audio_pipeline import resolve_asr_config, _transcribe_local
+    """把一小段练习录音转成文字。cloud 用参考句 prompt 做偏置（宽容识别），local 直接转写，dev 回参考句。
+    走 B 类【对话】ASR 配置（conv_asr_*，留空回退通用 asr_*）。"""
+    from .audio_pipeline import _transcribe_local, resolve_conv_asr_config
 
-    config = resolve_asr_config()
+    config = resolve_conv_asr_config()
     is_cloud = bool(config["base_url"] and config["api_key"])
     is_local = bool(config["mode"] == "local" and config["local_command"])
     if config["dev_mode"] and not is_cloud and not is_local:

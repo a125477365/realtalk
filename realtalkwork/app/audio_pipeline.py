@@ -31,16 +31,39 @@ _SCENARIO_BATCH_MAX_CHARS = 18000
 
 
 def resolve_asr_config() -> dict[str, Any]:
-    # mode 与本地命令由部署（env / setup.sh）控制，管理台不可改；
-    # 云端服务的 base_url / api_key / model 允许管理台在线配置。
-    overrides = db.get_app_settings_map(["asr_base_url", "asr_api_key", "asr_model"])
+    """A 类【场景生成】ASR（高级会员上传音频文件→场景）：优先 scenario_asr_* 专用配置，
+    留空回退通用 asr_*。每次调用现读 DB、实时生效。mode/本地命令仍是每节点 env（本后端内置 whisper 例外场景）。"""
+    overrides = db.get_app_settings_map([
+        "scenario_asr_base_url", "scenario_asr_api_key", "scenario_asr_model",
+        "asr_base_url", "asr_api_key", "asr_model",
+    ])
+    dedicated = bool((overrides.get("scenario_asr_base_url") or "").strip())
+    prefix = "scenario_asr" if dedicated else "asr"
     return {
-        "mode": settings.asr_mode,                     # 每节点（部署控制，env）
-        "base_url": overrides.get("asr_base_url"),      # 系统共享：只读 DB
-        "api_key": overrides.get("asr_api_key"),
-        "model": overrides.get("asr_model"),
-        "local_command": settings.asr_local_command,   # 每节点（env）
-        "dev_mode": settings.asr_dev_mode,             # 每节点（env）
+        "mode": settings.asr_mode,                             # 每节点（部署控制，env）
+        "base_url": overrides.get(f"{prefix}_base_url"),        # 系统共享：只读 DB
+        "api_key": overrides.get(f"{prefix}_api_key"),
+        "model": overrides.get(f"{prefix}_model"),
+        "local_command": settings.asr_local_command,           # 每节点（env）
+        "dev_mode": settings.asr_dev_mode,                     # 每节点（env）
+    }
+
+
+def resolve_conv_asr_config() -> dict[str, Any]:
+    """B 类【对话】ASR（手动触发式/沉浸式/私教的逐句转写）：优先 conv_asr_* 专用配置，留空回退通用 asr_*。"""
+    overrides = db.get_app_settings_map([
+        "conv_asr_base_url", "conv_asr_api_key", "conv_asr_model",
+        "asr_base_url", "asr_api_key", "asr_model",
+    ])
+    dedicated = bool((overrides.get("conv_asr_base_url") or "").strip())
+    prefix = "conv_asr" if dedicated else "asr"
+    return {
+        "mode": settings.asr_mode,
+        "base_url": overrides.get(f"{prefix}_base_url"),
+        "api_key": overrides.get(f"{prefix}_api_key"),
+        "model": overrides.get(f"{prefix}_model"),
+        "local_command": settings.asr_local_command,
+        "dev_mode": settings.asr_dev_mode,
     }
 
 

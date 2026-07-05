@@ -93,6 +93,22 @@ class Settings:
     asr_local_model: str = os.getenv("ASR_LOCAL_MODEL", "small")
     asr_dev_mode: bool = _bool_env("ASR_DEV_MODE", False)
 
+    # ==== 按功能归属分开配置（A/B 类，DB 可改、每次调用现读；留空回退上面的通用 asr_/tts_ 键）====
+    # A 场景生成（高级会员上传音频文件→场景）专用 ASR
+    scenario_asr_base_url: str | None = os.getenv("SCENARIO_ASR_BASE_URL")
+    scenario_asr_api_key: str | None = os.getenv("SCENARIO_ASR_API_KEY")
+    scenario_asr_model: str = os.getenv("SCENARIO_ASR_MODEL", "whisper-1")
+    # B 对话（手动触发式/沉浸式/私教）专用 ASR / TTS
+    conv_asr_base_url: str | None = os.getenv("CONV_ASR_BASE_URL")
+    conv_asr_api_key: str | None = os.getenv("CONV_ASR_API_KEY")
+    conv_asr_model: str = os.getenv("CONV_ASR_MODEL", "whisper-1")
+    conv_tts_base_url: str | None = os.getenv("CONV_TTS_BASE_URL")
+    conv_tts_api_key: str | None = os.getenv("CONV_TTS_API_KEY")
+    conv_tts_model: str = os.getenv("CONV_TTS_MODEL", "")
+    conv_tts_format: str = os.getenv("CONV_TTS_FORMAT", "")
+    # B 对话·实时通道（本地语音服务器 WS /v1/realtime）：配了后沉浸式/私教走流式通道
+    conv_realtime_base_url: str | None = os.getenv("CONV_REALTIME_BASE_URL")
+
     # 语音合成（TTS）：cloud=OpenAI 兼容 /audio/speech，local=服务器本地命令行（Piper/Coqui 等）
     tts_mode: str = os.getenv("TTS_MODE", "cloud")
     tts_base_url: str | None = os.getenv("TTS_BASE_URL")

@@ -28,6 +28,7 @@ from .ark_client import (
     evaluate_roleplay_turn,
     realtime_voice_guidance,
     generate_ai_chat_reply,
+    freetalk_instructions,
     generate_freetalk_reply,
     generate_learning,
     update_freetalk_memory,
@@ -147,6 +148,7 @@ from .schemas import (
     VoiceServersRequest,
 )
 from .capture_store import capture_store
+from .conv_realtime import ConvRealtimeSession, resolve_conv_realtime_url
 from . import voice_pipeline
 from . import voice_io
 from . import payments
@@ -878,11 +880,18 @@ def admin_update_support_ticket(
 
 
 @app.get("/admin/api/settings/asr")
-def admin_get_asr(admin: dict = Depends(current_admin)) -> dict:
-    from .audio_pipeline import resolve_asr_config
+def admin_get_asr(scope: str = Query(default=""), admin: dict = Depends(current_admin)) -> dict:
+    """scope=scenario→A类场景生成ASR(scenario_asr_*)；scope=conv→B类对话ASR(conv_asr_*)；空=通用旧键。
+    返回的是该 scope 生效配置（专用为空时回退通用）。"""
+    from .audio_pipeline import resolve_asr_config, resolve_conv_asr_config
 
-    config = resolve_asr_config()
+    config = resolve_conv_asr_config() if scope == "conv" else resolve_asr_config()
+    dedicated = ""
+    if scope in ("conv", "scenario"):
+        dedicated = db.get_app_setting_str("conv_asr_base_url" if scope == "conv" else "scenario_asr_base_url") or ""
     return {
+        "scope": scope,
+        "dedicated_base_url": dedicated,
         "mode": config["mode"],
         "base_url": config["base_url"],
         "model": config["model"],
@@ -900,20 +909,25 @@ def admin_set_asr(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    # 转写方式（cloud/local）与本地命令由部署脚本控制，管理台只配置云端服务参数
+    # scope=scenario/conv 写各自专用键（A/B 类分开维护）；空 scope 写通用旧键
+    prefix = {"scenario": "scenario_asr", "conv": "conv_asr"}.get(request.scope or "", "asr")
     if request.base_url is not None:
-        db.set_app_setting("asr_base_url", request.base_url.strip().rstrip("/"))
+        db.set_app_setting(f"{prefix}_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
-        db.set_app_setting("asr_api_key", request.api_key.strip())
+        db.set_app_setting(f"{prefix}_api_key", request.api_key.strip())
     if request.model is not None:
-        db.set_app_setting("asr_model", request.model.strip())
-    return admin_get_asr(admin)
+        db.set_app_setting(f"{prefix}_model", request.model.strip())
+    return admin_get_asr(request.scope or "", admin)
 
 
 @app.get("/admin/api/settings/tts")
 def admin_get_tts(admin: dict = Depends(current_admin)) -> dict:
+    """B 类对话 TTS 生效配置（conv_tts_* 优先，回退通用 tts_*）+ 实时通道地址。"""
     config = voice_io.resolve_tts_config()
     return {
+        "dedicated_base_url": db.get_app_setting_str("conv_tts_base_url") or "",
+        "realtime_channel_url": db.get_app_setting_str("conv_realtime_base_url") or "",
+        "format": config["format"],
         "mode": config["mode"],
         "base_url": config["base_url"],
         "model": config["model"],
@@ -933,13 +947,17 @@ def admin_set_tts(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    # mode / 本地命令由部署控制；管理台只配置云端 base_url/api_key/model 与可选音色
+    # B 类对话 TTS 写 conv_tts_* 专用键（留空=清除回退通用）；音色清单/默认音色共用；实时通道地址一并保存
     if request.base_url is not None:
-        db.set_app_setting("tts_base_url", request.base_url.strip().rstrip("/"))
+        db.set_app_setting("conv_tts_base_url", request.base_url.strip().rstrip("/"))
     if request.api_key is not None:
-        db.set_app_setting("tts_api_key", request.api_key.strip())
+        db.set_app_setting("conv_tts_api_key", request.api_key.strip())
     if request.model is not None:
-        db.set_app_setting("tts_model", request.model.strip())
+        db.set_app_setting("conv_tts_model", request.model.strip())
+    if request.format is not None:
+        db.set_app_setting("conv_tts_format", request.format.strip())
+    if request.realtime_channel_url is not None:
+        db.set_app_setting("conv_realtime_base_url", request.realtime_channel_url.strip().rstrip("/"))
     if request.voices is not None:
         db.set_app_setting("tts_voices", request.voices.strip())
     if request.default_voice is not None:
@@ -3092,6 +3110,24 @@ async def freetalk_stream(
     # 开场：回放近期字幕；首次进入让老师先开口（按记忆个性化开场）
     history = db.list_freetalk_messages(user.id, limit=30)
     await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
+
+    # B 类对话·实时通道（本地语音服务器）：配置了 conv_realtime_base_url 就走流式通道——
+    # 音频帧边收边转发、上下文由语音服务器持有（Redis 5 分钟滑动，主动退出立即清理）；
+    # 连接失败自动回退下面的分步管线（ASR→LLM→TTS），私教不因本地服务异常中断。
+    upstream = None
+    rt_url = resolve_conv_realtime_url()
+    if rt_url:
+        try:
+            upstream = await ConvRealtimeSession(rt_url, f"ft-{user.id}").connect()
+            if not upstream.restored:
+                await upstream.seed(
+                    freetalk_instructions(db.get_user_memory(user.id)),
+                    db.list_freetalk_messages(user.id, limit=200),
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[freetalk] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
+            upstream = None
+    user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
     if not history:
         memory = db.get_user_memory(user.id)
         if memory.strip():
@@ -3118,7 +3154,15 @@ async def freetalk_stream(
             if event.get("type") == "websocket.disconnect":
                 break
             if event.get("bytes") is not None:
-                utterance.extend(event["bytes"])
+                if upstream is not None:
+                    # 实时通道：边收边转发（真正的流式上行）
+                    try:
+                        await upstream.append_audio(event["bytes"])
+                    except Exception:  # noqa: BLE001 — 通道断了回退分步管线
+                        upstream = None
+                        utterance.extend(event["bytes"])
+                else:
+                    utterance.extend(event["bytes"])
                 continue
             text = event.get("text")
             if not text:
@@ -3130,12 +3174,43 @@ async def freetalk_stream(
             mtype = data.get("type")
             if mtype == "interrupt":          # 抢话：立刻停老师朗读
                 _cancel_tts()
+                if upstream is not None:
+                    await upstream.cancel_response()
                 continue
             if mtype == "bye":
+                user_ended = True
                 break
             if mtype != "commit":
                 continue
             _cancel_tts()
+            if upstream is not None:
+                # ---- 实时通道路径：转写与推理都在语音服务器，上下文由其 Redis 持有 ----
+                try:
+                    recognized = await upstream.commit_and_transcribe(timeout=60)
+                    if not recognized:
+                        await _sj({"type": "notice", "detail": "没听清，请再说一次"})
+                        continue
+                    db.add_freetalk_message(user.id, "user", recognized)
+                    await _sj({"type": "user_text", "text": recognized, "translation": ""})
+                    reply, wav = await upstream.create_response(timeout=120)
+                    if reply:
+                        db.add_freetalk_message(user.id, "ai", reply)
+                        await _sj({"type": "ai_text", "text": reply, "translation": ""})
+                        if wav:
+                            await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
+                            for i in range(0, len(wav), 16384):
+                                await _sb(wav[i:i + 16384])
+                            await _sj({"type": "ai_audio_end"})
+                    turns_since_memory += 1
+                    if turns_since_memory >= 6:
+                        turns_since_memory = 0
+                        asyncio.create_task(update_freetalk_memory(user.id))
+                except Exception as exc:  # noqa: BLE001 — 通道故障：本轮提示并回退分步管线
+                    print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
+                    upstream = None
+                    await _sj({"type": "notice", "detail": "没听清，请再说一次"})
+                continue
+            # ---- 分步管线路径（未配实时通道/通道故障时）----
             audio = bytes(utterance)
             utterance.clear()
             if not audio:
@@ -3177,6 +3252,9 @@ async def freetalk_stream(
             pass
     finally:
         _cancel_tts()
+        if upstream is not None:
+            # 用户主动结束(bye) → 通知语音服务器立即删除 Redis 上下文；断线则留 5 分钟 TTL 供重连续聊
+            await upstream.close(wipe_context=user_ended)
         if turns_since_memory > 0:   # 会话结束把余下轮次也并进记忆
             asyncio.create_task(update_freetalk_memory(user.id))
         try:
