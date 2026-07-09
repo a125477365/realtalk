@@ -587,11 +587,13 @@ if $DEPLOY_SPEECH; then
 fi
 if $DEPLOY_PG; then
   echo "  PostgreSQL：  <本机IP>:${PG_PORT_VAL:-5433}  （内置库，不建议暴露公网）"
-  $DEPLOY_BACKEND || note "远程后端连接串：postgresql+psycopg://realtalk:<密码见.env>@<本机IP>:${PG_PORT_VAL:-5433}/realtalk?sslmode=disable"
+  note "远程机器连接串（后端 API 拆机部署时填 DATABASE_URL）："
+  note "  postgresql+psycopg://realtalk:${PG_PW}@<本机IP>:${PG_PORT_VAL:-5433}/realtalk?sslmode=disable"
 fi
 if $DEPLOY_REDIS; then
   echo "  Redis 对外：  <本机IP>:${REDIS_PORT_VAL:-6380}  （内置 Redis，不建议暴露公网）"
-  $DEPLOY_BACKEND || note "远程后端连接串：redis://<本机IP>:${REDIS_PORT_VAL:-6380}/0"
+  note "远程机器连接串：后端 API 填 REDIS_URL=redis://<本机IP>:${REDIS_PORT_VAL:-6380}/0；"
+  note "  语音服务器实时上下文填 SPEECH_REDIS_URL=redis://<本机IP>:${REDIS_PORT_VAL:-6380}/1"
 fi
 $DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
 $DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"
