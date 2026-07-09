@@ -42,7 +42,8 @@ if [ -f .env ]; then
     # 否则只 docker compose up 起来的 API 会因「库未供给」fail-fast 退出。
     say "已保留现有 .env，按它重新部署…"
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
-    docker compose up -d --build
+    # 两个 compose 文件恒定引入，起哪些服务由 .env 里的 COMPOSE_PROFILES 决定
+    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
     if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
       say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
       if docker compose run --rm api python -m app.db_init; then
@@ -82,104 +83,130 @@ ENV_LINES=("# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====")
 
 API_UPSTREAM_DEFAULT="http://api:8000"
 
-# ============ 第 2 步：后端参数 ============
+# ============ 第 2 步：PostgreSQL 数据库（菜单选 6：本机内置库，可独立部署） ============
+# 数据库的“物理部署参数”（数据目录/密码/初始化）归属本步；
+# 后端步只消费由此派生的 DATABASE_URL（本机同机→内部地址，未选→填远程）。
+FRESH_DB=false          # 是否新建库：新库才需把模型/语音等参数首次入库（后端步用到）
+PG_DEPLOYED_LOCAL=false
+if $DEPLOY_PG; then
+  echo; say "[2] PostgreSQL 数据库参数（本机内置库）"
+  PROFILES+=("backend-db")
+  PG_DEPLOYED_LOCAL=true
+  ask "PostgreSQL 数据目录" "./data/postgres"
+  PG_DATA_DIR="$REPLY_VALUE"
+  ENV_LINES+=("POSTGRES_DATA_DIR=$PG_DATA_DIR")
+
+  # 关键：PostgreSQL 只在数据目录为空时用 POSTGRES_PASSWORD 初始化密码。
+  # 若目录已初始化（存在 PG_VERSION），新密码不会生效，必须沿用旧密码或清空目录。
+  PG_INITED=false
+  [ -f "$PG_DATA_DIR/PG_VERSION" ] && PG_INITED=true
+
+  if $PG_INITED; then
+    echo
+    note "检测到 $PG_DATA_DIR 已是一个已初始化的 PostgreSQL 数据目录。"
+    note "PostgreSQL 不会用新密码覆盖已有目录，否则后端会因密码不一致连不上库。"
+    ask "如何处理？(keep=沿用原密码 / reset=清空目录重新初始化)" "keep"
+    if [ "$REPLY_VALUE" = "reset" ]; then
+      ask "确认清空 $PG_DATA_DIR 中的全部数据库数据？此操作不可恢复 (yes/no)" "no"
+      if [ "$REPLY_VALUE" = "yes" ]; then
+        # 先停容器，否则 PostgreSQL 锁文件导致删不掉
+        if docker compose ps --format '{{.Name}}' 2>/dev/null | grep -q postgres; then
+          note "正在停止 PostgreSQL 容器…"
+          docker compose stop postgres 2>/dev/null || true
+          sleep 2
+        fi
+        rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null
+        # 验证是否真正清空
+        if [ -f "$PG_DATA_DIR/PG_VERSION" ]; then
+          echo
+          say "⚠️  清空失败！数据目录可能被占用或权限不足。"
+          note "请手动执行以下命令后重新运行本脚本："
+          echo "    docker compose down"
+          echo "    rm -rf ${PG_DATA_DIR}/*"
+          echo "    rm -rf ${PG_DATA_DIR}/.*  2>/dev/null"
+          echo "    bash setup.sh"
+          exit 1
+        fi
+        PG_INITED=false
+        note "已清空，将重新初始化。"
+      else
+        note "未清空，按沿用原密码处理。"
+        PG_INITED=true
+      fi
+    fi
+  fi
+
+  if $PG_INITED; then
+    note "请输入该数据目录原本的 PostgreSQL 密码（最初部署设置的，老版本默认为 realtalk）。"
+    ask "原 PostgreSQL 密码" "realtalk"
+    PG_PW="$REPLY_VALUE"
+  else
+    ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
+    PG_PW="$REPLY_VALUE"
+    FRESH_DB=true   # 新初始化的内置库 → 需要把模型/语音等参数写入并落库
+  fi
+
+  note "内置 PostgreSQL 容器对外端口（拆机部署时供远程后端连接），默认不使用 5432（避免与宿主机已有库冲突）。"
+  ask "PostgreSQL 对外端口" "5433"
+  PG_PORT_VAL="$REPLY_VALUE"
+  ENV_LINES+=("POSTGRES_PORT=$PG_PORT_VAL")
+
+  # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）；
+  # 同机后端直接走内部 service 名 postgres:5432。
+  ENV_LINES+=(
+    "POSTGRES_USER=realtalk"
+    "POSTGRES_PASSWORD=$PG_PW"
+    "POSTGRES_DB=realtalk"
+    "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
+  )
+fi
+
+# ============ 第 3 步：Redis（菜单选 5：本机内置 Redis，可独立部署） ============
+# Redis 的“物理部署参数”（数据目录/对外端口）归属本步；后端步只消费 REDIS_URL。
+REDIS_PORT_VAL=""
+REDIS_DEPLOYED_LOCAL=false
+if $DEPLOY_REDIS; then
+  echo; say "[3] Redis 参数（本机内置）"
+  PROFILES+=("backend-redis")
+  REDIS_DEPLOYED_LOCAL=true
+  note "对话采集分块暂存 / 实时语音上下文用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
+  ask "Redis 数据目录" "./data/redis"
+  ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
+  note "内置 Redis 容器对外端口，默认不使用 6379（避免与宿主机已有 Redis 冲突）。"
+  ask "Redis 对外端口" "6380"
+  REDIS_PORT_VAL="$REPLY_VALUE"
+  ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
+  ENV_LINES+=("REDIS_URL=redis://redis:6379/0")   # 同机后端走内部 service 名 redis:6379
+fi
+
+# ============ 第 4 步：后端参数 ============
 if $DEPLOY_BACKEND; then
-  echo; say "[2] 后端 API 参数"
+  echo; say "[4] 后端 API 参数"
   PROFILES+=("backend")
 
   ask "API 对外端口" "8000"
   ENV_LINES+=("API_PORT=$REPLY_VALUE")
   API_PORT="$REPLY_VALUE"
 
-  # 是否为「全新数据库」：只有新建库时才需要把模型/语音等 DB 存储参数初始化进库；
-  # 连接已有库（外部库，或沿用已初始化的内置数据目录）则这些配置库里已有，不再重复询问。
-  FRESH_DB=false
-  if $DEPLOY_PG; then
-    PROFILES+=("backend-db")
-    ask "PostgreSQL 数据目录" "./data/postgres"
-    PG_DATA_DIR="$REPLY_VALUE"
-    ENV_LINES+=("POSTGRES_DATA_DIR=$PG_DATA_DIR")
-
-    # 关键：PostgreSQL 只在数据目录为空时用 POSTGRES_PASSWORD 初始化密码。
-    # 若目录已初始化（存在 PG_VERSION），新密码不会生效，必须沿用旧密码或清空目录。
-    PG_INITED=false
-    [ -f "$PG_DATA_DIR/PG_VERSION" ] && PG_INITED=true
-
-    if $PG_INITED; then
-      echo
-      note "检测到 $PG_DATA_DIR 已是一个已初始化的 PostgreSQL 数据目录。"
-      note "PostgreSQL 不会用新密码覆盖已有目录，否则后端会因密码不一致连不上库。"
-      ask "如何处理？(keep=沿用原密码 / reset=清空目录重新初始化)" "keep"
-      if [ "$REPLY_VALUE" = "reset" ]; then
-        ask "确认清空 $PG_DATA_DIR 中的全部数据库数据？此操作不可恢复 (yes/no)" "no"
-        if [ "$REPLY_VALUE" = "yes" ]; then
-          # 先停容器，否则 PostgreSQL 锁文件导致删不掉
-          if docker compose ps --format '{{.Name}}' 2>/dev/null | grep -q postgres; then
-            note "正在停止 PostgreSQL 容器…"
-            docker compose stop postgres 2>/dev/null || true
-            sleep 2
-          fi
-          rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null
-          # 验证是否真正清空
-          if [ -f "$PG_DATA_DIR/PG_VERSION" ]; then
-            echo
-            say "⚠️  清空失败！数据目录可能被占用或权限不足。"
-            note "请手动执行以下命令后重新运行本脚本："
-            echo "    docker compose down"
-            echo "    rm -rf ${PG_DATA_DIR}/*"
-            echo "    rm -rf ${PG_DATA_DIR}/.*  2>/dev/null"
-            echo "    bash setup.sh"
-            exit 1
-          fi
-          PG_INITED=false
-          note "已清空，将重新初始化。"
-        else
-          note "未清空，按沿用原密码处理。"
-          PG_INITED=true
-        fi
-      fi
-    fi
-
-    if $PG_INITED; then
-      note "请输入该数据目录原本的 PostgreSQL 密码（最初部署设置的，老版本默认为 realtalk）。"
-      ask "原 PostgreSQL 密码" "realtalk"
-      PG_PW="$REPLY_VALUE"
-    else
-      ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
-      PG_PW="$REPLY_VALUE"
-      FRESH_DB=true   # 新初始化的内置库 → 需要把模型/语音等参数写入并落库
-    fi
-
-    # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）
-    ENV_LINES+=(
-      "POSTGRES_USER=realtalk"
-      "POSTGRES_PASSWORD=$PG_PW"
-      "POSTGRES_DB=realtalk"
-      "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
-    )
+  # 数据库连接：本机装了 PostgreSQL(菜单6) 则连接串已由第2步写好；否则填远程库地址。
+  if $PG_DEPLOYED_LOCAL; then
+    note "数据库随菜单 6 在本机部署，连接串已配置（内部地址 postgres:5432）。"
   else
-    note "未选择本机部署 PostgreSQL(菜单 6)：填写远程数据库连接串。"
+    echo
+    note "本机未部署 PostgreSQL(菜单 6)：填写远程数据库连接串。"
     note "示例：postgresql+psycopg://user:pass@db.example.com:5432/realtalk?sslmode=require"
     ask "数据库连接串 DATABASE_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "外部数据库必须填写连接串"; exit 1; }
     ENV_LINES+=("DATABASE_URL=$REPLY_VALUE")
   fi
 
-  # ---- 采集分块暂存 Redis（强制配置：内置容器 / 远程地址）----
-  echo
-  note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
-  REDIS_PORT_VAL=""
-  if $DEPLOY_REDIS; then
-    PROFILES+=("backend-redis")
-    ask "Redis 数据目录" "./data/redis"
-    ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
-    note "内置 Redis 容器对外端口，默认不使用 6379（避免与宿主机已有 Redis 冲突）。"
-    ask "Redis 对外端口" "6380"
-    REDIS_PORT_VAL="$REPLY_VALUE"
-    ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
-    ENV_LINES+=("REDIS_URL=redis://redis:6379/0")
+  # Redis 连接：本机装了 Redis(菜单5) 则连接串已由第3步写好；否则填远程 Redis 地址。
+  if $REDIS_DEPLOYED_LOCAL; then
+    note "Redis 随菜单 5 在本机部署，连接串已配置（内部地址 redis:6379）。"
   else
-    note "未选择本机部署 Redis(菜单 5)：填写远程 Redis 连接串。"
+    echo
+    note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
+    note "本机未部署 Redis(菜单 5)：填写远程 Redis 连接串。"
     note "示例：redis://:你的密码@redis.example.com:6379/0（走 TLS 用 rediss://）"
     ask "Redis 连接串 REDIS_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "Redis 是必选项，必须填写连接串"; exit 1; }
@@ -446,9 +473,9 @@ if $DEPLOY_BACKEND; then
   )
 fi
 
-# ============ 第 3 步：管理台参数 ============
+# ============ 第 5 步：管理台参数 ============
 if $DEPLOY_ADMIN; then
-  echo; say "[3] 管理台参数"
+  echo; say "[5] 管理台参数"
   PROFILES+=("admin")
   ask "管理台对外端口" "8001"
   ENV_LINES+=("ADMIN_PORT=$REPLY_VALUE")
@@ -460,9 +487,9 @@ if $DEPLOY_ADMIN; then
   fi
 fi
 
-# ============ 第 4 步：用户 Web 端参数 ============
+# ============ 第 6 步：用户 Web 端参数 ============
 if $DEPLOY_WEB; then
-  echo; say "[4] 用户 Web 端参数"
+  echo; say "[6] 用户 Web 端参数"
   PROFILES+=("web")
   ask "用户 Web 端对外端口" "8002"
   ENV_LINES+=("WEB_PORT=$REPLY_VALUE")
@@ -472,9 +499,10 @@ if $DEPLOY_WEB; then
   fi
 fi
 
-# ============ [4] 本地实时语音模型服务器（菜单选 4 时配置：ASR+TTS+LLM，OpenAI 兼容 API） ============
+# ============ 第 7 步：本地实时语音模型服务器（菜单选 4：ASR+TTS+LLM，OpenAI 兼容 API） ============
 if $DEPLOY_SPEECH; then
-  echo; say "[4] 本地实时语音模型服务器参数"
+  echo; say "[7] 本地实时语音模型服务器参数"
+  PROFILES+=("speech")
   note "对外 4 个 OpenAI 兼容端点：/audio/transcriptions、/audio/speech、/chat/completions、WS /realtime；"
   note "api 后端在 A/B 配置里填本服务地址即可全量切换到本地模型。"
   ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
@@ -494,13 +522,23 @@ if $DEPLOY_SPEECH; then
     ENV_LINES+=("HF_ENDPOINT=" "PIPER_VOICES_BASE=")
   fi
   # 实时通道的用户上下文临时保存在 Redis（5 分钟滑动、主动结束即清；多副本可互相接管）
+  if $DEPLOY_REDIS; then
+    note "Redis 随菜单 5 在本机部署，实时上下文走内部地址 redis:6379/1（与后端 /0 库隔离）。"
+    ENV_LINES+=("SPEECH_REDIS_URL=redis://redis:6379/1")
+  else
+    note "本机未部署 Redis(菜单 5)：填写远程 Redis 连接串（实时上下文用，建议用 /1 库与后端 /0 隔离）。"
+    note "示例：redis://:你的密码@redis.example.com:6379/1"
+    ask "语音服务器 Redis 连接串 SPEECH_REDIS_URL" ""
+    [ -n "$REPLY_VALUE" ] || { say "实时上下文必须使用 Redis（多副本接管），必须填写连接串"; exit 1; }
+    ENV_LINES+=("SPEECH_REDIS_URL=$REPLY_VALUE")
+  fi
 fi
 
 ENV_LINES+=("API_UPSTREAM=$API_UPSTREAM_DEFAULT")
 IFS=,; ENV_LINES+=("COMPOSE_PROFILES=${PROFILES[*]}"); unset IFS
 
 # ============ 写入 .env 并部署 ============
-echo; say "[5] 生成 .env（应用: ${PROFILES[*]}）"
+echo; say "[8] 生成 .env（应用: ${PROFILES[*]}）"
 printf '%s\n' "${ENV_LINES[@]}" > .env
 say ".env 已生成。"
 
@@ -508,11 +546,8 @@ echo
 ask "是否立即构建并启动？(yes/no)" "yes"
 if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
-  if $DEPLOY_SPEECH; then
-    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
-  else
-    docker compose up -d --build
-  fi
+  # 两个 compose 文件恒定引入，起哪些服务由 COMPOSE_PROFILES 决定（speech 服务带 profile）
+  docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
   if $DEPLOY_BACKEND; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
     # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。
@@ -550,7 +585,14 @@ if $DEPLOY_SPEECH; then
   note "（TTS 格式选 wav，音色用 en_US-lessac-medium 等；高级会员实时语音保持 OpenAI/GLM 配置不变即可）"
   note "详细文档：speechserver/README.md；首次启动会下载模型（受限网络在 .env 加 HF_ENDPOINT=https://hf-mirror.com）"
 fi
-$DEPLOY_BACKEND && [ -n "$REDIS_PORT_VAL" ] && echo "  Redis 对外：  <本机IP>:${REDIS_PORT_VAL}  （内置 Redis，不建议暴露公网）"
+if $DEPLOY_PG; then
+  echo "  PostgreSQL：  <本机IP>:${PG_PORT_VAL:-5433}  （内置库，不建议暴露公网）"
+  $DEPLOY_BACKEND || note "远程后端连接串：postgresql+psycopg://realtalk:<密码见.env>@<本机IP>:${PG_PORT_VAL:-5433}/realtalk?sslmode=disable"
+fi
+if $DEPLOY_REDIS; then
+  echo "  Redis 对外：  <本机IP>:${REDIS_PORT_VAL:-6380}  （内置 Redis，不建议暴露公网）"
+  $DEPLOY_BACKEND || note "远程后端连接串：redis://<本机IP>:${REDIS_PORT_VAL:-6380}/0"
+fi
 $DEPLOY_ADMIN   && echo "  管理台：      http://<本机IP>:${ADMIN_PORT:-8001}"
 $DEPLOY_WEB     && echo "  用户 Web 端： http://<本机IP>:${WEB_PORT:-8002}"
 

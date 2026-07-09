@@ -1,9 +1,10 @@
-# 本地实时语音模型服务器（可选组件，setup.sh 选装）：
-#   docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build speech
-# 与 api 同一网络；上下文临时保存复用主 Redis（多活/多副本安全）。
+# 本地实时语音模型服务器（可选组件，setup.sh 菜单 4 选装，profile=speech）：
+#   docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+# 与 api 同一网络；实时上下文存 Redis（SPEECH_REDIS_URL：同机内置或远程均可，多活/多副本安全）。
 # GPU 部署：把 build.args.DEVICE 改为 cuda，并解开 deploy.resources 注释（需 nvidia-container-toolkit）。
 services:
   speech:
+    profiles: ["speech"]
     build:
       context: ./speechserver
       args:
@@ -20,11 +21,11 @@ services:
       SPEECH_TTS_VOICE_ZH: ${SPEECH_TTS_VOICE_ZH:-zh_CN-huayan-medium}
       HF_ENDPOINT: ${HF_ENDPOINT:-}
       PIPER_VOICES_BASE: ${PIPER_VOICES_BASE:-}
-      REDIS_URL: redis://redis:6379/1
+      # 实时上下文 Redis：同机内置(菜单5)=redis://redis:6379/1；拆机部署由 setup.sh 写入远程地址。
+      # 不用 depends_on：远程 Redis 场景本机 redis 服务不存在；连不上时靠 restart 策略自动重连。
+      REDIS_URL: ${SPEECH_REDIS_URL:-redis://redis:6379/1}
     volumes:
       - ${SPEECH_MODELS_DIR:-./speech-models}:/models
-    depends_on:
-      - redis
     # deploy:
     #   resources:
     #     reservations:

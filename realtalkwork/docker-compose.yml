@@ -21,6 +21,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-realtalk}
     volumes:
       - ${POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
+    ports:
+      # 对外映射默认不用 5432（避免与宿主机已有 PostgreSQL 冲突）；供拆机部署时远程后端连接，勿暴露公网
+      - "${POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-realtalk}"]
       interval: 2s
