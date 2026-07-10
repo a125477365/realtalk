@@ -33,6 +33,9 @@ from .ark_client import (
     generate_freetalk_reply,
     generate_translation,
     generate_learning,
+    SCENE_MARKER_RE,
+    SCENE_MARKER_STRIP_RE,
+    format_scene_context,
     update_freetalk_memory,
     generate_preset_scenario,
     generate_scenario,
@@ -3183,6 +3186,63 @@ async def freetalk_stream(
     history = [] if translate_mode else db.list_freetalk_messages(user.id, limit=30)
     await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
 
+    # 场景感知（仅对话模式）：用户自己生成但还没练过的场景 → 注入私教提示词，供其口语中主动邀练；
+    # scene_ctx = 用户答应练某个场景后注入的剧本（连接生命周期内有效；实时通道侧还会写进其 Redis 上下文）
+    unpracticed = [] if translate_mode else db.list_unpracticed_scenarios(user.id)
+    scene_ctx: str | None = None
+
+    # 开场（先于实时通道连接：开场词入库后 seed 的历史才完整）：
+    # 首次进入=自我介绍+入门了解；老学员=按记忆问候；有未练场景时顺口邀练一个。
+    user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
+    if not translate_mode and (not history or unpracticed):
+        memory = db.get_user_memory(user.id)
+        if not history and not memory.strip():
+            # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
+            # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
+            opening_prompt = (
+                "(Brand-new student, no profile yet. Introduce yourself in one short sentence as their personal "
+                "English tutor. Then start a quick intake: you need their age range, education/occupation, current "
+                "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
+                "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
+            )
+        elif unpracticed:
+            opening_prompt = (
+                "(The user just opened the tutor session. Greet them briefly using what you remember. There are "
+                "unpracticed scenarios in the list — casually offer ONE of them per protocol A, or start an easy "
+                "conversation if offering feels unnatural.)"
+            )
+        else:
+            opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
+        try:
+            result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id, scenarios=unpracticed)
+        except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
+            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+            result = None
+        if result:
+            # 弱模型可能不等用户答应就在开场吐 ⟦SCENE:id⟧：同样走注入剧本→追问角色/严格自由；
+            # 任何情况下标记本身绝不上字幕/不朗读/不入库。
+            scene_m = SCENE_MARKER_RE.search(result.get("reply_en") or "")
+            if scene_m:
+                scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+                if scenario_obj is not None:
+                    scene_ctx = format_scene_context(scenario_obj)
+                    nudge = "(The scene script has been loaded above. Continue per protocol C.)"
+                else:
+                    nudge = "(That scenario no longer exists. Greet the user briefly and start an easy conversation.)"
+                try:
+                    result = await generate_freetalk_reply(nudge, memory, history, user_id=user.id,
+                                                           scenarios=unpracticed, scene_context=scene_ctx)
+                except Exception as exc:  # noqa: BLE001
+                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    result = None
+        if result:
+            opening = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()
+        if result and opening:
+            db.add_freetalk_message(user.id, "ai", opening)
+            # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
+            await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
+            tts_task = asyncio.create_task(_send_tts(opening))
+
     # B 类对话·实时通道（本地语音服务器）：配置了 conv_realtime_base_url 就走流式通道——
     # 音频帧边收边转发、上下文由语音服务器持有（Redis 5 分钟滑动，主动退出立即清理）；
     # 连接失败自动回退下面的分步管线（ASR→LLM→TTS），私教不因本地服务异常中断。
@@ -3199,37 +3259,12 @@ async def freetalk_stream(
                     await upstream.seed(translate_instructions(), [])
                 else:
                     await upstream.seed(
-                        freetalk_instructions(db.get_user_memory(user.id)),
+                        freetalk_instructions(db.get_user_memory(user.id), scenarios=unpracticed),
                         db.list_freetalk_messages(user.id, limit=200),
                     )
         except Exception as exc:  # noqa: BLE001
             print(f"[freetalk] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
             upstream = None
-    user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
-    if not history and not translate_mode:
-        memory = db.get_user_memory(user.id)
-        if memory.strip():
-            opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
-        else:
-            # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
-            # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
-            opening_prompt = (
-                "(Brand-new student, no profile yet. Introduce yourself in one short sentence as their personal "
-                "English tutor. Then start a quick intake: you need their age range, education/occupation, current "
-                "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
-                "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
-            )
-        try:
-            result = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
-        except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
-            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
-            result = None
-        if result:
-            opening = result["reply_en"]
-            db.add_freetalk_message(user.id, "ai", opening)
-            # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
-            await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
-            tts_task = asyncio.create_task(_send_tts(opening))
 
     try:
         while True:
@@ -3288,6 +3323,20 @@ async def freetalk_stream(
                     await _sj({"type": "user_text", "text": recognized, "translation": ""})
                     # 翻译模式：回复即译文（同传指令无 ⟦ZH⟧ 标记，reply_zh 为空）；不存历史不沉淀记忆
                     reply, reply_zh, wav = await upstream.create_response(timeout=120)
+                    # 场景练习标记：模型请求注入场景剧本 → 取库注入通道上下文（system 条目，随其 Redis 持久）→ 再推理一轮
+                    scene_m = None if translate_mode else SCENE_MARKER_RE.search(reply or "")
+                    if scene_m:
+                        scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+                        if scenario_obj is not None:
+                            scene_ctx = format_scene_context(scenario_obj)
+                            inject = scene_ctx
+                        else:
+                            inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
+                        await upstream.send({"type": "conversation.item.create", "item": {
+                            "role": "system", "content": [{"type": "input_text", "text": inject}],
+                        }})
+                        reply, reply_zh, wav = await upstream.create_response(timeout=120)
+                    reply = SCENE_MARKER_STRIP_RE.sub("", reply or "").strip()   # 残留标记绝不上字幕/朗读
                     if reply:
                         if not translate_mode:
                             db.add_freetalk_message(user.id, "ai", reply)
@@ -3339,7 +3388,26 @@ async def freetalk_stream(
                     db.get_user_memory(user.id),
                     db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史，按预算裁剪在模型侧做
                     user_id=user.id,
+                    scenarios=unpracticed,
+                    scene_context=scene_ctx,
                 )
+                # 场景练习标记：取库注入剧本（连接内有效），再让模型接着问角色/严格自由
+                scene_m = SCENE_MARKER_RE.search(result.get("reply_en") or "")
+                if scene_m:
+                    scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+                    if scenario_obj is not None:
+                        scene_ctx = format_scene_context(scenario_obj)
+                        nudge = "(The scene script has been loaded above. Continue per protocol C.)"
+                    else:
+                        nudge = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
+                    result = await generate_freetalk_reply(
+                        nudge,
+                        db.get_user_memory(user.id),
+                        db.list_freetalk_messages(user.id, limit=200) + [{"speaker": "user", "content": recognized}],
+                        user_id=user.id,
+                        scenarios=unpracticed,
+                        scene_context=scene_ctx,
+                    )
             except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
                 await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
                 continue
@@ -3347,7 +3415,9 @@ async def freetalk_stream(
             user_display = result.get("user_display", "").strip() or recognized
             db.add_freetalk_message(user.id, "user", user_display)
             await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", "")})
-            reply = result["reply_en"]
+            reply = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()   # 残留标记绝不上字幕/朗读
+            if not reply:
+                continue
             db.add_freetalk_message(user.id, "ai", reply)
             await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", "")})
             tts_task = asyncio.create_task(_send_tts(reply))

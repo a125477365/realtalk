@@ -54,28 +54,14 @@ struct FreeTalkView: View {
         .padding(.bottom, 10)
     }
 
-    // 对话 / 实时翻译 切换（同界面同流协议，仅 mode 参数不同；切换即断开重连）
+    // 对话 / 实时翻译 切换：主界面「今天/全部/通用场景」同款品牌分段选择器，通栏各占一半；
+    // 切换即断开重连（同流协议，仅 mode 参数不同）
     private var modeSwitch: some View {
-        HStack(spacing: 0) {
-            modeButton("对话", mode: "chat")
-            modeButton("实时翻译", mode: "translate")
-        }
-        .padding(3)
-        .background(.white.opacity(0.10), in: Capsule())
-    }
-
-    private func modeButton(_ label: String, mode: String) -> some View {
-        Button {
-            model.switchFreeTalkMode(mode)
-        } label: {
-            Text(label)
-                .font(.system(size: 12 * model.fontScale, weight: .semibold))
-                .foregroundStyle(model.freeTalkMode == mode ? Color(red: 0.09, green: 0.10, blue: 0.16) : .white.opacity(0.75))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(model.freeTalkMode == mode ? AnyShapeStyle(Color.white.opacity(0.92)) : AnyShapeStyle(Color.clear), in: Capsule())
-        }
-        .buttonStyle(.plain)
+        BrandSegmentedPicker(
+            selection: Binding(get: { model.freeTalkMode }, set: { model.switchFreeTalkMode($0) }),
+            options: [("chat", "对话"), ("translate", "实时翻译")],
+            fontScale: model.fontScale
+        )
     }
 
     private var subtitles: some View {

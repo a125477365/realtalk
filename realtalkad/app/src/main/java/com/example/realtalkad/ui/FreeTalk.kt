@@ -82,24 +82,14 @@ fun FreeTalkScreen(model: AppViewModel) {
                 ) { Text("✕", color = Color.White.copy(alpha = 0.85f), fontSize = 15.sp) }
             }
 
-            // 对话 / 实时翻译 切换（同界面同流协议，仅 mode 参数不同；切换即断开重连）
-            Row(
-                Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
-                    .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(50))
-                    .padding(3.dp),
-            ) {
-                listOf("chat" to "对话", "translate" to "实时翻译").forEach { (m, label) ->
-                    val selected = mode == m
-                    Text(
-                        label,
-                        color = if (selected) Color(0xFF171A29) else Color.White.copy(alpha = 0.75f),
-                        fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier
-                            .background(if (selected) Color.White.copy(alpha = 0.92f) else Color.Transparent, RoundedCornerShape(50))
-                            .clickable { model.switchFreeTalkMode(m) }
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                    )
-                }
+            // 对话 / 实时翻译 切换：主界面「今天/全部/通用场景」同款品牌分段选择器，通栏各占一半；
+            // 切换即断开重连（同流协议，仅 mode 参数不同）
+            Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 2.dp)) {
+                BrandSegmented(
+                    options = listOf("chat" to "对话", "translate" to "实时翻译"),
+                    selected = mode,
+                    fontScale = fontScale,
+                ) { m -> model.switchFreeTalkMode(m) }
             }
 
             // 字幕流

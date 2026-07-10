@@ -1142,15 +1142,12 @@ function loadPlanQuotaAsr() {
   apiGet("/admin/api/settings/asr?scope=scenario").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
-      var local = d.mode === "local";
+      // api 后端无内置引擎：全部走模型 API（云端或本地语音服务器），无 mode 分支
       var banner = getEl("asr-mode-banner");
       var cloud = getEl("asr-cloud-fields");
       var saveBtn = getEl("asr-save-btn");
-      if (banner) banner.innerHTML = local
-        ? '<div class="hint" style="padding:10px;background:var(--warning-bg,#fff8e6);border-radius:8px">' +
-          '本节点启用了内置 whisper（仅供上传语音文件生成场景）。推荐部署「本地实时语音模型服务器」后，' +
-          '在下方填 http://&lt;IP&gt;:9100/v1 统一切换（见 speechserver/README.md）。</div>'
-        : '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1（Key 随意填如 local）。</div>';
+      if (banner) banner.innerHTML =
+        '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1（Key 随意填如 local）。</div>';
       if (cloud) cloud.style.display = "";
       if (saveBtn) saveBtn.style.display = "";
       if (getEl("asr-base-url")) getEl("asr-base-url").value = d.base_url || "";
@@ -1162,7 +1159,6 @@ function loadPlanQuotaAsr() {
   apiGet("/admin/api/settings/tts").then(function(r) {
     if (!r || !r.ok) return;
     r.json().then(function(d) {
-      var local = d.mode === "local";
       var banner = getEl("tts-mode-banner");
       var cloud = getEl("tts-cloud-fields");
       var saveBtn = getEl("tts-save-btn");

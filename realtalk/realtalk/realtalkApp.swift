@@ -63,6 +63,9 @@ struct realtalkApp: App {
                             #if DEBUG
                             // UI 自动化验证钩子（仅 Debug 构建）：xcrun simctl launch 传参直开私教/翻译界面
                             let uiArgs = ProcessInfo.processInfo.arguments
+                            if uiArgs.contains("--uiverify-login"), model.auth.token == nil {
+                                await model.auth.loginWithWeChat()   // 开发模拟登录（未配微信 SDK 时）
+                            }
                             if model.showFreeTalk == false, model.auth.token != nil {
                                 if uiArgs.contains("--uiverify-freetalk-translate") {
                                     model.startFreeTalk(mode: "translate")

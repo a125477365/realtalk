@@ -2134,6 +2134,23 @@ class Database:
             )
         return items
 
+    def list_unpracticed_scenarios(self, user_id: str, limit: int = 8) -> list[dict[str, str]]:
+        """私教场景感知：用户自己生成、还没真正开练过（无任何有得分对练会话）的场景，最新优先。
+        返回轻量字段（scene_id/title/summary），注入私教提示词供其主动邀练。"""
+        items = self.list_scenarios(user_id, limit=30)
+        if not items:
+            return []
+        scores = self.last_practice_scores(user_id, [it["scene_id"] for it in items])
+        out: list[dict[str, str]] = []
+        for it in items:
+            st = scores.get(it["scene_id"]) or {}
+            if "score" in st or st.get("completed"):
+                continue   # 有得分/完成记录 = 练过
+            out.append({"scene_id": it["scene_id"], "title": it["title"], "summary": it.get("summary") or ""})
+            if len(out) >= limit:
+                break
+        return out
+
     def last_practice_scores(self, user_id: str, scene_ids: list[str]) -> dict[str, dict[str, Any]]:
         """各场景该用户的：①「最近一次有得分的对练」分数/是否完成/时间（场景卡展示上次成绩）；
         ②「最近一个未完成(active)会话」是否可继续 + 会话 id + 已练句数（场景卡展示「继续/重新开始」）。

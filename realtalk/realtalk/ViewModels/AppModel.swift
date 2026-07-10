@@ -467,7 +467,7 @@ final class AppModel: ObservableObject {
                 await self?.submitRoleplayAudio(url)
             }
         }
-        // AI 台词改用后端 TTS（可选音色、口音更自然）；后端不可用时 VoicePromptPlayer 自动回退本机合成
+        // AI 台词全部走后端 TTS（B 类对话语音模型派生，无本机合成兜底；后端不可用直接报错）
         voice.audioProvider = { [weak self] text, cache in
             guard let self else { return nil }
             return await self.fetchTTSAudio(text, cache: cache)
