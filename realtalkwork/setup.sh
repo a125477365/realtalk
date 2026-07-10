@@ -478,7 +478,8 @@ if $DEPLOY_ADMIN; then
   echo; say "[5] 管理台参数"
   PROFILES+=("admin")
   ask "管理台对外端口" "8001"
-  ENV_LINES+=("ADMIN_PORT=$REPLY_VALUE")
+  ADMIN_PORT="$REPLY_VALUE"
+  ENV_LINES+=("ADMIN_PORT=$ADMIN_PORT")
   if $DEPLOY_BACKEND; then
     note "后端在同机部署，管理台自动走内部网络 $API_UPSTREAM_DEFAULT"
   else
@@ -492,7 +493,8 @@ if $DEPLOY_WEB; then
   echo; say "[6] 用户 Web 端参数"
   PROFILES+=("web")
   ask "用户 Web 端对外端口" "8002"
-  ENV_LINES+=("WEB_PORT=$REPLY_VALUE")
+  WEB_PORT="$REPLY_VALUE"
+  ENV_LINES+=("WEB_PORT=$WEB_PORT")
   if ! $DEPLOY_BACKEND && ! $DEPLOY_ADMIN; then
     ask "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
     API_UPSTREAM_DEFAULT="$REPLY_VALUE"

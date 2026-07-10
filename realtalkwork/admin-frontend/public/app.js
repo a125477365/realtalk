@@ -1671,7 +1671,7 @@ function loadModelSettings() {
       if (keyStatus) {
         keyStatus.textContent = d.api_key_configured
           ? "\uff08\u5df2\u914d\u7f6e\uff1a" + d.api_key_masked + "\uff09"
-          : "\uff08\u672a\u914d\u7f6e\uff0cAI \u529f\u80fd\u5c06\u4f7f\u7528\u5185\u7f6e\u6a21\u677f\u515c\u5e95\uff09";
+          : "\uff08\u672a\u914d\u7f6e\uff0cAI \u76f8\u5173\u529f\u80fd\u5c06\u76f4\u63a5\u62a5\u9519\uff0c\u65e0\u515c\u5e95\uff09";
       }
     });
   });

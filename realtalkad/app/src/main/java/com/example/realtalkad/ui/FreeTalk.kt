@@ -48,6 +48,8 @@ fun FreeTalkScreen(model: AppViewModel) {
     val working by model.freeTalkWorking.collectAsState()
     val showChineseHint by model.showChineseHint.collectAsState()
     val fontScale by model.fontScale.collectAsState()
+    val mode by model.freeTalkMode.collectAsState()
+    val isTranslate = mode == "translate"
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size) {
@@ -66,9 +68,10 @@ fun FreeTalkScreen(model: AppViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("AI英语私教", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp)
+                    Text(if (isTranslate) "实时翻译" else "AI英语私教", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp)
                     Text(
-                        "一对一语音老师 · 可以问语法、单词，或说「练一个打车场景」",
+                        if (isTranslate) "说英文出中文、说中文出英文 · 译文上字幕并朗读"
+                        else "一对一语音老师 · 可以问语法、单词，或说「练一个打车场景」",
                         color = Color.White.copy(alpha = 0.55f), fontSize = (11 * fontScale).sp,
                     )
                 }
@@ -77,6 +80,26 @@ fun FreeTalkScreen(model: AppViewModel) {
                         .clickable { model.stopFreeTalk() }
                         .padding(10.dp),
                 ) { Text("✕", color = Color.White.copy(alpha = 0.85f), fontSize = 15.sp) }
+            }
+
+            // 对话 / 实时翻译 切换（同界面同流协议，仅 mode 参数不同；切换即断开重连）
+            Row(
+                Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+                    .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(50))
+                    .padding(3.dp),
+            ) {
+                listOf("chat" to "对话", "translate" to "实时翻译").forEach { (m, label) ->
+                    val selected = mode == m
+                    Text(
+                        label,
+                        color = if (selected) Color(0xFF171A29) else Color.White.copy(alpha = 0.75f),
+                        fontSize = (12 * fontScale).sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .background(if (selected) Color.White.copy(alpha = 0.92f) else Color.Transparent, RoundedCornerShape(50))
+                            .clickable { model.switchFreeTalkMode(m) }
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                    )
+                }
             }
 
             // 字幕流
@@ -118,7 +141,9 @@ fun FreeTalkScreen(model: AppViewModel) {
                 if (messages.isEmpty()) {
                     itemsIndexed(listOf("")) { _, _ ->
                         Text(
-                            if (status.isBlank()) "老师马上开口，直接用英语聊起来吧" else status,
+                            if (status.isBlank()) {
+                                if (isTranslate) "开始说话即可：说英文出中文、说中文出英文" else "老师马上开口，直接用英语聊起来吧"
+                            } else status,
                             color = Color.White.copy(alpha = 0.45f), fontSize = (13 * fontScale).sp,
                             modifier = Modifier.fillMaxWidth().padding(top = 60.dp),
                         )
@@ -158,8 +183,8 @@ fun FreeTalkScreen(model: AppViewModel) {
                 Text(
                     when {
                         paused -> "已暂停，点击继续"
-                        working -> "已发送，老师正在思考…"
-                        aiSpeaking -> "老师正在说话，开口即可打断"
+                        working -> if (isTranslate) "已发送，正在翻译…" else "已发送，老师正在思考…"
+                        aiSpeaking -> if (isTranslate) "正在播放译文，开口即可打断" else "老师正在说话，开口即可打断"
                         else -> "正在聆听，你说完稍停即发送 · 点击可暂停"
                     },
                     color = Color.White.copy(alpha = 0.62f), fontSize = (13 * fontScale).sp, fontWeight = FontWeight.Medium,

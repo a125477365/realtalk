@@ -12,27 +12,17 @@
 
 4 个 manifest 都用预构建镜像 `your-registry/realtalk-api:latest`，所以先在 `realtalkwork/` 目录构建并推到你的仓库。
 
-**默认构建（推荐）—— 本地 ASR(faster-whisper) + TTS(Piper) 随镜像装好,与 API 同容器：**
+**api 镜像不内置任何语音/文字引擎**——全部模型通过「模型 API 调用」使用（云端或本地语音服务器），Pod 完全无状态、可随意扩缩：
 ```bash
 cd realtalkwork
 docker build -t your-registry/realtalk-api:latest .
 docker push your-registry/realtalk-api:latest
 ```
-这样云端付费模型和本地开源模型都已就绪,运维之后切换只改 `ASR_MODE/TTS_MODE` 配置即可,**不必重建镜像**。
-
-**只想要更小的「纯云端」镜像**（确定不用本地引擎）时,构建时关掉即可：
-```bash
-docker build \
-  --build-arg WITH_LOCAL_ASR=false \
-  --build-arg WITH_LOCAL_TTS=false \
-  -t your-registry/realtalk-api:latest .
-docker push your-registry/realtalk-api:latest
-```
 
 构建后把 4 个 manifest 里的 `your-registry/realtalk-api:latest` 替换成你的镜像地址（API Deployment、db-init Job、以及 initContainer 三处都在 `realtalk-api.yaml` / `db-init.yaml`）。
 
-> **建议**：k8s 多副本若用**云端 ASR/TTS** Pod 完全无状态、可随意扩缩；用**本地引擎**要额外处理模型持久化（见第 4 节）。
-> 镜像默认带本地引擎只是让你能随时切换,用不用是运行期的 `ASR_MODE/TTS_MODE` 决定的。
+> **本地开源模型**是独立组件「本地实时语音模型服务器」（ASR faster-whisper + TTS Piper + LLM llama.cpp，
+> OpenAI 兼容四端点），见第 4 节与 `speech-server.yaml`；api 通过管理台 A/B 模型卡指向它，无需重建 api 镜像。
 
 ## 1. 外部依赖
 - **PostgreSQL**：自建或托管，拿到连接串（不在本目录管理）。
@@ -59,7 +49,6 @@ kubectl create secret generic realtalk-api-secret \
 ```bash
 kubectl create configmap realtalk-api-config \
   --from-literal=REALTALK_REGION='prod' \
-  --from-literal=ASR_MODE='cloud' --from-literal=TTS_MODE='cloud' \
   `# —— 8 个联调旁路开关(对应 setup.sh「部署模式」)：生产全 false；本地联调可全 true ——` \
   --from-literal=WECHAT_AUTH_DEV_MODE='false' \
   --from-literal=PAYMENT_DEV_AUTO_CONFIRM='false' \
@@ -84,44 +73,32 @@ kubectl apply -f admin-frontend.yaml -f web-frontend.yaml
 ```
 升级（已有库）：`db-init` 的播种有「只播种一次」标记，重跑只补建新表/列，不会覆盖管理台改过的值。
 
-## 4. （可选）本地 ASR / TTS：env 与模型持久化
+## 4. （可选）本地实时语音模型服务器（独立组件）
 
-镜像**默认已带本地引擎**（第 0 步），用本地只需把 `realtalk-api-config` 的 mode 改为 local 加命令；
-**模型在 Pod 启动时预拉**（entrypoint 调 `app.prefetch_models`，仅本地模式、缺失时下载）到 `/app/models`（无需手动下载）；已配 `startupProbe` 给首次下载留足时间，不会被 liveness 误杀。受限网络走镜像站：
-`HF_ENDPOINT=https://hf-mirror.com`（whisper）、`PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main`（Piper），加到 `realtalk-api-config` 即可。
+api 镜像不带任何本地引擎。要用本地开源模型（ASR faster-whisper + TTS Piper + LLM llama.cpp，
+OpenAI 兼容四端点：`/v1/audio/transcriptions`、`/v1/audio/speech`、`/v1/chat/completions`、WS `/v1/realtime`），
+部署独立的语音服务器：
 
 ```bash
-```bash
-# 本地 ASR（faster-whisper）
-ASR_MODE=local
-ASR_LOCAL_COMMAND=python /app/app/asr_local.py {input}
-ASR_LOCAL_MODEL=small               # tiny/base/small/medium
-# 本地 TTS（Piper，输出 WAV，英文音色）
-TTS_MODE=local
-TTS_FORMAT=wav
-TTS_LOCAL_COMMAND=python /app/app/tts_local.py {voice} {out}
+# 构建（在 realtalkwork/speechserver）并推送
+docker build -t your-registry/realtalk-speech:latest speechserver/
+docker push your-registry/realtalk-speech:latest
+# 部署（把 speech-server.yaml 里的镜像名换成你的仓库地址）
+kubectl apply -f speech-server.yaml
 ```
+
+- **模型持久化**：模型（whisper/GGUF/Piper 音色）预拉到 PVC `speech-models`；多副本共享请用
+  `ReadWriteMany`（见 `speech-server.yaml` 注释）。受限网络加 `HF_ENDPOINT=https://hf-mirror.com`
+  与 `PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main`。
+- **实时上下文**：存 Redis（`REDIS_URL`，建议 `/1` 库与后端 `/0` 隔离），多副本可互相接管。
+- **切换到本地模型**：管理台「系统设置」把 A（场景转写）/ B（对话语音一张卡）的 Base URL 填
+  `http://realtalk-speech:9100/v1`（Key 填 `local`）即可，api 不需要重启或重建。
+
 TTS 音色清单是**入库参数**，放 db-init 的 Secret/ConfigMap 里播种（Piper 音色名）：
 ```bash
 TTS_VOICES=en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium
 TTS_DEFAULT_VOICE=en_US-lessac-medium
 ```
-
-**模型持久化**（本地引擎的模型默认下载到容器内 `/app/models`）。多副本下三选一：
-- **接受每 Pod 首次下载**：不挂卷，小模型（whisper small / piper medium）影响有限，重启会重下。
-- **共享 PVC（推荐持久）**：建一个 `ReadWriteMany` 的 PVC（需 NFS 等 RWX storageclass），在 `realtalk-api.yaml` 的 Pod 上挂到 `/app/models`，多副本共享一份：
-  ```yaml
-  # realtalk-api.yaml 的 spec.template.spec 里加：
-  volumes:
-    - name: models
-      persistentVolumeClaim:
-        claimName: realtalk-models      # 你自建的 RWX PVC
-  # 并在 api 容器（以及本地引擎用到的 initContainer，如有）加：
-  volumeMounts:
-    - name: models
-      mountPath: /app/models
-  ```
-- **最稳：把模型烤进镜像**：自定义 Dockerfile 在构建期预下载模型，Pod 启动即用、无需联网、无需挂卷。
 
 ## 5. （采集功能）/app/uploads 录音目录
 

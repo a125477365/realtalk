@@ -328,9 +328,11 @@ final class APIClient {
     }
 
     /// 自由对话（一对一语音老师）流地址；协议同沉浸式流。'+' 强制编码为 %2B（原因见 roleplayStreamURL）。
-    func freeTalkStreamURL(token: String) -> URL? {
+    /// mode: chat=私教对话（默认）/ translate=实时翻译（同界面切换，英↔中同传并朗读译文）。
+    func freeTalkStreamURL(token: String, mode: String = "chat") -> URL? {
         var comps = URLComponents(url: url(for: "/freetalk/stream"), resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "token", value: token)]
+        comps?.queryItems = [URLQueryItem(name: "token", value: token),
+                             URLQueryItem(name: "mode", value: mode)]
         if let encoded = comps?.percentEncodedQuery {
             comps?.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
         }

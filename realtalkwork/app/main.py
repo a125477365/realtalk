@@ -29,7 +29,9 @@ from .ark_client import (
     realtime_voice_guidance,
     generate_ai_chat_reply,
     freetalk_instructions,
+    translate_instructions,
     generate_freetalk_reply,
+    generate_translation,
     generate_learning,
     update_freetalk_memory,
     generate_preset_scenario,
@@ -3127,10 +3129,14 @@ async def roleplay_stream(
 async def freetalk_stream(
     websocket: WebSocket,
     token: str = Query(...),
+    mode: str = Query("chat"),
 ) -> None:
     """自由对话（一对一语音英语老师）：与沉浸式同构（音频帧+commit → 后端 ASR → 文字大模型 → TTS 推回），
     但不绑场景、无指导区：老师回复(含纠正/讲解)直接进字幕并朗读。带用户记忆(DB)与近期历史上下文。
-    计费与文字大模型一致(kind=chat，走普通档超时/max_tokens 与每日 token 额度)。"""
+    计费与文字大模型一致(kind=chat，走普通档超时/max_tokens 与每日 token 额度)。
+
+    mode=translate 为实时翻译模式（同一界面切换）：英文说→念简中译文、中文说→念英文译文；
+    无人设/无历史/无记忆沉淀，每句独立同传；两条管线（实时通道/分步）同样支持，计费同私教。"""
     await websocket.accept()
     try:
         user = _authenticate_token(token)
@@ -3139,11 +3145,12 @@ async def freetalk_stream(
         await websocket.close(code=4401, reason=_ws_reason(exc.detail))
         return
 
+    translate_mode = mode == "translate"
     voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
     send_lock = asyncio.Lock()
     utterance = bytearray()
     tts_task: asyncio.Task | None = None
-    turns_since_memory = 0   # 每 6 轮用户发言后台更新一次记忆；结束时再补一次
+    turns_since_memory = 0   # 每 6 轮用户发言后台更新一次记忆；结束时再补一次（翻译模式不沉淀记忆）
 
     async def _sj(obj: dict) -> None:
         async with send_lock:
@@ -3171,8 +3178,9 @@ async def freetalk_stream(
             tts_task.cancel()
         tts_task = None
 
-    # 开场：回放近期字幕；首次进入让老师先开口（按记忆个性化开场）
-    history = db.list_freetalk_messages(user.id, limit=30)
+    # 开场：回放近期字幕；首次进入让老师先开口（按记忆个性化开场）。
+    # 翻译模式：无历史无开场（每句独立同传，界面从空白开始）。
+    history = [] if translate_mode else db.list_freetalk_messages(user.id, limit=30)
     await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
 
     # B 类对话·实时通道（本地语音服务器）：配置了 conv_realtime_base_url 就走流式通道——
@@ -3183,18 +3191,22 @@ async def freetalk_stream(
     rt_url = resolve_conv_realtime_url()
     if rt_url:
         try:
-            upstream = await ConvRealtimeSession(rt_url, f"ft-{user.id}").connect()
+            # 翻译模式独立会话 id：不与私教对话共用/污染语音服务器侧上下文
+            upstream = await ConvRealtimeSession(rt_url, f"{'ftr' if translate_mode else 'ft'}-{user.id}").connect()
             upstream_started = _time.monotonic()
             if not upstream.restored:
-                await upstream.seed(
-                    freetalk_instructions(db.get_user_memory(user.id)),
-                    db.list_freetalk_messages(user.id, limit=200),
-                )
+                if translate_mode:
+                    await upstream.seed(translate_instructions(), [])
+                else:
+                    await upstream.seed(
+                        freetalk_instructions(db.get_user_memory(user.id)),
+                        db.list_freetalk_messages(user.id, limit=200),
+                    )
         except Exception as exc:  # noqa: BLE001
             print(f"[freetalk] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
             upstream = None
     user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
-    if not history:
+    if not history and not translate_mode:
         memory = db.get_user_memory(user.id)
         if memory.strip():
             opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
@@ -3207,12 +3219,17 @@ async def freetalk_stream(
                 "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
                 "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
             )
-        result = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
-        opening = result["reply_en"]
-        db.add_freetalk_message(user.id, "ai", opening)
-        # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
-        await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
-        tts_task = asyncio.create_task(_send_tts(opening))
+        try:
+            result = await generate_freetalk_reply(opening_prompt, memory, [], user_id=user.id)
+        except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
+            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+            result = None
+        if result:
+            opening = result["reply_en"]
+            db.add_freetalk_message(user.id, "ai", opening)
+            # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
+            await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
+            tts_task = asyncio.create_task(_send_tts(opening))
 
     try:
         while True:
@@ -3266,21 +3283,25 @@ async def freetalk_stream(
                     if not recognized:
                         await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                         continue
-                    db.add_freetalk_message(user.id, "user", recognized)
+                    if not translate_mode:
+                        db.add_freetalk_message(user.id, "user", recognized)
                     await _sj({"type": "user_text", "text": recognized, "translation": ""})
+                    # 翻译模式：回复即译文（同传指令无 ⟦ZH⟧ 标记，reply_zh 为空）；不存历史不沉淀记忆
                     reply, reply_zh, wav = await upstream.create_response(timeout=120)
                     if reply:
-                        db.add_freetalk_message(user.id, "ai", reply)
+                        if not translate_mode:
+                            db.add_freetalk_message(user.id, "ai", reply)
                         await _sj({"type": "ai_text", "text": reply, "translation": reply_zh})
                         if wav:
                             await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
                             for i in range(0, len(wav), 16384):
                                 await _sb(wav[i:i + 16384])
                             await _sj({"type": "ai_audio_end"})
-                    turns_since_memory += 1
-                    if turns_since_memory >= 6:
-                        turns_since_memory = 0
-                        asyncio.create_task(update_freetalk_memory(user.id))
+                    if not translate_mode:
+                        turns_since_memory += 1
+                        if turns_since_memory >= 6:
+                            turns_since_memory = 0
+                            asyncio.create_task(update_freetalk_memory(user.id))
                 except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
                     print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
                     upstream = None
@@ -3300,6 +3321,17 @@ async def freetalk_stream(
             if not recognized:
                 # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
+                continue
+            if translate_mode:
+                # ---- 实时翻译（分步管线）：转写 → 同传 → 念译文；不存历史不沉淀记忆 ----
+                try:
+                    translated = await generate_translation(recognized, user_id=user.id)
+                except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    continue
+                await _sj({"type": "user_text", "text": recognized, "translation": ""})
+                await _sj({"type": "ai_text", "text": translated, "translation": ""})
+                tts_task = asyncio.create_task(_send_tts(translated))
                 continue
             try:
                 result = await generate_freetalk_reply(

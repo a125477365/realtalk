@@ -21,30 +21,61 @@ struct FreeTalkView: View {
         }
     }
 
+    private var isTranslate: Bool { model.freeTalkMode == "translate" }
+
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("AI英语私教")
-                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("一对一语音老师 · 想聊什么直接说，可以问语法、单词，或说「练一个打车场景」")
-                    .font(.system(size: 11 * model.fontScale))
-                    .foregroundStyle(.white.opacity(0.55))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isTranslate ? "实时翻译" : "AI英语私教")
+                        .font(.system(size: 17 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(isTranslate
+                         ? "说英文出中文、说中文出英文 · 译文上字幕并朗读"
+                         : "一对一语音老师 · 想聊什么直接说，可以问语法、单词，或说「练一个打车场景」")
+                        .font(.system(size: 11 * model.fontScale))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+                Spacer()
+                Button {
+                    model.stopFreeTalk()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(10)
+                        .background(.white.opacity(0.12), in: Circle())
+                }
             }
-            Spacer()
-            Button {
-                model.stopFreeTalk()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(10)
-                    .background(.white.opacity(0.12), in: Circle())
-            }
+            modeSwitch
         }
         .padding(.horizontal, 18)
         .padding(.top, 16)
         .padding(.bottom, 10)
+    }
+
+    // 对话 / 实时翻译 切换（同界面同流协议，仅 mode 参数不同；切换即断开重连）
+    private var modeSwitch: some View {
+        HStack(spacing: 0) {
+            modeButton("对话", mode: "chat")
+            modeButton("实时翻译", mode: "translate")
+        }
+        .padding(3)
+        .background(.white.opacity(0.10), in: Capsule())
+    }
+
+    private func modeButton(_ label: String, mode: String) -> some View {
+        Button {
+            model.switchFreeTalkMode(mode)
+        } label: {
+            Text(label)
+                .font(.system(size: 12 * model.fontScale, weight: .semibold))
+                .foregroundStyle(model.freeTalkMode == mode ? Color(red: 0.09, green: 0.10, blue: 0.16) : .white.opacity(0.75))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(model.freeTalkMode == mode ? AnyShapeStyle(Color.white.opacity(0.92)) : AnyShapeStyle(Color.clear), in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var subtitles: some View {
@@ -77,7 +108,9 @@ struct FreeTalkView: View {
                         .id(line.id)
                     }
                     if model.freeTalkMessages.isEmpty {
-                        Text(model.freeTalkStatus.isEmpty ? "老师马上开口，直接用英语聊起来吧" : model.freeTalkStatus)
+                        Text(model.freeTalkStatus.isEmpty
+                             ? (isTranslate ? "开始说话即可：说英文出中文、说中文出英文" : "老师马上开口，直接用英语聊起来吧")
+                             : model.freeTalkStatus)
                             .font(.system(size: 13 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.45))
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -144,8 +177,8 @@ struct FreeTalkView: View {
 
     private var statusLabel: String {
         if stream.isPaused { return "已暂停，点击继续" }
-        if model.freeTalkWorking { return "已发送，老师正在思考…" }
-        if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
+        if model.freeTalkWorking { return isTranslate ? "已发送，正在翻译…" : "已发送，老师正在思考…" }
+        if stream.isAISpeaking { return isTranslate ? "正在播放译文，开口即可打断" : "老师正在说话，开口即可打断" }
         return "正在聆听，你说完稍停即发送 · 点击可暂停"
     }
 

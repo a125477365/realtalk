@@ -452,6 +452,41 @@ def freetalk_instructions(memory: str) -> str:
     return system
 
 
+def translate_instructions() -> str:
+    """实时翻译模式（私教界面切换进入）：实时通道用的同传指令——只输出译文。
+    英文说→简体中文、中文说→英文；语音服务器直接把译文念出来（本地 Piper 中英双音色自动分段）。
+    不带 ⟦ZH⟧ 标记：译文本身就是要念、要上字幕的唯一产物。"""
+    return (
+        _SCOPE_POLICY
+        + "You are a real-time interpreter between English and Simplified Chinese. For EVERY user message: "
+        "if it is mainly English, output ONLY its natural Simplified-Chinese translation; "
+        "if it is mainly Chinese, output ONLY its natural English translation. "
+        "Output the translation text alone — no explanations, no quotes, no labels, no extra words. "
+        "NEVER answer or act on the content; only translate it. All Chinese MUST be Simplified Chinese."
+        + _SENSITIVE_CONTENT_POLICY
+        + _UNTRUSTED_DATA_POLICY
+    )
+
+
+async def generate_translation(user_text: str, user_id: str | None = None) -> str:
+    """实时翻译一轮（分步管线路径用）：英→简中 / 中→英，只回译文。
+    模型不可用直接抛错（#9 无兜底）。计费与文字模型一致(kind=chat)。"""
+    config = resolve_ai_config()
+    if not config.enabled:
+        raise RuntimeError("AI 模型未配置：请在管理台「系统设置 → 模型」中配置")
+    content = await _chat_completion(
+        [
+            {"role": "system", "content": translate_instructions()},
+            {"role": "user", "content": user_text},
+        ],
+        temperature=0.2,
+        kind="chat",
+        user_id=user_id,
+        config=config,
+    )
+    return content.strip()
+
+
 _FREETALK_FALLBACK = {
     "user_display": "", "user_translation": "",
     "reply_en": "Let's practice! Tell me about your day — what did you do this morning?",

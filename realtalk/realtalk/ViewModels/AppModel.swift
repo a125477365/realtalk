@@ -146,6 +146,7 @@ final class AppModel: ObservableObject {
     @Published var freeTalkMessages: [FreeTalkLine] = []
     @Published var freeTalkStatus: String = ""
     @Published var freeTalkWorking = false   // 已发送、等待后端转写+回复（圈变红，不能打断）
+    @Published var freeTalkMode = "chat"     // chat=私教对话 / translate=实时翻译（同界面切换）
 
     struct FreeTalkLine: Identifiable {
         let id = UUID()
@@ -154,8 +155,9 @@ final class AppModel: ObservableObject {
         var translation: String = ""   // 中文翻译（AI 行=中译；用户说中文时=英译）
     }
 
-    func startFreeTalk() {
-        guard let token = auth.token, let url = api.freeTalkStreamURL(token: token) else {
+    func startFreeTalk(mode: String? = nil) {
+        if let mode { freeTalkMode = mode }
+        guard let token = auth.token, let url = api.freeTalkStreamURL(token: token, mode: freeTalkMode) else {
             presentFailure("请先登录", title: "无法开始自由对话")
             return
         }
@@ -190,6 +192,13 @@ final class AppModel: ObservableObject {
         freeStream.stop()
         freeTalkWorking = false
         showFreeTalk = false
+    }
+
+    /// 界面内切换 对话/实时翻译：断开当前流、按新模式重连（bye 会让语音服务器立即清理旧上下文）。
+    func switchFreeTalkMode(_ mode: String) {
+        guard mode != freeTalkMode else { return }
+        freeStream.stop()
+        startFreeTalk(mode: mode)
     }
     @Published var autoCaptureEnabled = false
     /// 自动采集时段列表（支持多个）。

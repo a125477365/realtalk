@@ -14,9 +14,10 @@ metadata:
     app: redis
     role: master
 spec:
+  # 注意：StatefulSet pod 没有 role 标签（模板只打 app=redis），selector 里写 role 会导致
+  # endpoints 恒为空、API 连不上——用 pod-name 标签精确锁定 redis-0 即可。
   selector:
     app: redis
-    role: master
     statefulset.kubernetes.io/pod-name: redis-0
   ports:
     - port: 6379
@@ -30,9 +31,9 @@ metadata:
     app: redis
     role: replica
 spec:
+  # 读流量入口：选择全部 redis pod（含 master——k8s selector 不支持排除；读落 master 无副作用）。
   selector:
     app: redis
-    role: replica
   ports:
     - port: 6379
       targetPort: 6379

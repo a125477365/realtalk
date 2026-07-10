@@ -65,8 +65,8 @@ spec:
                 name: realtalk-api-secret
             - configMapRef:
                 name: realtalk-api-config
-          # 启动探针：给「首次启动预拉本地模型」留足时间（最长 10*60=600s）；
-          # 成功前不跑 liveness/readiness，避免下载期间被 liveness 误杀重启。
+          # 启动探针：给冷启动（依赖等待/建连）留足时间（最长 10*60=600s）；
+          # 成功前不跑 liveness/readiness，避免启动期间被 liveness 误杀重启。
           startupProbe:
             httpGet:
               path: /health

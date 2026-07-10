@@ -8,9 +8,14 @@ ENV PYTHONUNBUFFERED=1 SPEECH_DEVICE=${DEVICE}
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Piper 官方独立二进制（TTS，中英双音色混读）
-RUN curl -fsSL -o /tmp/piper.tgz \
-      https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz \
+# Piper 官方独立二进制（TTS，中英双音色混读）——按目标架构选包（x86_64 / arm64 服务器都能跑）
+ARG TARGETARCH
+RUN case "${TARGETARCH:-amd64}" in \
+      arm64) PIPER_ARCH=aarch64 ;; \
+      *)     PIPER_ARCH=x86_64 ;; \
+    esac \
+    && curl -fsSL -o /tmp/piper.tgz \
+      "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${PIPER_ARCH}.tar.gz" \
     && mkdir -p /opt && tar -xzf /tmp/piper.tgz -C /opt && rm /tmp/piper.tgz
 
 WORKDIR /srv

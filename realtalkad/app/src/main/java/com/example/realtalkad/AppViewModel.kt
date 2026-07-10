@@ -94,12 +94,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val freeTalkAiLevel = MutableStateFlow(0f)
     val freeTalkPaused = MutableStateFlow(false)
     val freeTalkWorking = MutableStateFlow(false)   // 已发送、等待后端转写+回复（圈变红，不能打断）
+    val freeTalkMode = MutableStateFlow("chat")     // chat=私教对话 / translate=实时翻译（同界面切换）
 
     fun toggleFreeTalkPause() {
         freeTalkPaused.value = freeStream.togglePause()
     }
 
-    fun startFreeTalk() {
+    fun startFreeTalk(mode: String? = null) {
+        if (mode != null) freeTalkMode.value = mode
         val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始自由对话"); return }
         freeTalkMessages.value = emptyList()
         freeTalkStatus.value = "连接中…"
@@ -119,13 +121,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.onAiLevel = { l -> freeTalkAiLevel.value = l }
         freeTalkPaused.value = false
         showFreeTalk.value = true
-        freeStream.start(api.freeTalkStreamUrl(token), "realtime")
+        freeStream.start(api.freeTalkStreamUrl(token, freeTalkMode.value), "realtime")
     }
 
     fun stopFreeTalk() {
         freeStream.stop()
         freeTalkWorking.value = false
         showFreeTalk.value = false
+    }
+
+    /** 界面内切换 对话/实时翻译：断开当前流、按新模式重连（bye 会让语音服务器立即清理旧上下文）。 */
+    fun switchFreeTalkMode(mode: String) {
+        if (mode == freeTalkMode.value) return
+        freeStream.stop()
+        startFreeTalk(mode)
     }
 
     // ---- 学习提醒（智能电话）：App 主导触发（多活后端只提供幂等查询/拒绝接口，绝不重复来电）----
