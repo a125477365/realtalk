@@ -162,17 +162,6 @@ from .conv_realtime import ConvRealtimeSession, _pcm_to_wav as pcm_to_wav, resol
 from . import voice_pipeline
 from . import voice_io
 from . import payments
-from .realtime_voice import (
-    build_session_instructions,
-    proxy_session,
-    realtime_session_cost_cents,
-    realtime_usage_cost_cents,
-    resolve_realtime_config,
-    resolve_realtime_pricing,
-    score_voice_session,
-    test_realtime_connection,
-)
-from .schemas import RealtimeSettingsRequest
 from .settings import settings
 from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
 
@@ -622,61 +611,6 @@ async def admin_test_model_settings(admin: dict = Depends(current_admin)) -> dic
 
 
 # ---- 高级会员实时语音大模型配置 ----
-
-@app.get("/admin/api/settings/realtime")
-async def admin_get_realtime_settings(admin: dict = Depends(current_admin)) -> dict:
-    config = resolve_realtime_config()
-    pricing = resolve_realtime_pricing()
-    return {
-        "base_url": config.base_url,
-        "model": config.model,
-        "voice": config.voice,
-        "max_response_tokens": config.max_response_tokens,
-        "provider": "glm" if config.is_glm else "openai",
-        "api_key_masked": _masked_key(config.api_key),
-        "api_key_configured": config.enabled,
-        "input_text_price_per_1m_cents": pricing.input_text,
-        "input_audio_price_per_1m_cents": pricing.input_audio,
-        "output_text_price_per_1m_cents": pricing.output_text,
-        "output_audio_price_per_1m_cents": pricing.output_audio,
-        "price_per_minute_cents": pricing.per_minute,
-    }
-
-
-@app.post("/admin/api/settings/realtime")
-async def admin_set_realtime_settings(
-    request: RealtimeSettingsRequest,
-    admin: dict = Depends(current_admin),
-) -> dict:
-    if admin["role"] not in ("superadmin", "admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    if request.base_url is not None:
-        db.set_app_setting("realtime_base_url", request.base_url.strip())
-    if request.api_key is not None:
-        db.set_app_setting("realtime_api_key", request.api_key.strip())
-    if request.model is not None:
-        db.set_app_setting("realtime_model", request.model.strip())
-    if request.voice is not None:
-        db.set_app_setting("realtime_voice", request.voice.strip())
-    if request.max_response_tokens is not None:
-        db.set_app_setting("realtime_max_response_tokens", str(request.max_response_tokens))
-    for field, key in (
-        ("input_text_price_per_1m_cents", "realtime_input_text_price_per_1m_cents"),
-        ("input_audio_price_per_1m_cents", "realtime_input_audio_price_per_1m_cents"),
-        ("output_text_price_per_1m_cents", "realtime_output_text_price_per_1m_cents"),
-        ("output_audio_price_per_1m_cents", "realtime_output_audio_price_per_1m_cents"),
-        ("price_per_minute_cents", "realtime_price_per_minute_cents"),
-    ):
-        value = getattr(request, field)
-        if value is not None:
-            db.set_app_setting(key, str(value))
-    return await admin_get_realtime_settings(admin)
-
-
-@app.post("/admin/api/settings/realtime/test")
-async def admin_test_realtime_settings(admin: dict = Depends(current_admin)) -> dict:
-    return await test_realtime_connection()
-
 
 @app.get("/admin/api/settings/plans", response_model=PlanCatalogResponse)
 def admin_get_plans(admin: dict = Depends(current_admin)) -> PlanCatalogResponse:
@@ -2877,80 +2811,6 @@ def _ws_reason(text: object, max_bytes: int = 120) -> str:
     """WebSocket close reason 上限约 123 字节；按字节安全截断（避免中文超限报错）。"""
     raw = str(text).encode("utf-8")[:max_bytes]
     return raw.decode("utf-8", "ignore")
-
-
-@app.websocket("/roleplay/voice")
-async def roleplay_voice(
-    websocket: WebSocket,
-    token: str = Query(...),
-    session_id: str = Query(...),
-) -> None:
-    """高级会员实时语音对练：后端在客户端与语音大模型之间转发音频，注入场景与护栏，结束给评分。
-
-    鉴权走 query 里的 access token（WebSocket 不便带 Authorization 头）。
-    """
-    # 先 accept 再校验：握手后用 close(code, reason) 才能把原因（如超额需升级）干净地回传给客户端
-    await websocket.accept()
-    try:
-        user = _authenticate_token(token)
-        require_premium(user)
-        # 语音对练开始时只校验「当月已用是否已超额」（流式无法预知本次时长，按用户选择不预扣）
-        require_ai_access(user, estimated_cents=0.0)
-    except HTTPException as exc:
-        await websocket.close(code=4401, reason=_ws_reason(exc.detail))
-        return
-    session = db.get_roleplay_session(user.id, session_id)
-    scenario = db.get_scenario(user.id, session.scene_id) if session else None
-    if session is None or scenario is None:
-        await websocket.close(code=4404, reason="场景练习不存在")
-        return
-    config = resolve_realtime_config()
-    if not config.enabled:
-        await websocket.close(code=4503, reason="语音大模型未配置，请联系管理员")
-        return
-
-    instructions = build_session_instructions(scenario, session.selected_role)
-
-    async def _voice_guidance(user_text: str) -> str:
-        # 实时指导（#4）：每句话音落地后用文字模型生成一条简短中文提示，事件推给客户端指导区
-        return await realtime_voice_guidance(user_text, scenario, user_id=user.id)
-
-    usage: dict = {}
-    _rt_started = _time.monotonic()
-    try:
-        transcript, usage = await proxy_session(websocket, instructions, config, guidance_fn=_voice_guidance)
-    except Exception:  # noqa: BLE001 — 转发期间任一端异常即结束并评分
-        transcript = []
-    _rt_seconds = _time.monotonic() - _rt_started
-    # 实时语音计费：per_minute>0 按会话时长(分钟,不足1分钟按1分钟)；否则按 token 单价。均入 ai_usage 计当月额度。
-    pricing = resolve_realtime_pricing()
-    if (usage and any(usage.values())) or (pricing.per_minute > 0 and transcript):
-        cost = realtime_session_cost_cents(usage, _rt_seconds, pricing)
-        input_tokens = int(usage.get("input_text", 0)) + int(usage.get("input_audio", 0))
-        output_tokens = int(usage.get("output_text", 0)) + int(usage.get("output_audio", 0))
-        try:
-            db.record_ai_usage(
-                user_id=user.id,
-                kind="voice_realtime",
-                model=config.model,
-                prompt_tokens=input_tokens,
-                completion_tokens=output_tokens,
-                cost_cents=cost,
-                latency_ms=0,
-            )
-        except Exception:  # noqa: BLE001 — 计费失败不影响主流程
-            pass
-    review = await score_voice_session(transcript, scenario, user.id)
-    try:
-        await websocket.send_text(_json.dumps({"type": "realtalk.review", **review}, ensure_ascii=False))
-    except Exception:  # noqa: BLE001
-        pass
-    session.status = "completed"
-    db.update_roleplay_session(session)
-    try:
-        await websocket.close()
-    except Exception:  # noqa: BLE001
-        pass
 
 
 @app.websocket("/roleplay/stream")

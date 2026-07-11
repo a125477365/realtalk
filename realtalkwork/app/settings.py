@@ -170,21 +170,8 @@ class Settings:
     ai_input_price_per_1m_cents: float = float(os.getenv("AI_INPUT_PRICE_PER_1M_CENTS", "80"))
     ai_output_price_per_1m_cents: float = float(os.getenv("AI_OUTPUT_PRICE_PER_1M_CENTS", "200"))
 
-    # 高级会员实时语音大模型（OpenAI 兼容 Realtime API 或智谱 GLM-Realtime，按 base_url 自动识别）。
-    # 后端只做转发+护栏注入+结束评分。GLM 端点如 wss://open.bigmodel.cn/api/paas/v4/realtime。
-    realtime_base_url: str = os.getenv("REALTIME_BASE_URL", "wss://api.openai.com/v1/realtime")
-    realtime_api_key: str | None = os.getenv("REALTIME_API_KEY")
-    realtime_model: str = os.getenv("REALTIME_MODEL", "gpt-4o-realtime-preview")
-    realtime_voice: str = os.getenv("REALTIME_VOICE", "alloy")
-    realtime_max_response_tokens: int = int(os.getenv("REALTIME_MAX_RESPONSE_TOKENS", "1024"))  # 每次回复输出上限(GLM≤1024)
-    # 按分钟计费单价（分/分钟）。>0 时该会话按【时长】计费（GLM-Realtime 等按分钟计费的模型），
-    # =0 时按 token 计费（OpenAI Realtime 等）。两种都计入同一「当月费用额度」（会员月费×比例）。
-    realtime_price_per_minute_cents: float = float(os.getenv("REALTIME_PRICE_PER_MINUTE_CENTS", "0"))
-    # 实时语音计费：文本/音频分开两组单价（分/百万 token）。音频 token 远贵于文本。
-    realtime_input_text_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS", "400"))
-    realtime_input_audio_price_per_1m_cents: float = float(os.getenv("REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS", "2800"))
-    realtime_output_text_price_per_1m_cents: float = float(os.getenv("REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS", "1600"))
-    realtime_output_audio_price_per_1m_cents: float = float(os.getenv("REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS", "5600"))
+    # 注：原「高级会员实时语音大模型」独立子系统（REALTIME_*）已移除——所有实时语音（手动/沉浸式/私教，
+    # 含 GPT-Live 式全双工）统一走 B 类对话语音模型一张卡（conv_voice_*），本地或 OpenAI 由管理台切换。
     # 调用前费用预估：文本调用按输入字符估 prompt + 该输出上限估 completion
     ai_estimate_output_tokens: int = int(os.getenv("AI_ESTIMATE_OUTPUT_TOKENS", "800"))
     ai_estimate_min_input_tokens: int = int(os.getenv("AI_ESTIMATE_MIN_INPUT_TOKENS", "400"))

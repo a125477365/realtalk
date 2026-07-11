@@ -45,7 +45,6 @@ struct realtalkApp: App {
                 .environmentObject(model.practiceSpeech)
                 .environmentObject(model.voice)
                 .environmentObject(model.stream)
-                .environmentObject(model.realtime)
                 .onAppear { WeChatAuthManager.shared.registerIfNeeded() }
                 .onOpenURL { url in
                     _ = WeChatAuthManager.shared.handleOpen(url: url)

@@ -242,8 +242,6 @@ fun ChatHomeScreen(model: AppViewModel) {
         // 学习提醒「私教来电」
         val incomingReminder by model.incomingReminder.collectAsState()
         incomingReminder?.let { ReminderCallScreen(model, it) }
-        val showVoiceLLM by model.showVoiceLLM.collectAsState()
-        if (showVoiceLLM) ImmersiveVoiceLLMScreen(model)
     }
 
     if (showAccount) {

@@ -776,23 +776,6 @@ class ModelSettingsUpdateRequest(BaseModel):
     conv_voice_price_per_minute_cents: float | None = Field(default=None, ge=0, le=100000)
 
 
-class RealtimeSettingsRequest(BaseModel):
-    """高级会员实时语音大模型配置（OpenAI 兼容 Realtime API）。"""
-
-    base_url: str | None = Field(default=None, max_length=500)
-    api_key: str | None = Field(default=None, max_length=500)
-    model: str | None = Field(default=None, max_length=200)
-    voice: str | None = Field(default=None, max_length=40)
-    max_response_tokens: int | None = Field(default=None, ge=64, le=200000)   # 每次回复输出上限(GLM≤1024)
-    # 计费单价（分/百万 token），文本/音频分开
-    input_text_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
-    input_audio_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
-    output_text_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
-    output_audio_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
-    # 按分钟计费单价（分/分钟）。>0 按会话时长计费(GLM-Realtime 等)，=0 按 token 计费(OpenAI 等)
-    price_per_minute_cents: float | None = Field(default=None, ge=0, le=100000)
-
-
 class ScenarioSummary(BaseModel):
     scene_id: str
     title: str

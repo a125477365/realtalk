@@ -1539,98 +1539,9 @@ function renderSettingsPage() {
     "  </div>",
     "</div>",
 
-    '<div class="card">',
-    '  <h2>C · 高级会员实时语音大模型 <span class="subtitle">独立预留通道：OpenAI 兼容 Realtime / GLM-Realtime；沉浸式本地流式验证稳定后可下线</span></h2>',
-    '  <div class="form-grid">',
-    '    <div class="form-group"><label>Base URL（wss://）<span class="subtitle">GLM: wss://open.bigmodel.cn/api/paas/v4/realtime</span></label><input type="text" id="rt-base-url" placeholder="wss://api.openai.com/v1/realtime" /></div>',
-    '    <div class="form-group"><label>模型 <span class="subtitle">GLM: glm-realtime</span></label><input type="text" id="rt-model" placeholder="gpt-realtime" /></div>',
-    '    <div class="form-group"><label>音色 <span class="subtitle">OpenAI: alloy… / GLM: tongtong,xiaochen…</span></label><input type="text" id="rt-voice" placeholder="alloy" /></div>',
-    '    <div class="form-group"><label>每次回复输出上限 max_tokens <span class="subtitle">GLM 上限 1024</span></label><input type="number" id="rt-max-tok" min="64" max="200000" step="1" /></div>',
-    '    <div class="form-group"><label>API Key <span class="hint" id="rt-key-status"></span></label>',
-    '      <input type="password" id="rt-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
-    '    <div class="form-group"><label>输入·文本（分/百万token）</label><input type="number" id="rt-price-in-text" min="0" step="0.01" /></div>',
-    '    <div class="form-group"><label>输入·音频（分/百万token）</label><input type="number" id="rt-price-in-audio" min="0" step="0.01" /></div>',
-    '    <div class="form-group"><label>输出·文本（分/百万token）</label><input type="number" id="rt-price-out-text" min="0" step="0.01" /></div>',
-    '    <div class="form-group"><label>输出·音频（分/百万token）</label><input type="number" id="rt-price-out-audio" min="0" step="0.01" /></div>',
-    '    <div class="form-group"><label>按分钟计费（分/分钟）<span class="subtitle">GLM-Realtime 等按分钟计费的模型填这里；&gt;0 时本会话按时长计费(不足1分钟按1分钟)、忽略上方 token 单价；=0 按 token 计费</span></label><input type="number" id="rt-price-minute" min="0" step="0.01" /></div>',
-    "  </div>",
-    '  <div class="hint" style="margin:6px 0 12px">仅高级会员、且选择「沉浸式 + 语音大模型」时使用；未配置时该功能不可用。音频 token 远贵于文本，按你的语音模型官方报价分别填写；用量计入用户当月费用额度（会员月费的 50%）。</div>',
-    '  <div class="btn-row" style="justify-content:flex-start">',
-    '    <button class="btn btn-primary" onclick="saveRealtimeSettings()">保存语音模型配置</button>',
-    '    <button class="btn btn-secondary" onclick="testRealtimeSettings()">测试连接</button>',
-    '    <span id="rt-test-result" class="hint"></span>',
-    "  </div>",
-    "</div>",
 
     renderPlanQuotaCards(),
   ].join("");
-}
-
-function loadRealtimeSettings() {
-  apiGet("/admin/api/settings/realtime").then(function(r) {
-    if (!r || !r.ok) return;
-    r.json().then(function(d) {
-      if (getEl("rt-base-url")) getEl("rt-base-url").value = d.base_url || "";
-      if (getEl("rt-model")) getEl("rt-model").value = d.model || "";
-      if (getEl("rt-voice")) getEl("rt-voice").value = d.voice || "";
-      if (getEl("rt-max-tok")) getEl("rt-max-tok").value = d.max_response_tokens || 1024;
-      if (getEl("rt-price-in-text")) getEl("rt-price-in-text").value = d.input_text_price_per_1m_cents;
-      if (getEl("rt-price-in-audio")) getEl("rt-price-in-audio").value = d.input_audio_price_per_1m_cents;
-      if (getEl("rt-price-out-text")) getEl("rt-price-out-text").value = d.output_text_price_per_1m_cents;
-      if (getEl("rt-price-out-audio")) getEl("rt-price-out-audio").value = d.output_audio_price_per_1m_cents;
-      if (getEl("rt-price-minute")) getEl("rt-price-minute").value = d.price_per_minute_cents || 0;
-      var ks = getEl("rt-key-status");
-      if (ks) ks.textContent = d.api_key_configured ? "（已配置：" + d.api_key_masked + "）" : "（未配置）";
-    });
-  });
-}
-
-function saveRealtimeSettings() {
-  var body = {
-    base_url: (getEl("rt-base-url") || { value: "" }).value.trim(),
-    model: (getEl("rt-model") || { value: "" }).value.trim(),
-    voice: (getEl("rt-voice") || { value: "" }).value.trim(),
-  };
-  var apiKey = (getEl("rt-api-key") || { value: "" }).value.trim();
-  if (apiKey) body.api_key = apiKey;
-  var rtMaxTok = parseInt((getEl("rt-max-tok") || { value: "" }).value, 10);
-  if (!isNaN(rtMaxTok)) body.max_response_tokens = rtMaxTok;
-  var priceFields = [
-    ["rt-price-in-text", "input_text_price_per_1m_cents"],
-    ["rt-price-in-audio", "input_audio_price_per_1m_cents"],
-    ["rt-price-out-text", "output_text_price_per_1m_cents"],
-    ["rt-price-out-audio", "output_audio_price_per_1m_cents"],
-    ["rt-price-minute", "price_per_minute_cents"],
-  ];
-  priceFields.forEach(function(pair) {
-    var v = parseFloat((getEl(pair[0]) || { value: "" }).value);
-    if (!isNaN(v)) body[pair[1]] = v;
-  });
-  apiPost("/admin/api/settings/realtime", body).then(function(r) {
-    if (!r) return;
-    if (!r.ok) { handleApiError(r); return; }
-    getEl("rt-api-key").value = "";
-    toast("语音模型配置已保存", "success");
-    loadRealtimeSettings();
-  });
-}
-
-function testRealtimeSettings() {
-  var resultEl = getEl("rt-test-result");
-  if (resultEl) { resultEl.textContent = "握手测试中…"; resultEl.style.color = ""; }
-  // 测试的是已保存的配置；如刚改过请先点「保存语音模型配置」
-  apiPost("/admin/api/settings/realtime/test").then(function(r) {
-    if (!r) return;
-    r.json().then(function(d) {
-      if (resultEl) {
-        resultEl.textContent = d.message || (d.ok ? "连接成功" : "连接失败");
-        resultEl.style.color = d.ok ? "var(--success, #16a34a)" : "var(--danger, #dc2626)";
-      }
-      toast(d.message || "测试完成", d.ok ? "success" : "error");
-    });
-  }).catch(function() {
-    if (resultEl) resultEl.textContent = "网络错误";
-  });
 }
 
 function applyModelPreset() {
@@ -1735,7 +1646,6 @@ function testModelSettings() {
 
 function loadSettings() {
   loadModelSettings();
-  loadRealtimeSettings();
   loadPlanQuotaAsr();
 }
 

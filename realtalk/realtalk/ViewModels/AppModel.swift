@@ -101,7 +101,6 @@ final class AppModel: ObservableObject {
     let voice: VoicePromptPlayer
     let stream = RoleplayStreamManager()
     let freeStream = RoleplayStreamManager()   // 自由对话（一对一语音老师）复用同一套流协议
-    let realtime: RealtimeVoiceManager
 
     @Published var filter: TranscriptStore.TimeFilter = .lastHour
     @Published var customStart: Date = Date().addingTimeInterval(-60 * 60)
@@ -140,7 +139,6 @@ final class AppModel: ObservableObject {
     @Published var conversationMode: ConversationMode = .immersive   // 当前会话生效
     @Published var conversationPreference: ConversationPreference = .ask
     @Published var pendingPractice: PendingPractice?                 // 非空时弹「对话前询问」
-    @Published var showVoiceLLM = false                              // 控制实时语音沉浸式界面呈现
     // ==== 常规主界面（聊天流）：自由聊天 / 自由场景 / 严格场景 统一渲染管道 ====
     // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
@@ -473,7 +471,7 @@ final class AppModel: ObservableObject {
     func checkPracticeReminder() async {
         guard practiceReminderEnabled, let token = auth.token, incomingReminder == nil else { return }
         // 明确忙碌：正在对话/私教/实时语音/采集/处理中都不打扰
-        guard isVoiceConversationActive == false, showTutor == false, showVoiceLLM == false,
+        guard isVoiceConversationActive == false, showTutor == false,
               speech.isRecording == false, isWorking == false, pendingPractice == nil,
               reminderPracticeScene == nil else { return }
         let now = Date()
@@ -630,7 +628,6 @@ final class AppModel: ObservableObject {
         subscription = SubscriptionManager(api: api)
         practiceSpeech = SpeechPracticeManager()
         voice = VoicePromptPlayer()
-        realtime = RealtimeVoiceManager()
         autoCaptureEnabled = defaults.bool(forKey: DefaultsKey.autoCaptureEnabled)
         if defaults.object(forKey: DefaultsKey.showChineseHint) != nil {
             showChineseHint = defaults.bool(forKey: DefaultsKey.showChineseHint)
@@ -888,49 +885,10 @@ final class AppModel: ObservableObject {
             selectedRoleID = roleId
             isWorking = false
             appendChat(.user, "练习：\(summary.title)（扮演\(roleName(roleId))\(resume ? "·继续上次" : "")）")
-            if shouldUseVoiceLLM {
-                await beginVoiceLLMPractice(resume: resume)
-            } else {
-                await startRoleplay(resume: resume)
-            }
+            await startRoleplay(resume: resume)
         } catch {
             isWorking = false
             presentFailure(error.localizedDescription, title: "无法开始练习")
-        }
-    }
-
-    /// 高级会员沉浸式 + 实时语音大模型：在后端建立 roleplay 会话拿 session_id，再用 WebSocket 直接语音对话。
-    /// 不走文本逐句对练（不设置 roleplay 状态），结束后由语音模型给出评分与分析。
-    private func beginVoiceLLMPractice(resume: Bool = false) async {
-        guard let token = auth.token, let scene = scenario, selectedRoleID.isEmpty == false else {
-            statusMessage = "请先选择场景与角色"
-            return
-        }
-        // 停掉文本式语音/识别，避免与实时语音抢占麦克风
-        practiceSpeech.stop(emit: false)
-        voice.stop()
-
-        isWorking = true
-        do {
-            // 复用 /roleplay/start 在后端建立会话（仅取 session_id 供实时语音 WS 使用）
-            let range = transcripts.dateRange(for: filter, customStart: customStart, customEnd: customEnd)
-            let state = try await api.startRoleplay(
-                start: range.0,
-                end: range.1,
-                selectedRole: selectedRoleID,
-                sceneId: scene.sceneId,
-                segments: [],
-                resume: resume,
-                token: token
-            )
-            isWorking = false
-            statusMessage = "实时语音对练已开始"
-            showVoiceLLM = true
-            await realtime.start(token: token, sessionId: state.sessionId, scenarioTitle: scene.title)
-            await loadPracticeHistory()
-        } catch {
-            isWorking = false
-            presentFailure(error.localizedDescription, title: "无法开始语音对练")
         }
     }
 
@@ -1123,22 +1081,6 @@ final class AppModel: ObservableObject {
         case .voice: return .voice
         case .immersive: return .immersive
         }
-    }
-
-    /// 本次是否走「实时语音大模型」：仅高级会员且本次对话方式为「语音模型对话」。
-    var shouldUseVoiceLLM: Bool {
-        isPremium && conversationMode == .voice
-    }
-
-    /// 结束实时语音对练并请求评分（保留界面以展示评分）。
-    func endVoiceLLMPractice() {
-        realtime.end()
-    }
-
-    /// 关闭实时语音沉浸式界面（评分已展示或用户放弃）。
-    func dismissVoiceLLM() {
-        realtime.cancel()
-        showVoiceLLM = false
     }
 
     /// 上传待同步的转写，返回成功上传的条数（-1=出错，0=无内容）。
