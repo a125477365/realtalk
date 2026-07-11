@@ -20,7 +20,14 @@ docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build 
 | `SPEECH_TTS_VOICE_EN` / `_ZH` | lessac / huayan | Piper 英文/中文音色（混合文本自动分段双音色拼接） |
 | `SPEECH_MODELS_DIR` | `./speech-models` | 宿主机模型目录（启动预拉，多副本可共享只读） |
 | `HF_ENDPOINT` | 空 | 受限网络填 `https://hf-mirror.com` |
-| `SPEECH_*_CONCURRENCY` | ASR 3 / LLM 2 / TTS 6 | 各引擎并发上限，超出排队 |
+| `SPEECH_ASR_CONCURRENCY` / `SPEECH_TTS_CONCURRENCY` | 3 / 6 | ASR/TTS 并发上限，超出排队 |
+| `SPEECH_LLM_CONCURRENCY` | **1（勿改大）** | llama.cpp 进程内单实例非线程安全，>1 会崩；高并发用 `SPEECH_LLM_BASE_URL` 代理外部 llama-server 或多副本 |
+| `SPEECH_LLM_BASE_URL` | 空 | 设了则 LLM 代理外部 OpenAI 兼容服务（不在本进程加载，可并发） |
+| `SPEECH_CTX_TTL_SECONDS` | 300 | 实时上下文 Redis 滑动 TTL（5 分钟；主动结束即删） |
+
+**实时通道 `WS /v1/realtime`** 两种轮次形态（`session.update` 决定）：
+- 默认回合制：`commit` 判停 + `response.create` 触发回复（客户端掌控节奏，用于点按对话/严格场景）；
+- `turn_detection={"type":"server_vad"}` 全双工（GPT-Live/OpenAI Realtime 式）：连续上行、服务端 VAD 自动断句+自动回复+起声打断（用于私教沉浸式/实时翻译）。
 
 ## API 调用方式（OpenAI 兼容）
 

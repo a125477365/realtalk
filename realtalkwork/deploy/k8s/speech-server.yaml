@@ -32,6 +32,9 @@ spec:
             - { name: SPEECH_ASR_MODEL, value: "small" }
             - { name: SPEECH_LLM_REPO, value: "Qwen/Qwen2.5-1.5B-Instruct-GGUF" }
             - { name: SPEECH_LLM_FILE, value: "qwen2.5-1.5b-instruct-q4_k_m.gguf" }
+            # llama.cpp 进程内单实例非线程安全：并发>1 崩 pod。高并发用 SPEECH_LLM_BASE_URL 代理外部 llama-server，
+            # 或多副本(replicas)横向扩展——不要调大这个值。
+            - { name: SPEECH_LLM_CONCURRENCY, value: "1" }
             - { name: SPEECH_TTS_VOICE_EN, value: "en_US-lessac-medium" }
             - { name: SPEECH_TTS_VOICE_ZH, value: "zh_CN-huayan-medium" }
             - { name: HF_ENDPOINT, value: "" }        # 受限网络填 https://hf-mirror.com

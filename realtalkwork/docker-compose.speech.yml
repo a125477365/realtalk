@@ -17,6 +17,9 @@ services:
       SPEECH_ASR_MODEL: ${SPEECH_ASR_MODEL:-small}
       SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
       SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      # llama.cpp 进程内单实例非线程安全：并发>1 会崩容器。要更高并发用 SPEECH_LLM_BASE_URL
+      # 代理外部 llama-server（多实例/连续批处理），不要调大这里。
+      SPEECH_LLM_CONCURRENCY: ${SPEECH_LLM_CONCURRENCY:-1}
       SPEECH_TTS_VOICE_EN: ${SPEECH_TTS_VOICE_EN:-en_US-lessac-medium}
       SPEECH_TTS_VOICE_ZH: ${SPEECH_TTS_VOICE_ZH:-zh_CN-huayan-medium}
       HF_ENDPOINT: ${HF_ENDPOINT:-}

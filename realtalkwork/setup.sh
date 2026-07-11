@@ -253,7 +253,7 @@ if $DEPLOY_BACKEND; then
     RT_BASE="$REPLY_VALUE"
     if [ -n "$RT_BASE" ]; then
       ask_secret "实时语音 API Key"; RT_KEY="$REPLY_VALUE"
-      ask "实时语音模型" "gpt-4o-realtime-preview"; RT_MODEL="$REPLY_VALUE"
+      ask "实时语音模型" "gpt-realtime"; RT_MODEL="$REPLY_VALUE"
       ask "语音音色" "alloy"; RT_VOICE="$REPLY_VALUE"
       note "实时语音计费单价（分/百万 token），文本/音频分开；用量计入用户当月费用额度（会员月费50%）。"
       ask "  输入·文本 单价" "400"; RT_P_IT="$REPLY_VALUE"
@@ -263,7 +263,7 @@ if $DEPLOY_BACKEND; then
       ENV_LINES+=("REALTIME_BASE_URL=$RT_BASE" "REALTIME_API_KEY=$RT_KEY" "REALTIME_MODEL=$RT_MODEL" "REALTIME_VOICE=$RT_VOICE")
       ENV_LINES+=("REALTIME_INPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_IT" "REALTIME_INPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_IA" "REALTIME_OUTPUT_TEXT_PRICE_PER_1M_CENTS=$RT_P_OT" "REALTIME_OUTPUT_AUDIO_PRICE_PER_1M_CENTS=$RT_P_OA")
     else
-      ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-4o-realtime-preview" "REALTIME_VOICE=alloy")
+      ENV_LINES+=("REALTIME_BASE_URL=wss://api.openai.com/v1/realtime" "REALTIME_API_KEY=" "REALTIME_MODEL=gpt-realtime" "REALTIME_VOICE=alloy")
     fi
 
     # ==== 按功能归属分开配置模型（A/B 类，入库、管理台可改、现读生效；C 类高级实时语音在上面已配） ====
@@ -289,7 +289,7 @@ if $DEPLOY_BACKEND; then
     TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
     if [ -n "$CV_BASE" ]; then
       ask_secret "B·语音模型 API Key（本地填 local）"; CV_KEY="$REPLY_VALUE"
-      ask "B·实时模型名（OpenAI 如 gpt-4o-realtime-preview；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
+      ask "B·实时模型名（OpenAI 如 gpt-realtime；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
       case "$CV_BASE" in
         *openai*) ask "B·默认音色" "alloy"; CV_VOICE="$REPLY_VALUE" ;;
         *) ask "B·默认音色" "en_US-lessac-medium"; CV_VOICE="$REPLY_VALUE"
