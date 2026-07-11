@@ -16,6 +16,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import wave
 
 
@@ -65,7 +66,9 @@ class ConvRealtimeSession:
         import websockets
 
         headers = [("Authorization", f"Bearer {self.api_key}")]
-        if self.is_openai:
+        # OpenAI Realtime GA（gpt-realtime 系）不需要 beta 头；beta 接口已于 2026-05-12 下线。
+        # 仅当显式设 OPENAI_REALTIME_BETA=1（对接老 beta 端点/某些代理）时才带 OpenAI-Beta 头。
+        if self.is_openai and os.getenv("OPENAI_REALTIME_BETA") == "1":
             headers.append(("OpenAI-Beta", "realtime=v1"))
         self.ws = await asyncio.wait_for(
             websockets.connect(self.url, additional_headers=headers, max_size=None), timeout=timeout
