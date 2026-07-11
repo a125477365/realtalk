@@ -208,10 +208,11 @@ class ApiClient(private val baseUrlProvider: () -> String) {
 
     /** 自由对话（一对一语音老师）流地址；协议同沉浸式流。
      *  mode: chat=对话（默认）/ translate=实时翻译；sceneId 非空 = 带场景剧本进场（自由发挥式场景对话）。 */
-    fun freeTalkStreamUrl(token: String, mode: String = "chat", sceneId: String = ""): String {
+    fun freeTalkStreamUrl(token: String, mode: String = "chat", sceneId: String = "", live: Boolean = false): String {
         val q = java.net.URLEncoder.encode(token, "UTF-8")
         val scenePart = if (sceneId.isBlank()) "" else "&scene_id=" + java.net.URLEncoder.encode(sceneId, "UTF-8")
-        val base = url("/freetalk/stream?token=$q&mode=$mode$scenePart")
+        val livePart = if (live) "&live=1" else ""
+        val base = url("/freetalk/stream?token=$q&mode=$mode$scenePart$livePart")
         return when {
             base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
             base.startsWith("http://") -> "ws://" + base.removePrefix("http://")

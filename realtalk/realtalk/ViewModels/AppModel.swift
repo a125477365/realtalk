@@ -167,10 +167,11 @@ final class AppModel: ObservableObject {
     @Published var tutorImmersive = true        // 私教：沉浸式(自动) / 常规式(点击说话)
     @Published var tutorMode = "chat"           // 私教：chat / translate
 
-    /// 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；nil=自由闲聊）。
-    func startHomeChat(sceneId: String? = nil, sceneName: String? = nil) {
+    /// 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；nil=自由闲聊；
+    /// liveTurn=true → GPT-Live 式全双工，仅私教沉浸式/实时翻译用）。
+    func startHomeChat(sceneId: String? = nil, sceneName: String? = nil, liveTurn: Bool = false) {
         guard let token = auth.token,
-              let url = api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "") else {
+              let url = api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "", live: liveTurn) else {
             presentFailure("请先登录", title: "无法开始对话")
             return
         }
@@ -179,7 +180,8 @@ final class AppModel: ObservableObject {
         homeWorking = false
         homeSceneName = sceneName
         homeSceneStrict = false
-        freeStream.manualCommit = showTutor == false || tutorImmersive == false
+        freeStream.liveMode = liveTurn
+        freeStream.manualCommit = liveTurn == false && (showTutor == false || tutorImmersive == false)
         freeStream.onFreeTalkHistory = { [weak self] items in
             self?.homeConnected = true
             self?.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text) }
@@ -244,44 +246,45 @@ final class AppModel: ObservableObject {
         return try await api.refine(text: text, token: token).items
     }
 
-    // ==== 私教（电话按钮全屏）：与主界面共享同一条流；沉浸/常规只是提交方式不同 ====
+    // ==== 私教（电话按钮全屏）：与主界面共享同一条流 ====
+    // 沉浸式 = live 全双工（GPT-Live 式，轮次判定在服务端）；常规式 = 点击说话（turn-based）。
+    // 两种形态的轮次策略不同（服务端 VAD vs 客户端提交），切换时按目标形态重连。
 
-    /// 进入私教：chat 模式直接沿用主界面连接（上下文连续）；translate 模式按需重连。
+    /// 进入私教：按当前形态（沉浸=live / 常规=turn-based）建立/重建连接。
     func startTutor() {
-        if tutorMode == "translate" {
-            freeStream.stop()
-            startHomeChat()          // URL 按 tutorMode 带 mode=translate
-        } else if homeConnected == false {
-            startHomeChat(sceneId: nil, sceneName: homeSceneName)
-        }
-        freeStream.manualCommit = tutorImmersive == false
+        freeStream.stop()
+        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        Task { await loadTtsVoices() }   // 音色菜单数据
     }
 
-    /// 私教内切换 沉浸式(自动发送) / 常规式(点击说话)：不断线，只换提交方式。
+    /// 私教内切换 沉浸式(全双工) / 常规式(点击说话)：轮次策略不同，按新形态重连。
     func toggleTutorImmersive() {
+        if freeStream.manualRecording { freeStream.endManualUtterance() }
         tutorImmersive.toggle()
-        freeStream.manualCommit = tutorImmersive == false
-        if tutorImmersive, freeStream.manualRecording {
-            freeStream.endManualUtterance()   // 手动录到一半切沉浸：把这句发出去，随后交给 VAD
-        }
+        freeStream.stop()
+        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
     }
 
     /// 断线重连（私教「重连」按钮）。
     func reconnectTutor() {
         freeStream.stop()
-        startHomeChat(sceneId: nil, sceneName: homeSceneName)
-        freeStream.manualCommit = tutorImmersive == false
+        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
     }
 
-    /// 退出私教（电源键）：回主界面（常规=手动提交）；翻译模式退出时切回普通对话流。
+    /// 换音色：入库（后端 TTS/实时通道都按用户音色下发）后按当前形态重连即刻生效。
+    func changeTutorVoice(_ v: String) {
+        Task { @MainActor in
+            await setTtsVoice(v)
+            reconnectTutor()
+        }
+    }
+
+    /// 退出私教（电源键）：回主界面（点按 turn-based）；翻译模式退出时切回普通对话流。
     func closeTutor() {
         showTutor = false
-        freeStream.manualCommit = true
-        if tutorMode == "translate" {
-            tutorMode = "chat"
-            freeStream.stop()
-            startHomeChat(sceneId: nil, sceneName: homeSceneName)
-        }
+        tutorMode = "chat"
+        freeStream.stop()
+        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: false)
     }
 
     /// 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。

@@ -43,17 +43,19 @@ def _pcm_to_wav(pcm: bytes, rate: int) -> bytes:
 class ConvRealtimeSession:
     """与本地语音服务器实时通道的一条上游连接（每个私教 WS 一条）。"""
 
-    def __init__(self, url: str, session_id: str, language: str = "en"):
+    def __init__(self, url: str, session_id: str, language: str = "en",
+                 live: bool = False, voice: str | None = None):
         from .voice_io import resolve_conv_voice
 
         cv = resolve_conv_voice()
         self.is_openai = cv["is_openai"]
         self.api_key = cv["api_key"]
         self.model = cv["model"]
-        self.voice = cv["voice"]
+        self.voice = (voice or "").strip() or cv["voice"]   # 用户自选音色优先，未选用 B 卡默认
+        self.live = live                                     # 全双工：轮次判定在服务端（server_vad）
         sep = "&" if "?" in url else "?"
         if self.is_openai:
-            self.url = f"{url}{sep}model={self.model or 'gpt-4o-realtime-preview'}"
+            self.url = f"{url}{sep}model={self.model or 'gpt-realtime'}"
         else:
             self.url = f"{url}{sep}session={session_id}&language={language}"
         self.ws = None
@@ -70,17 +72,28 @@ class ConvRealtimeSession:
         )
         created = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
         self.restored = bool((created.get("session") or {}).get("restored"))
+        # 轮次策略：live=服务端 VAD 全双工（自动判停+起声打断）；否则由我们 commit/response.create 驱动
+        turn = {"type": "server_vad"} if self.live else None
         if self.is_openai:
-            # OpenAI：显式开转写 + 关服务端 VAD（由我们 commit/response.create 驱动），pcm16 上行
             await self.send({"type": "session.update", "session": {
                 "voice": self.voice or "alloy",
                 "modalities": ["audio", "text"],
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": None,
+                "turn_detection": turn,
+            }})
+        else:
+            await self.send({"type": "session.update", "session": {
+                "voice": self.voice or "",
+                "sample_rate": 16000,
+                "turn_detection": turn,
             }})
         return self
+
+    async def recv_event(self, timeout: float) -> dict:
+        """收一个上游事件（live 中继泵用）。"""
+        return json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
 
     async def send(self, obj: dict) -> None:
         await self.ws.send(json.dumps(obj, ensure_ascii=False))

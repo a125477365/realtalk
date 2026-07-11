@@ -7,6 +7,12 @@
                 / response.created / response.text.delta|done / response.audio.delta(base64 pcm16)|done
                 / response.done / error
 
+【live 全双工模式】（对齐 GPT-Live 范式；session.update 带 turn_detection={"type":"server_vad"} 开启）：
+  客户端只管持续上行 pcm16 音频（无需 commit/response.create），轮次判定全在服务端——
+  能量 VAD 自动判停 → 自动转写 + 推理 + 推回；AI 回复期间用户开口 = 打断：
+  服务端发 response.cancelled 并把新一句当作新轮次。事件对齐 OpenAI server_vad 语义
+  （input_audio_buffer.speech_started / speech_stopped），未来切 GPT-Live API 仅需事件名映射。
+
 多活/高并发：会话上下文（instructions + 历史）存 Redis（key spx:ctx:<session>，5 分钟滑动 TTL，
 每次使用重算；收到 session.close 立即删除）——
 连接断开换到任何一个副本，带同一个 ?session= 重连即可续聊；未配 REDIS_URL 时退化为进程内存（单机可用）。
@@ -110,6 +116,18 @@ async def handle_session(ws: WebSocket) -> None:
     response_task: asyncio.Task | None = None
     send_lock = asyncio.Lock()
 
+    # ---- live 全双工（server_vad）状态：轮次判定在服务端 ----
+    live = False
+    live_rate = 16000                 # live 模式固定裸 pcm16 上行
+    vad_silence_ms = 800              # 停顿多久判"说完"
+    vad_min_speech_ms = 400           # 有效人声下限（低于视为噪音丢弃）
+    noise_floor = 0.15                # 自适应环境底噪
+    heard_speech = False
+    voiced_ms = 0.0
+    silent_ms = 0.0
+    preroll = bytearray()             # 说话前的预滚（保句首），未开口时限长
+    PREROLL_MAX_BYTES = 16000         # ~0.5s @16k16bit
+
     async def _sj(obj: dict) -> None:
         async with send_lock:
             await ws.send_text(json.dumps(obj, ensure_ascii=False))
@@ -165,6 +183,77 @@ async def handle_session(ws: WebSocket) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _rms(chunk: bytes) -> float:
+        """pcm16 块能量（0-1 归一），live VAD 用。"""
+        n = len(chunk) // 2
+        if n == 0:
+            return 0.0
+        acc = 0.0
+        for i in range(0, n * 2, 2):
+            v = int.from_bytes(chunk[i:i + 2], "little", signed=True) / 32768.0
+            acc += v * v
+        return min(1.0, (acc / n) ** 0.5 * 8.0)
+
+    async def _live_turn() -> None:
+        """live 自动轮次：判停 → 转写 → 事件 → 自动推理（无需客户端 commit/response.create）。"""
+        nonlocal heard_speech, voiced_ms, silent_ms, response_task
+        audio = bytes(audio_buf)
+        audio_buf.clear()
+        heard_speech = False
+        voiced_ms = 0.0
+        silent_ms = 0.0
+        await _sj({"type": "input_audio_buffer.speech_stopped"})
+        text, words, duration = await engine.transcribe_verbose(_pcm16_to_wav(audio, live_rate), language)
+        await _sj({"type": "conversation.item.input_audio_transcription.completed",
+                   "transcript": text, "words": words, "duration": duration})
+        if text.strip():
+            _cancel_response()
+            response_task = asyncio.create_task(_respond(text))
+
+    async def _live_feed(chunk: bytes) -> None:
+        """live 模式每个音频块：能量 VAD 状态机——起声打断进行中的回复；停顿自动成轮。"""
+        nonlocal noise_floor, heard_speech, voiced_ms, silent_ms, response_task
+        level = _rms(chunk)
+        chunk_ms = max(1.0, len(chunk) / 2 / live_rate * 1000)
+        if not heard_speech:
+            noise_floor = min(0.5, noise_floor * 0.92 + level * 0.08)
+        speech_thresh = noise_floor + 0.10
+        silence_thresh = noise_floor + 0.045
+
+        if heard_speech:
+            audio_buf.extend(chunk)
+        else:
+            preroll.extend(chunk)
+            if len(preroll) > PREROLL_MAX_BYTES:
+                del preroll[:len(preroll) - PREROLL_MAX_BYTES]
+
+        if level >= speech_thresh:
+            if not heard_speech:
+                heard_speech = True
+                audio_buf.extend(preroll)   # 句首预滚并入
+                preroll.clear()
+                # 起声即打断：AI 正在回复 → 取消并通知（客户端应立即停止播放）
+                if response_task and not response_task.done():
+                    _cancel_response()
+                    await _sj({"type": "response.cancelled"})
+                await _sj({"type": "input_audio_buffer.speech_started"})
+            voiced_ms += chunk_ms
+            silent_ms = 0.0
+        elif heard_speech:
+            if level <= silence_thresh:
+                silent_ms += chunk_ms
+            else:
+                silent_ms = 0.0
+            if silent_ms >= vad_silence_ms:
+                if voiced_ms >= vad_min_speech_ms:
+                    await _live_turn()
+                else:
+                    # 纯噪音：静默丢弃回到聆听
+                    audio_buf.clear()
+                    heard_speech = False
+                    voiced_ms = 0.0
+                    silent_ms = 0.0
+
     restored = bool(ctx.get("history")) or bool(ctx.get("instructions"))
     await _sj({"type": "session.created", "session": {"id": session, "restored": restored}})
     try:
@@ -183,6 +272,15 @@ async def handle_session(ws: WebSocket) -> None:
                     voice = str(sess["voice"])
                 if sess.get("language"):
                     language = str(sess["language"])
+                if "turn_detection" in sess:
+                    td = sess.get("turn_detection") or {}
+                    live = (td.get("type") == "server_vad")
+                    if live:
+                        vad_silence_ms = int(td.get("silence_ms") or td.get("silence_duration_ms") or 800)
+                        vad_min_speech_ms = int(td.get("min_speech_ms") or 400)
+                        live_rate = int(sess.get("sample_rate") or 16000)
+                if sess.get("sample_rate"):
+                    live_rate = int(sess["sample_rate"])
                 _save_ctx(session, ctx)
                 await _sj({"type": "session.updated"})
             elif kind == "conversation.item.create":
@@ -195,11 +293,19 @@ async def handle_session(ws: WebSocket) -> None:
                     _save_ctx(session, ctx)
             elif kind == "input_audio_buffer.clear":
                 audio_buf.clear()
+                preroll.clear()
+                heard_speech = False
+                voiced_ms = 0.0
+                silent_ms = 0.0
             elif kind == "input_audio_buffer.append":
                 try:
-                    audio_buf.extend(base64.b64decode(ev.get("audio", "")))
+                    chunk = base64.b64decode(ev.get("audio", ""))
                 except Exception:  # noqa: BLE001
-                    pass
+                    continue
+                if live:
+                    await _live_feed(chunk)   # 全双工：VAD/轮次/打断全在服务端
+                else:
+                    audio_buf.extend(chunk)
             elif kind == "input_audio_buffer.commit":
                 _cancel_response()
                 audio = bytes(audio_buf)

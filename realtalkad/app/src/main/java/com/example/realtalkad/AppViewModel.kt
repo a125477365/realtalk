@@ -115,15 +115,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val homeAiLevel = MutableStateFlow(0f)
     val homeManualRecording = MutableStateFlow(false)
 
-    /** 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；null=自由闲聊）。 */
-    fun startHomeChat(sceneId: String? = null, sceneName: String? = null) {
+    /** 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；null=自由闲聊；
+     *  liveTurn=true → GPT-Live 式全双工，仅私教沉浸式/实时翻译用）。 */
+    fun startHomeChat(sceneId: String? = null, sceneName: String? = null, liveTurn: Boolean = false) {
         val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始对话"); return }
         homeItems.value = emptyList()
         homeStatus.value = "连接中…"
         homeWorking.value = false
         homeSceneName.value = sceneName
         homeSceneStrict.value = false
-        freeStream.manualCommit = !showTutor.value || !tutorImmersive.value
+        freeStream.liveMode = liveTurn
+        freeStream.manualCommit = !liveTurn && (!showTutor.value || !tutorImmersive.value)
         freeStream.onFreeTalkHistory = { items ->
             homeConnected.value = true
             homeItems.value = items.map { HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second) }
@@ -150,7 +152,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             homeStatus.value = "对话已结束，点击说话重新开始"
             presentFailure(reason, title = "对话已结束")
         }
-        freeStream.start(api.freeTalkStreamUrl(token, tutorMode.value, sceneId ?: ""), "realtime")
+        freeStream.start(api.freeTalkStreamUrl(token, tutorMode.value, sceneId ?: "", liveTurn), "realtime")
     }
 
     fun stopHomeChat() {
@@ -301,42 +303,44 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ==== 私教（电话按钮全屏）：与主界面共享同一条流；沉浸/常规只是提交方式不同 ====
 
-    /** 进入私教：chat 模式直接沿用主界面连接（上下文连续）；translate 模式按需重连。 */
+    // 沉浸式 = live 全双工（GPT-Live 式，轮次判定在服务端）；常规式 = 点击说话（turn-based）。
+    // 两种形态轮次策略不同（服务端 VAD vs 客户端提交），切换时按目标形态重连。
+
+    /** 进入私教：按当前形态（沉浸=live / 常规=turn-based）建立/重建连接。 */
     fun startTutor() {
-        if (tutorMode.value == "translate") {
-            freeStream.stop()
-            startHomeChat()
-        } else if (!homeConnected.value) {
-            startHomeChat(null, homeSceneName.value)
-        }
-        freeStream.manualCommit = !tutorImmersive.value
+        freeStream.stop()
+        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
+        loadTtsVoices()   // 音色菜单数据
     }
 
-    /** 私教内切换 沉浸式(自动发送) / 常规式(点击说话)：不断线，只换提交方式。 */
+    /** 私教内切换 沉浸式(全双工) / 常规式(点击说话)：轮次策略不同，按新形态重连。 */
     fun toggleTutorImmersive() {
+        if (freeStream.manualRecording) freeStream.endManualUtterance()
         tutorImmersive.value = !tutorImmersive.value
-        freeStream.manualCommit = !tutorImmersive.value
-        if (tutorImmersive.value && freeStream.manualRecording) {
-            freeStream.endManualUtterance()   // 手动录到一半切沉浸：把这句发出去，随后交给 VAD
-        }
+        freeStream.stop()
+        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
     }
 
     /** 断线重连（私教「重连」按钮）。 */
     fun reconnectTutor() {
         freeStream.stop()
-        startHomeChat(null, homeSceneName.value)
-        freeStream.manualCommit = !tutorImmersive.value
+        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
     }
 
-    /** 退出私教（电源键）：回主界面（常规=手动提交）；翻译模式退出时切回普通对话流。 */
+    /** 换音色：入库后按当前形态重连即刻生效。 */
+    fun changeTutorVoice(v: String) {
+        viewModelScope.launch {
+            setTtsVoiceAwait(v)
+            reconnectTutor()
+        }
+    }
+
+    /** 退出私教（电源键）：回主界面（点按 turn-based）；翻译模式退出时切回普通对话流。 */
     fun closeTutor() {
         showTutor.value = false
-        freeStream.manualCommit = true
-        if (tutorMode.value == "translate") {
-            tutorMode.value = "chat"
-            freeStream.stop()
-            startHomeChat(null, homeSceneName.value)
-        }
+        tutorMode.value = "chat"
+        freeStream.stop()
+        startHomeChat(null, homeSceneName.value, liveTurn = false)
     }
 
     /** 语境润色（详细指导浮层）。 */
@@ -1105,14 +1109,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setTtsVoice(voice: String) {
-        viewModelScope.launch {
-            val token = auth.token ?: return@launch
-            if (voice.isBlank()) return@launch
-            runCatching { api.setTtsVoice(voice, token) }.onSuccess {
-                ttsVoices.value = it.voices
-                ttsCurrentVoice.value = it.current
-                statusMessage.value = "已设置 AI 音色：$voice"
-            }
+        viewModelScope.launch { setTtsVoiceAwait(voice) }
+    }
+
+    /** 挂起版设音色（换音色→重连 需要先落库再重连）。 */
+    suspend fun setTtsVoiceAwait(voice: String) {
+        val token = auth.token ?: return
+        if (voice.isBlank()) return
+        runCatching { api.setTtsVoice(voice, token) }.onSuccess {
+            ttsVoices.value = it.voices
+            ttsCurrentVoice.value = it.current
+            statusMessage.value = "已设置 AI 音色：$voice"
         }
     }
 

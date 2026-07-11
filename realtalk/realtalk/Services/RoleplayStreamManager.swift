@@ -37,6 +37,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     @Published private(set) var manualRecording = false
     var manualCommit = false
 
+    /// live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端；
+    /// 本地不做静音提交、不做语音抢话。由连接参数请求、后端 live_mode 事件最终确认。
+    var liveMode = false
+
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
 
@@ -210,6 +214,16 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         guard active else { return }
         audioLevel = level
         guard connected, isPaused == false else { return }
+
+        if liveMode {
+            // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
+            if isAISpeaking, let p = aiPlayer, p.isPlaying {
+                p.updateMeters()
+                aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
+            }
+            sendFrame(data)
+            return
+        }
 
         if manualCommit {
             // 手动模式：点按开始→流式上传，点按结束→commit；不做自动静音判定/语音抢话
@@ -435,6 +449,18 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             // 涉敏感话题：后端已中断会话——提示并整体退出
             onTerminated?(obj["reason"] as? String ?? "本次对话已结束")
             stop()
+        case "live_mode":
+            // 后端确认轮次形态：enabled=false → 实时通道不可用，降级回本地 VAD/点按
+            liveMode = (obj["enabled"] as? Bool) ?? false
+        case "ai_interrupted":
+            // live：用户开口打断——立即停播并丢弃本轮残余
+            aiPlayer?.stop(); aiPlayer = nil
+            aiQueue.removeAll()
+            receivingAudio = false; incomingAudio.removeAll()
+            isAISpeaking = false
+            aiAudioLevel = 0
+        case "listening":
+            break   // 服务端 VAD 状态（可用于 UI 提示，当前电平动画已足够）
         case "ai_text":
             if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
         case "ai_line":

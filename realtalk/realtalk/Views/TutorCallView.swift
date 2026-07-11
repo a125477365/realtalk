@@ -63,6 +63,29 @@ struct TutorCallView: View {
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(.white.opacity(0.75), in: Capsule())
             }
+            // 音色选择：不同声音（性别/口音）随选随换，选择后按当前形态重连即刻生效
+            if model.ttsVoices.isEmpty == false {
+                Menu {
+                    ForEach(model.ttsVoices, id: \.self) { v in
+                        Button {
+                            model.changeTutorVoice(v)
+                        } label: {
+                            if v == model.ttsCurrentVoice {
+                                Label(v, systemImage: "checkmark")
+                            } else {
+                                Text(v)
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "waveform.and.person.filled")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(RTTheme.accent)
+                        .frame(width: 42, height: 42)
+                        .background(.white.opacity(0.75), in: Circle())
+                }
+                .padding(.trailing, 8)
+            }
             Button { model.toggleTutorImmersive() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: model.tutorImmersive ? "eye" : "waveform")
@@ -251,41 +274,54 @@ private struct SmileArc: Shape {
     }
 }
 
-/// 插画风老师头像：脸 + 眨眼 + 随音量开合的嘴（素材可后续替换为真人照片/视频驱动）。
+/// 中性机器人助教头像（无性别——男女音色都不违和）：金属渐变头壳 + 天线 + 屏幕脸 +
+/// 发光眼(眨) + 嘴=说话时随电平跳动的音量条 / 聆听时发光微笑弧。可整体替换为品牌吉祥物素材。
 struct TutorAvatarFace: View {
     var mouthOpen: Double       // 0~1，随 TTS 播放电平
     var listening: Bool
     @State private var blink = false
     @State private var breathe = false
 
+    private let glow = Color(red: 0.35, green: 0.95, blue: 0.90)   // 荧光青（中性）
+
     var body: some View {
-        ZStack {
+        VStack(spacing: 0) {
+            // 天线：说话时顶灯亮
             Circle()
-                .fill(LinearGradient(colors: [Color(red: 0.98, green: 0.86, blue: 0.72),
-                                              Color(red: 0.95, green: 0.76, blue: 0.62)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
-            // 头发
-            Circle()
-                .trim(from: 0.5, to: 1.0)
-                .fill(Color(red: 0.32, green: 0.22, blue: 0.15))
-                .scaleEffect(1.06)
-                .offset(y: -8)
-            // 眼睛（周期眨眼）
-            HStack(spacing: 54) {
-                eye
-                eye
+                .fill(mouthOpen > 0.02 ? glow : glow.opacity(0.35))
+                .frame(width: 14, height: 14)
+                .shadow(color: glow.opacity(mouthOpen > 0.02 ? 0.9 : 0.2), radius: 8)
+            Rectangle()
+                .fill(Color(red: 0.55, green: 0.60, blue: 0.68))
+                .frame(width: 5, height: 18)
+
+            ZStack {
+                // 头壳
+                RoundedRectangle(cornerRadius: 46)
+                    .fill(LinearGradient(colors: [Color(red: 0.82, green: 0.86, blue: 0.92),
+                                                  Color(red: 0.60, green: 0.66, blue: 0.76)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 200, height: 168)
+                    .shadow(color: .black.opacity(0.25), radius: 20, y: 8)
+                // 耳侧
+                HStack(spacing: 212) {
+                    Capsule().fill(Color(red: 0.5, green: 0.55, blue: 0.64)).frame(width: 12, height: 44)
+                    Capsule().fill(Color(red: 0.5, green: 0.55, blue: 0.64)).frame(width: 12, height: 44)
+                }
+                // 屏幕脸
+                RoundedRectangle(cornerRadius: 32)
+                    .fill(Color(red: 0.10, green: 0.12, blue: 0.18))
+                    .frame(width: 164, height: 132)
+                // 眼睛（发光、眨）
+                HStack(spacing: 52) {
+                    eye
+                    eye
+                }
+                .offset(y: -22)
+                // 嘴：说话=音量条；聆听=发光微笑
+                mouth
+                    .offset(y: 34)
             }
-            .offset(y: -14)
-            // 腮红
-            HStack(spacing: 108) {
-                Circle().fill(Color(red: 0.96, green: 0.6, blue: 0.55).opacity(0.35)).frame(width: 26, height: 14)
-                Circle().fill(Color(red: 0.96, green: 0.6, blue: 0.55).opacity(0.35)).frame(width: 26, height: 14)
-            }
-            .offset(y: 22)
-            // 嘴：说话时随电平开合；安静时浅笑
-            mouth
-                .offset(y: 52)
         }
         .scaleEffect(breathe && listening ? 1.015 : 1.0)
         .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: breathe)
@@ -303,28 +339,31 @@ struct TutorAvatarFace: View {
 
     private var eye: some View {
         Capsule()
-            .fill(Color(red: 0.2, green: 0.15, blue: 0.12))
-            .frame(width: 16, height: blink ? 3 : 18)
+            .fill(glow)
+            .frame(width: 24, height: blink ? 4 : 26)
+            .shadow(color: glow.opacity(0.8), radius: 6)
             .animation(.easeOut(duration: 0.1), value: blink)
     }
 
     @ViewBuilder
     private var mouth: some View {
-        let open = max(0.06, min(1.0, mouthOpen * 1.6))
         if mouthOpen > 0.02 {
-            // 说话：椭圆开合 + 内里深色
-            Ellipse()
-                .fill(Color(red: 0.55, green: 0.20, blue: 0.18))
-                .frame(width: 44, height: 8 + 30 * open)
-                .overlay(alignment: .top) {
-                    Ellipse().fill(.white).frame(width: 30, height: 7).offset(y: 1)   // 上排牙齿
+            // 说话：三根音量条随电平跳动（机器人式"动嘴"）
+            HStack(spacing: 7) {
+                ForEach(0..<3) { i in
+                    Capsule()
+                        .fill(glow)
+                        .frame(width: 9, height: 8 + CGFloat([0.7, 1.0, 0.8][i]) * 26 * min(1.0, mouthOpen * 1.6))
+                        .shadow(color: glow.opacity(0.7), radius: 4)
                 }
-                .animation(.easeOut(duration: 0.08), value: open)
+            }
+            .animation(.easeOut(duration: 0.08), value: mouthOpen)
         } else {
-            // 聆听：浅笑（向上开口的弧线 = 微笑）
+            // 聆听：发光微笑弧
             SmileArc()
-                .stroke(Color(red: 0.55, green: 0.25, blue: 0.2), style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                .frame(width: 48, height: 20)
+                .stroke(glow, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .frame(width: 52, height: 16)
+                .shadow(color: glow.opacity(0.6), radius: 4)
         }
     }
 }

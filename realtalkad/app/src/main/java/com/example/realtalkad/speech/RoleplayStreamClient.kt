@@ -51,6 +51,9 @@ class RoleplayStreamClient(private val context: Context) {
     var manualRecording = false
         private set
 
+    /** live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端。 */
+    var liveMode = false
+
     private val wsClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -219,6 +222,11 @@ class RoleplayStreamClient(private val context: Context) {
         if (!active) return
         onUserLevel?.invoke(level)
         if (!connected || paused) return
+        if (liveMode) {
+            // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
+            runCatching { webSocket?.send(chunk.toByteString()) }
+            return
+        }
         if (manualCommit) {
             // 手动模式：点按开始→流式上传，点按结束→commit；不做自动静音判定/语音抢话
             if (!aiSpeaking && manualRecording) runCatching { webSocket?.send(chunk.toByteString()) }
@@ -419,6 +427,17 @@ class RoleplayStreamClient(private val context: Context) {
                 onTerminated?.invoke(reason)
                 stop()
             }
+            "live_mode" -> {
+                // 后端确认轮次形态：enabled=false → 实时通道不可用，降级回本地 VAD/点按
+                liveMode = obj.optBoolean("enabled", false)
+            }
+            "ai_interrupted" -> {
+                // live：用户开口打断——立即停播并丢弃本轮残余
+                runCatching { player?.stop() }; runCatching { player?.release() }; player = null
+                aiQueue.clear(); receivingAudio = false; incoming = java.io.ByteArrayOutputStream()
+                aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
+            }
+            "listening" -> Unit   // 服务端 VAD 状态（电平动画已足够）
             "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {

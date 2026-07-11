@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64 as _b64
 import hashlib
 import hmac
 import json as _json
@@ -157,7 +158,7 @@ from .schemas import (
     VoiceServersRequest,
 )
 from .capture_store import capture_store
-from .conv_realtime import ConvRealtimeSession, resolve_conv_realtime_url
+from .conv_realtime import ConvRealtimeSession, _pcm_to_wav as pcm_to_wav, resolve_conv_realtime_url
 from . import voice_pipeline
 from . import voice_io
 from . import payments
@@ -3180,6 +3181,7 @@ async def freetalk_stream(
     token: str = Query(...),
     mode: str = Query("chat"),
     scene_id: str = Query(""),
+    live: int = Query(0),
 ) -> None:
     """自由对话（一对一语音英语老师）：与沉浸式同构（音频帧+commit → 后端 ASR → 文字大模型 → TTS 推回），
     但不绑场景、无指导区：老师回复(含纠正/讲解)直接进字幕并朗读。带用户记忆(DB)与近期历史上下文。
@@ -3305,9 +3307,13 @@ async def freetalk_stream(
             await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
             tts_task = asyncio.create_task(_send_tts(opening))
 
-    # B 类对话·实时通道（本地语音服务器）：配置了 conv_realtime_base_url 就走流式通道——
+    # B 类对话·实时通道（本地语音服务器/OpenAI Realtime）：配置了 conv_realtime_base_url 就走流式通道——
     # 音频帧边收边转发、上下文由语音服务器持有（Redis 5 分钟滑动，主动退出立即清理）；
     # 连接失败自动回退下面的分步管线（ASR→LLM→TTS），私教不因本地服务异常中断。
+    # live=1（GPT-Live 式全双工）：轮次判定在语音服务器（server_vad），客户端只管持续上行；
+    # 需要实时通道支撑，连不上则降级 turn-based 并用 live_mode 事件告知客户端。
+    want_live = bool(live)
+    live_active = False
     upstream = None
     upstream_started = 0.0
     rt_url = resolve_conv_realtime_url()
@@ -3315,8 +3321,11 @@ async def freetalk_stream(
         try:
             # 独立会话 id：翻译模式(ftr)/场景自由练(fts)不与私教闲聊(ft)共用/污染语音服务器侧上下文
             sess_prefix = "ftr" if translate_mode else ("fts" if scene_ctx else "ft")
-            upstream = await ConvRealtimeSession(rt_url, f"{sess_prefix}-{user.id}").connect()
+            upstream = await ConvRealtimeSession(
+                rt_url, f"{sess_prefix}-{user.id}", live=want_live, voice=voice,
+            ).connect()
             upstream_started = _time.monotonic()
+            live_active = want_live
             if not upstream.restored:
                 if translate_mode:
                     await upstream.seed(translate_instructions(), [])
@@ -3328,6 +3337,9 @@ async def freetalk_stream(
         except Exception as exc:  # noqa: BLE001
             print(f"[freetalk] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
             upstream = None
+    # 告知客户端最终轮次形态：enabled=true → 客户端关闭本地 VAD 提交（全双工）；false → 保持点按/本地判停
+    if want_live:
+        await _sj({"type": "live_mode", "enabled": live_active})
 
     async def _upstream_reply_and_deliver() -> bool:
         """实时通道回复投递（语音/文字输入共用）：response.create → 场景标记注入 → 标记清洗 →
@@ -3421,6 +3433,107 @@ async def freetalk_stream(
             asyncio.create_task(update_freetalk_memory(user.id))
         return True
 
+    async def _live_pump() -> None:
+        """live 全双工下行泵：独占上游事件流——转写/回复文本/音频/打断全部经此下发。
+        字幕、翻译、指导（老师话里的纠正）全部来自通道事件；敏感双向中断在此执行。"""
+        nonlocal scene_ctx, turns_since_memory, user_ended
+        text = ""
+        translation = ""
+        pcm = bytearray()
+        rate = 24000 if upstream.is_openai else 22050
+        try:
+            while True:
+                ev = await upstream.recv_event(timeout=600)
+                kind = ev.get("type")
+                if kind == "conversation.item.input_audio_transcription.completed":
+                    recognized = (ev.get("transcript") or "").strip()
+                    if not recognized:
+                        continue
+                    if is_political_sensitive(recognized):
+                        await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                        user_ended = True
+                        await websocket.close()
+                        return
+                    if not translate_mode:
+                        db.add_freetalk_message(user.id, "user", recognized)
+                    words = ev.get("words") or []
+                    await _sj({"type": "user_text", "text": recognized, "translation": "",
+                               "words": words, "wpm": _wpm(words, float(ev.get("duration") or 0.0))})
+                elif kind in ("response.text.done", "response.output_text.done"):
+                    text = (ev.get("text") or "").strip() or text
+                    translation = (ev.get("translation") or "").strip() or translation
+                elif kind in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
+                    text = text or (ev.get("transcript") or "").strip()
+                elif kind in ("response.audio.delta", "response.output_audio.delta"):
+                    rate = int(ev.get("sample_rate") or rate)
+                    try:
+                        pcm.extend(_b64.b64decode(ev.get("delta", "")))
+                    except Exception:  # noqa: BLE001
+                        pass
+                elif kind == "response.cancelled":
+                    # 用户开口打断：客户端立即停播、丢弃本轮残余
+                    await _sj({"type": "ai_interrupted"})
+                    text, translation, pcm = "", "", bytearray()
+                elif kind == "input_audio_buffer.speech_started":
+                    await _sj({"type": "listening", "speaking": True})
+                elif kind == "input_audio_buffer.speech_stopped":
+                    await _sj({"type": "listening", "speaking": False})
+                elif kind == "response.done":
+                    raw = text
+                    text, translation_out = "", translation
+                    translation = ""
+                    scene_m = None if translate_mode else SCENE_MARKER_RE.search(raw or "")
+                    if scene_m:
+                        # 场景标记：取库注入剧本 → 让模型接着问角色/严格自由（不下发标记本身）
+                        scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+                        if scenario_obj is not None:
+                            scene_ctx = format_scene_context(scenario_obj)
+                            inject = scene_ctx
+                        else:
+                            inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
+                        await upstream.send({"type": "conversation.item.create", "item": {
+                            "role": "system", "content": [{"type": "input_text", "text": inject}],
+                        }})
+                        await upstream.send({"type": "response.create"})
+                        pcm = bytearray()
+                        continue
+                    reply = SCENE_MARKER_STRIP_RE.sub("", raw or "").strip()
+                    wav = pcm_to_wav(bytes(pcm), rate) if pcm else None
+                    pcm = bytearray()
+                    if reply and is_political_sensitive(reply):
+                        await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                        user_ended = True
+                        await websocket.close()
+                        return
+                    if reply:
+                        if not translate_mode:
+                            db.add_freetalk_message(user.id, "ai", reply)
+                        await _sj({"type": "ai_text", "text": reply, "translation": translation_out})
+                        if wav:
+                            await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
+                            for i in range(0, len(wav), 16384):
+                                await _sb(wav[i:i + 16384])
+                            await _sj({"type": "ai_audio_end"})
+                        if not translate_mode:
+                            turns_since_memory += 1
+                            if turns_since_memory >= 6:
+                                turns_since_memory = 0
+                                asyncio.create_task(update_freetalk_memory(user.id))
+                elif kind == "error":
+                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(ev.get('message') or '')[:120]}"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 上游断开/超时：告知客户端（可重连），不拖垮主循环
+            print(f"[freetalk] live 下行泵结束：{str(exc)[:120]}", flush=True)
+            try:
+                await _sj({"type": "notice", "detail": "实时通道中断，请重连"})
+            except Exception:  # noqa: BLE001
+                pass
+
+    pump_task: asyncio.Task | None = None
+    if live_active and upstream is not None:
+        pump_task = asyncio.create_task(_live_pump())
+
     try:
         while True:
             event = await websocket.receive()
@@ -3479,7 +3592,10 @@ async def freetalk_stream(
                         if not translate_mode:
                             db.add_freetalk_message(user.id, "user", typed)
                         await _sj({"type": "user_text", "text": typed, "translation": "", "words": [], "wpm": 0})
-                        if not await _upstream_reply_and_deliver():
+                        if live_active:
+                            # live：只投递 response.create，回复由下行泵送达（泵独占上游接收）
+                            await upstream.send({"type": "response.create"})
+                        elif not await _upstream_reply_and_deliver():
                             user_ended = True
                             break
                     except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
@@ -3503,6 +3619,8 @@ async def freetalk_stream(
                 continue
             if mtype != "commit":
                 continue
+            if live_active:
+                continue   # 全双工：轮次判定在服务端，客户端 commit 忽略（防旧客户端混发）
             _cancel_tts()
             if upstream is not None:
                 # ---- 实时通道路径：转写与推理都在语音服务器，上下文由其 Redis 持有 ----
@@ -3578,6 +3696,8 @@ async def freetalk_stream(
             pass
     finally:
         _cancel_tts()
+        if pump_task is not None and not pump_task.done():
+            pump_task.cancel()
         if upstream is not None:
             # 用户主动结束(bye) → 通知语音服务器立即删除 Redis 上下文；断线则留 5 分钟 TTL 供重连续聊
             await upstream.close(wipe_context=user_ended)
