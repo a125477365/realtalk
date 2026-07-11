@@ -7,22 +7,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("对话方式", selection: $model.conversationPreference) {
-                        ForEach(model.availableConversationPreferences) { Text($0.title).tag($0) }
-                    }
-                    Picker("AI 指导方式", selection: $model.guidancePreference) {
-                        ForEach(AppModel.GuidancePreference.allCases) { Text($0.title).tag($0) }
-                    }
-                } header: {
-                    Text("对话方式").font(.system(size: 13 * model.fontScale))
-                } footer: {
-                    Text(model.isPremium
-                         ? "对话中不可切换。语音模型对话：与实时语音大模型直接语音对话，结束给出评分。手工触发式：长按说话、左滑取消、右滑发送。"
-                         : "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。语音模型对话为高级会员专属。")
-                        .font(.system(size: 12 * model.fontScale))
-                }
-
+                // 对话方式/指导方式/中文提示 等选择已全部移入对话界面内的小按钮（新交互）——设置页不再重复
                 Section("外观") {
                     Picker("外观主题", selection: $model.appearance) {
                         ForEach(AppModel.AppAppearance.allCases) { Text($0.title).tag($0) }
@@ -30,7 +15,6 @@ struct SettingsView: View {
                 }
 
                 Section("对话与字幕") {
-                    Toggle("中文提示（字幕中文翻译）", isOn: $model.showChineseHint)
                     if model.ttsConfigured, model.ttsVoices.isEmpty == false {
                         Picker("AI 朗读音色", selection: $model.ttsCurrentVoice) {
                             ForEach(model.ttsVoices, id: \.self) { Text($0).tag($0) }
@@ -164,8 +148,6 @@ struct SettingsView: View {
             .onChange(of: model.captureWindows) { _, _ in model.saveCaptureSchedule() }
             .onChange(of: model.appearance) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
-            .onChange(of: model.guidancePreference) { _, _ in model.savePracticePreferences() }
-            .onChange(of: model.conversationPreference) { _, _ in model.savePracticePreferences() }
         }
     }
 

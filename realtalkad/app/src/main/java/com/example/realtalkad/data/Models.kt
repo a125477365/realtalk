@@ -255,7 +255,17 @@ data class AIChatRequest(
 )
 
 @Serializable
-data class AIChatResponse(val reply: String)
+data class AIChatResponse(val reply: String, val terminated: Boolean = false)
+
+/** 语境润色（详细指导浮层） */
+@Serializable
+data class RefineRequest(val text: String)
+
+@Serializable
+data class RefineItem(val style: String, val text: String)
+
+@Serializable
+data class RefineResponse(val items: List<RefineItem>)
 
 @Serializable
 data class TokenUsageInfo(

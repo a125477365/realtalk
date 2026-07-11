@@ -299,6 +299,23 @@ struct AIChatRequest: Codable {
 
 struct AIChatResponse: Codable, Equatable {
     let reply: String
+    /// true = 涉敏感话题已中断，客户端应结束本次对话
+    var terminated: Bool? = false
+}
+
+/// 语境润色（详细指导浮层）
+struct RefineRequest: Codable {
+    let text: String
+}
+
+struct RefineItem: Codable, Equatable, Identifiable {
+    let style: String   // 地道美式 / 商务正式 / 地道英式
+    let text: String
+    var id: String { style }
+}
+
+struct RefineResponse: Codable, Equatable {
+    let items: [RefineItem]
 }
 
 struct TranscriptUploadItem: Codable {

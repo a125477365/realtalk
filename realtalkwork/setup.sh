@@ -509,9 +509,10 @@ if $DEPLOY_SPEECH; then
   note "api 后端在 A/B 配置里填本服务地址即可全量切换到本地模型。"
   ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ask "whisper 模型大小 (tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
-  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-0.5B-Instruct Q4：最小最快；机器强可换 1.5B/7B）。"
-  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-0.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
-  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-0.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
+  note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
+  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
   ask "英文音色 (Piper)" "en_US-lessac-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
   ask "中文音色 (Piper)" "zh_CN-huayan-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
   ask "模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")

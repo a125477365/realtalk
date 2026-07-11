@@ -213,7 +213,7 @@ fun AccountSheet(model: AppViewModel) {
                         Column(Modifier.weight(1f)) {
                             Text("语音模型对话练习", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp)
                             Text(
-                                if (user?.planTier == "premium") "在「设置 · 对话方式」选「语音模型对话」，直接与语音大模型语音对话"
+                                if (user?.planTier == "premium") "与实时语音大模型直接语音对话（对话/私教界面自动启用）"
                                 else "高级会员专属，升级后可用",
                                 fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
                             )
@@ -552,15 +552,6 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
             }
         }
         item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("中文提示（字幕中文翻译）", fontWeight = FontWeight.SemiBold)
-                    Text("开：字幕/私教每句下方显示中文翻译；关：不显示。指导区的中文提示始终显示，与此无关", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
-                }
-                Switch(checked = showChineseHint, onCheckedChange = { model.setShowChineseHint(it) })
-            }
-        }
-        item {
             val reminderEnabled by model.reminderEnabled.collectAsState()
             val reminderMode by model.reminderMode.collectAsState()
             val reminderWindows by model.reminderWindows.collectAsState()
@@ -634,48 +625,6 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
                     }
                 }
             }
-        }
-        item {
-            Text("对话方式", fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            // 语音模型对话仅高级会员可选
-            val convOptions = buildList {
-                add("ask" to "每次询问")
-                if (user?.planTier == "premium") add("voice" to "语音模型")
-                add("immersive" to "沉浸式")
-                add("manual" to "手工触发")
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                convOptions.forEach { (key, label) ->
-                    OutlinedButton(
-                        onClick = { model.setConversationPreference(key) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 8.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (conversationPref == key) RT.Accent else RT.Hairline),
-                    ) { Text(label, fontSize = (11 * fontScale).sp, color = if (conversationPref == key) RT.Accent else RT.TextSecondary) }
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            Text("AI 指导方式", fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("realtime" to "实时指导", "final" to "结束后", "ask" to "每次询问").forEach { (key, label) ->
-                    OutlinedButton(
-                        onClick = { model.setGuidancePreference(key) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, if (guidancePref == key) RT.Accent else RT.Hairline),
-                    ) { Text(label, fontSize = (12 * fontScale).sp, color = if (guidancePref == key) RT.Accent else RT.TextSecondary) }
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                if (user?.planTier == "premium")
-                    "对话中不可切换。语音模型对话：与实时语音大模型直接语音对话，结束给出评分。手工触发式：长按说话、左滑取消、右滑发送。"
-                else
-                    "对话中不可切换。手工触发式：长按说话、左滑取消、右滑发送。语音模型对话为高级会员专属。",
-                fontSize = (11 * fontScale).sp, color = RT.TextSecondary,
-            )
         }
         item {
             Text("外观主题", fontWeight = FontWeight.SemiBold)

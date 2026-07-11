@@ -32,6 +32,7 @@ from .ark_client import (
     translate_instructions,
     generate_freetalk_reply,
     generate_translation,
+    generate_refinements,
     generate_learning,
     SCENE_MARKER_RE,
     SCENE_MARKER_STRIP_RE,
@@ -66,6 +67,9 @@ from .schemas import (
     AuthTokenResponse,
     AIChatRequest,
     AIChatResponse,
+    RefineRequest,
+    RefineItem,
+    RefineResponse,
     BillingAccountResponse,
     BillingResponse,
     CaptureQuotaResponse,
@@ -1640,15 +1644,35 @@ def me(user: UserOut = Depends(current_user)) -> UserOut:
 async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user)) -> AIChatResponse:
     require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.message or "")))
     if is_political_sensitive(request.message):
-        # 涉政话题不进入模型，直接引导回口语练习
-        return AIChatResponse(reply="这个话题我们就不展开了。我们继续练英语吧，你想还原哪段真实对话？")
+        # 涉政话题：不进入模型，直接中断本次对话（客户端收到 terminated 应结束会话）
+        return AIChatResponse(reply="涉及敏感话题，本次对话已结束。", terminated=True)
     scenario = db.get_scenario(user.id, request.scene_id) if request.scene_id else None
     try:
         reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不做兜底回复
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+    if is_political_sensitive(reply):
+        # 输出端兜底：模型无视提示词生成了涉政内容 → 不下发，直接中断
+        return AIChatResponse(reply="涉及敏感话题，本次对话已结束。", terminated=True)
     return AIChatResponse(reply=reply)
+
+
+@app.post("/practice/refine", response_model=RefineResponse)
+async def practice_refine(request: RefineRequest, user: UserOut = Depends(current_user)) -> RefineResponse:
+    """语境润色（详细指导浮层）：把用户的话改写成 地道美式/商务正式/地道英式 三风格，一次调用产出。"""
+    require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.text or "")))
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="text 不能为空")
+    if is_political_sensitive(text):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="涉及敏感话题，无法润色")
+    try:
+        styles = await generate_refinements(text, user_id=user.id)
+    except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+    return RefineResponse(items=[RefineItem(**s) for s in styles])
 
 
 @app.get("/billing/account", response_model=BillingAccountResponse)
@@ -2812,6 +2836,9 @@ async def roleplay_message_audio(
         ) from exc
     if not recognized:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="没听清，请再说一次")
+    if is_political_sensitive(recognized):
+        # 涉政敏感：不进模型，403 中断（客户端应结束本次对话）
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="涉及敏感话题，本次对话已结束")
     gm = "final" if guidance_mode == "final" else "realtime"
     resp = await roleplay_message(
         RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
@@ -3089,6 +3116,10 @@ async def roleplay_stream(
                 # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
+            if is_political_sensitive(recognized):
+                # 涉政敏感：直接中断本次对练（不进模型），客户端收到 terminated 应退出会话
+                await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                break
             gm = "final" if data.get("guidance_mode") == "final" else "realtime"
             try:
                 resp = await roleplay_message(
@@ -3128,11 +3159,27 @@ async def roleplay_stream(
             pass
 
 
+def _wpm(words: list[dict], duration: float) -> int:
+    """语速（词/分钟）：词级时间戳可用时按 说话净时长(首词起点→末词终点) 算，否则按音频总时长。"""
+    if not words:
+        return 0
+    span = 0.0
+    try:
+        span = float(words[-1].get("end") or 0) - float(words[0].get("start") or 0)
+    except (TypeError, ValueError):
+        span = 0.0
+    base = span if span > 0.2 else (duration or 0.0)
+    if base <= 0:
+        return 0
+    return round(len(words) / base * 60)
+
+
 @app.websocket("/freetalk/stream")
 async def freetalk_stream(
     websocket: WebSocket,
     token: str = Query(...),
     mode: str = Query("chat"),
+    scene_id: str = Query(""),
 ) -> None:
     """自由对话（一对一语音英语老师）：与沉浸式同构（音频帧+commit → 后端 ASR → 文字大模型 → TTS 推回），
     但不绑场景、无指导区：老师回复(含纠正/讲解)直接进字幕并朗读。带用户记忆(DB)与近期历史上下文。
@@ -3187,16 +3234,30 @@ async def freetalk_stream(
     await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
 
     # 场景感知（仅对话模式）：用户自己生成但还没练过的场景 → 注入私教提示词，供其口语中主动邀练；
-    # scene_ctx = 用户答应练某个场景后注入的剧本（连接生命周期内有效；实时通道侧还会写进其 Redis 上下文）
+    # scene_ctx = 场景剧本上下文（连接生命周期内有效；实时通道侧还会写进其 Redis 上下文）。
+    # 常规界面「选场景→自由发挥」会带 scene_id 直接进场（严格按剧本则走 roleplay 流）。
     unpracticed = [] if translate_mode else db.list_unpracticed_scenarios(user.id)
     scene_ctx: str | None = None
+    scene_opening: str | None = None
+    if scene_id and not translate_mode:
+        picked = db.get_scenario(user.id, scene_id)
+        if picked is not None:
+            scene_ctx = format_scene_context(picked)
+            scene_opening = (
+                "(The user picked this scene from the scenario list to practice FREELY (protocol E). "
+                "Greet in one short sentence, ask which role they want to play, then start improvising the scene.)"
+            )
+        else:
+            await _sj({"type": "notice", "detail": "场景不存在或已过期"})
 
     # 开场（先于实时通道连接：开场词入库后 seed 的历史才完整）：
     # 首次进入=自我介绍+入门了解；老学员=按记忆问候；有未练场景时顺口邀练一个。
     user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
-    if not translate_mode and (not history or unpracticed):
+    if not translate_mode and (not history or unpracticed or scene_opening):
         memory = db.get_user_memory(user.id)
-        if not history and not memory.strip():
+        if scene_opening:
+            opening_prompt = scene_opening
+        elif not history and not memory.strip():
             # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
             # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
             opening_prompt = (
@@ -3214,7 +3275,8 @@ async def freetalk_stream(
         else:
             opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
         try:
-            result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id, scenarios=unpracticed)
+            result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id,
+                                                   scenarios=unpracticed, scene_context=scene_ctx)
         except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
             await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
             result = None
@@ -3251,20 +3313,113 @@ async def freetalk_stream(
     rt_url = resolve_conv_realtime_url()
     if rt_url:
         try:
-            # 翻译模式独立会话 id：不与私教对话共用/污染语音服务器侧上下文
-            upstream = await ConvRealtimeSession(rt_url, f"{'ftr' if translate_mode else 'ft'}-{user.id}").connect()
+            # 独立会话 id：翻译模式(ftr)/场景自由练(fts)不与私教闲聊(ft)共用/污染语音服务器侧上下文
+            sess_prefix = "ftr" if translate_mode else ("fts" if scene_ctx else "ft")
+            upstream = await ConvRealtimeSession(rt_url, f"{sess_prefix}-{user.id}").connect()
             upstream_started = _time.monotonic()
             if not upstream.restored:
                 if translate_mode:
                     await upstream.seed(translate_instructions(), [])
                 else:
                     await upstream.seed(
-                        freetalk_instructions(db.get_user_memory(user.id), scenarios=unpracticed),
+                        freetalk_instructions(db.get_user_memory(user.id), scenarios=unpracticed, scene_context=scene_ctx),
                         db.list_freetalk_messages(user.id, limit=200),
                     )
         except Exception as exc:  # noqa: BLE001
             print(f"[freetalk] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
             upstream = None
+
+    async def _upstream_reply_and_deliver() -> bool:
+        """实时通道回复投递（语音/文字输入共用）：response.create → 场景标记注入 → 标记清洗 →
+        敏感兜底 → 字幕+音频下发 → 记忆计数。返回 False = 涉敏感需中断整个会话。"""
+        nonlocal scene_ctx, turns_since_memory, tts_task
+        reply, reply_zh, wav = await upstream.create_response(timeout=120)
+        # 场景练习标记：模型请求注入场景剧本 → 取库注入通道上下文（system 条目，随其 Redis 持久）→ 再推理一轮
+        scene_m = None if translate_mode else SCENE_MARKER_RE.search(reply or "")
+        if scene_m:
+            scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+            if scenario_obj is not None:
+                scene_ctx = format_scene_context(scenario_obj)
+                inject = scene_ctx
+            else:
+                inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
+            await upstream.send({"type": "conversation.item.create", "item": {
+                "role": "system", "content": [{"type": "input_text", "text": inject}],
+            }})
+            reply, reply_zh, wav = await upstream.create_response(timeout=120)
+        reply = SCENE_MARKER_STRIP_RE.sub("", reply or "").strip()   # 残留标记绝不上字幕/朗读
+        if reply and is_political_sensitive(reply):
+            # 输出端兜底：模型生成了涉政内容 → 不下发不朗读，直接中断
+            await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+            return False
+        if reply:
+            if not translate_mode:
+                db.add_freetalk_message(user.id, "ai", reply)
+            await _sj({"type": "ai_text", "text": reply, "translation": reply_zh})
+            if wav:
+                await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
+                for i in range(0, len(wav), 16384):
+                    await _sb(wav[i:i + 16384])
+                await _sj({"type": "ai_audio_end"})
+        if not translate_mode:
+            turns_since_memory += 1
+            if turns_since_memory >= 6:
+                turns_since_memory = 0
+                asyncio.create_task(update_freetalk_memory(user.id))
+        return True
+
+    async def _stepwise_turn(recognized: str, rec_words: list[dict], rec_dur: float) -> bool:
+        """分步管线一轮（语音转写后/文字输入共用；翻译模式除外）。返回 False = 涉敏感需中断整个会话。"""
+        nonlocal scene_ctx, turns_since_memory, tts_task
+        try:
+            result = await generate_freetalk_reply(
+                recognized,
+                db.get_user_memory(user.id),
+                db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史，按预算裁剪在模型侧做
+                user_id=user.id,
+                scenarios=unpracticed,
+                scene_context=scene_ctx,
+            )
+            # 场景练习标记：取库注入剧本（连接内有效），再让模型接着问角色/严格自由
+            scene_m = SCENE_MARKER_RE.search(result.get("reply_en") or "")
+            if scene_m:
+                scenario_obj = db.get_scenario(user.id, scene_m.group(1))
+                if scenario_obj is not None:
+                    scene_ctx = format_scene_context(scenario_obj)
+                    nudge = "(The scene script has been loaded above. Continue per protocol C.)"
+                else:
+                    nudge = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
+                result = await generate_freetalk_reply(
+                    nudge,
+                    db.get_user_memory(user.id),
+                    db.list_freetalk_messages(user.id, limit=200) + [{"speaker": "user", "content": recognized}],
+                    user_id=user.id,
+                    scenarios=unpracticed,
+                    scene_context=scene_ctx,
+                )
+        except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+            return True
+        # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
+        user_display = result.get("user_display", "").strip() or recognized
+        db.add_freetalk_message(user.id, "user", user_display)
+        await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", ""),
+                   "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
+        reply = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()   # 残留标记绝不上字幕/朗读
+        if not reply:
+            return True
+        if is_political_sensitive(reply):
+            # 输出端兜底：模型生成了涉政内容 → 不下发不朗读，直接中断
+            await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+            return False
+        db.add_freetalk_message(user.id, "ai", reply)
+        await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", "")})
+        tts_task = asyncio.create_task(_send_tts(reply))
+        turns_since_memory += 1
+        if turns_since_memory >= 6:
+            turns_since_memory = 0
+            asyncio.create_task(update_freetalk_memory(user.id))
+        return True
 
     try:
         while True:
@@ -3306,51 +3461,72 @@ async def freetalk_stream(
             if mtype == "bye":
                 user_ended = True
                 break
+            if mtype == "text":
+                # ---- 键盘手工输入：跳过 ASR，直接走对话/翻译一轮（实时通道注入文字条目后推理）----
+                typed = str(data.get("text") or "").strip()[:2000]
+                if not typed:
+                    continue
+                _cancel_tts()
+                if is_political_sensitive(typed):
+                    await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                    user_ended = True
+                    break
+                if upstream is not None:
+                    try:
+                        await upstream.send({"type": "conversation.item.create", "item": {
+                            "role": "user", "content": [{"type": "input_text", "text": typed}],
+                        }})
+                        if not translate_mode:
+                            db.add_freetalk_message(user.id, "user", typed)
+                        await _sj({"type": "user_text", "text": typed, "translation": "", "words": [], "wpm": 0})
+                        if not await _upstream_reply_and_deliver():
+                            user_ended = True
+                            break
+                    except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
+                        print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
+                        upstream = None
+                        await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    continue
+                if translate_mode:
+                    try:
+                        translated = await generate_translation(typed, user_id=user.id)
+                    except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+                        await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                        continue
+                    await _sj({"type": "user_text", "text": typed, "translation": "", "words": [], "wpm": 0})
+                    await _sj({"type": "ai_text", "text": translated, "translation": ""})
+                    tts_task = asyncio.create_task(_send_tts(translated))
+                    continue
+                if not await _stepwise_turn(typed, [], 0.0):
+                    user_ended = True
+                    break
+                continue
             if mtype != "commit":
                 continue
             _cancel_tts()
             if upstream is not None:
                 # ---- 实时通道路径：转写与推理都在语音服务器，上下文由其 Redis 持有 ----
                 try:
-                    recognized = await upstream.commit_and_transcribe(
+                    recognized, rec_words, rec_dur = await upstream.commit_and_transcribe_verbose(
                         timeout=60, audio_format=data.get("format", "pcm16").lstrip("."), sample_rate=int(data.get("sample_rate") or 16000)
                     )
                     if not recognized:
                         await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                         continue
+                    if is_political_sensitive(recognized):
+                        # 涉政敏感：直接中断本次对话（不进模型、不入库），客户端收到 terminated 应退出会话
+                        await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                        user_ended = True
+                        break
                     if not translate_mode:
                         db.add_freetalk_message(user.id, "user", recognized)
-                    await _sj({"type": "user_text", "text": recognized, "translation": ""})
+                    # words/wpm：词级置信度(发音标色)与语速（本地语音服务器提供；无词级则为空/0）
+                    await _sj({"type": "user_text", "text": recognized, "translation": "",
+                               "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
                     # 翻译模式：回复即译文（同传指令无 ⟦ZH⟧ 标记，reply_zh 为空）；不存历史不沉淀记忆
-                    reply, reply_zh, wav = await upstream.create_response(timeout=120)
-                    # 场景练习标记：模型请求注入场景剧本 → 取库注入通道上下文（system 条目，随其 Redis 持久）→ 再推理一轮
-                    scene_m = None if translate_mode else SCENE_MARKER_RE.search(reply or "")
-                    if scene_m:
-                        scenario_obj = db.get_scenario(user.id, scene_m.group(1))
-                        if scenario_obj is not None:
-                            scene_ctx = format_scene_context(scenario_obj)
-                            inject = scene_ctx
-                        else:
-                            inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
-                        await upstream.send({"type": "conversation.item.create", "item": {
-                            "role": "system", "content": [{"type": "input_text", "text": inject}],
-                        }})
-                        reply, reply_zh, wav = await upstream.create_response(timeout=120)
-                    reply = SCENE_MARKER_STRIP_RE.sub("", reply or "").strip()   # 残留标记绝不上字幕/朗读
-                    if reply:
-                        if not translate_mode:
-                            db.add_freetalk_message(user.id, "ai", reply)
-                        await _sj({"type": "ai_text", "text": reply, "translation": reply_zh})
-                        if wav:
-                            await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
-                            for i in range(0, len(wav), 16384):
-                                await _sb(wav[i:i + 16384])
-                            await _sj({"type": "ai_audio_end"})
-                    if not translate_mode:
-                        turns_since_memory += 1
-                        if turns_since_memory >= 6:
-                            turns_since_memory = 0
-                            asyncio.create_task(update_freetalk_memory(user.id))
+                    if not await _upstream_reply_and_deliver():
+                        user_ended = True
+                        break
                 except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
                     print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
                     upstream = None
@@ -3362,7 +3538,9 @@ async def freetalk_stream(
             if not audio:
                 continue
             try:
-                recognized = (await voice_io.transcribe(audio, suffix="." + str(data.get("format", "m4a")).lstrip("."), user_id=user.id)).strip()
+                recognized, rec_words, rec_dur = await voice_io.transcribe_verbose(
+                    audio, suffix="." + str(data.get("format", "m4a")).lstrip("."), user_id=user.id)
+                recognized = recognized.strip()
             except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
                 print(f"[freetalk] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
@@ -3371,6 +3549,11 @@ async def freetalk_stream(
                 # 只有噪音没有人声：静默回到聆听（不报错、不打断流程）
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
                 continue
+            if is_political_sensitive(recognized):
+                # 涉政敏感：直接中断本次对话（不进模型、不入库）
+                await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
+                user_ended = True
+                break
             if translate_mode:
                 # ---- 实时翻译（分步管线）：转写 → 同传 → 念译文；不存历史不沉淀记忆 ----
                 try:
@@ -3378,53 +3561,14 @@ async def freetalk_stream(
                 except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
                     await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
                     continue
-                await _sj({"type": "user_text", "text": recognized, "translation": ""})
+                await _sj({"type": "user_text", "text": recognized, "translation": "",
+                           "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
                 await _sj({"type": "ai_text", "text": translated, "translation": ""})
                 tts_task = asyncio.create_task(_send_tts(translated))
                 continue
-            try:
-                result = await generate_freetalk_reply(
-                    recognized,
-                    db.get_user_memory(user.id),
-                    db.list_freetalk_messages(user.id, limit=200),   # 全量保留的历史，按预算裁剪在模型侧做
-                    user_id=user.id,
-                    scenarios=unpracticed,
-                    scene_context=scene_ctx,
-                )
-                # 场景练习标记：取库注入剧本（连接内有效），再让模型接着问角色/严格自由
-                scene_m = SCENE_MARKER_RE.search(result.get("reply_en") or "")
-                if scene_m:
-                    scenario_obj = db.get_scenario(user.id, scene_m.group(1))
-                    if scenario_obj is not None:
-                        scene_ctx = format_scene_context(scenario_obj)
-                        nudge = "(The scene script has been loaded above. Continue per protocol C.)"
-                    else:
-                        nudge = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
-                    result = await generate_freetalk_reply(
-                        nudge,
-                        db.get_user_memory(user.id),
-                        db.list_freetalk_messages(user.id, limit=200) + [{"speaker": "user", "content": recognized}],
-                        user_id=user.id,
-                        scenarios=unpracticed,
-                        scene_context=scene_ctx,
-                    )
-            except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
-                await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
-                continue
-            # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
-            user_display = result.get("user_display", "").strip() or recognized
-            db.add_freetalk_message(user.id, "user", user_display)
-            await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", "")})
-            reply = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()   # 残留标记绝不上字幕/朗读
-            if not reply:
-                continue
-            db.add_freetalk_message(user.id, "ai", reply)
-            await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", "")})
-            tts_task = asyncio.create_task(_send_tts(reply))
-            turns_since_memory += 1
-            if turns_since_memory >= 6:
-                turns_since_memory = 0
-                asyncio.create_task(update_freetalk_memory(user.id))
+            if not await _stepwise_turn(recognized, rec_words, rec_dur):
+                user_ended = True
+                break
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # noqa: BLE001

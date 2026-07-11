@@ -263,7 +263,7 @@ private fun PresetCatalogList(
 @Composable
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
-    if (user == null) LoginScreen(model) else MainChatScreen(model)
+    if (user == null) LoginScreen(model) else ChatHomeScreen(model)
     // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
     FailureAlertDialog(model)
 }
@@ -315,25 +315,21 @@ fun LoginScreen(model: AppViewModel) {
 
 /* ---------------- 主聊天界面 ---------------- */
 
+/** 场景选择二级页（原主界面列表下沉）：今天/全部/通用场景 → 点卡片 →
+ * 「严格按剧本 / 自由发挥」→ 严格再选角色（含续练判断）→ 回常规主界面进入场景对话。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainChatScreen(model: AppViewModel) {
+fun ScenarioPickerOverlay(model: AppViewModel) {
     val scenarios by model.todayScenarios.collectAsState()
-    val isRecording by model.isRecording.collectAsState()
-    val isListening by model.isListening.collectAsState()
-    val isSpeaking by model.isSpeaking.collectAsState()
     val isWorking by model.isWorking.collectAsState()
     val user by model.user.collectAsState()
-    val showImmersive by model.showImmersive.collectAsState()
-    val showVoiceLLM by model.showVoiceLLM.collectAsState()
-    val status by model.statusMessage.collectAsState()
     val fontScale by model.fontScale.collectAsState()
 
     val presetCatalog by model.presetCatalog.collectAsState()
     // 等待后台处理时禁用其它操作按钮，避免误触发新请求
     val busy = isWorking
 
-    var showAccount by remember { mutableStateOf(false) }
+    var modeDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }   // 第一问：严格/自由
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
     var resumeChoiceFor by remember { mutableStateOf<Pair<ScenarioSummary, String>?>(null) }  // (场景,角色)：选完角色若有进度，弹「继续/重新开始」
     var scenarioScope by remember { mutableStateOf("today") }
@@ -341,68 +337,32 @@ fun MainChatScreen(model: AppViewModel) {
     var expandedDate by remember { mutableStateOf<String?>(null) }
     var menuScene by remember { mutableStateOf<ScenarioSummary?>(null) }   // 长按弹「开始对话/删除」
     var deleteScene by remember { mutableStateOf<ScenarioSummary?>(null) }
+    fun close() { model.showScenePicker.value = false }
 
-    val statusText = when {
-        status.isNotEmpty() -> status
-        isSpeaking -> "AI 正在说话…"
-        isListening -> "正在听你说英语…"
-        isRecording -> "正在采集真实对话…"
-        isWorking -> "正在处理，请稍等"
-        else -> user?.tierName ?: "用真实生活练英语"
-    }
-    val statusColor = when {
-        isRecording -> Color.Red
-        isSpeaking -> Color(0xFFD97706)
-        isListening -> RT.Success
-        isWorking -> RT.Accent
-        else -> RT.TextSecondary
-    }
-
-    val context = LocalContext.current
-    LaunchedEffect(status) {
-        if (status.isNotEmpty()) {
-            Toast.makeText(context, status, Toast.LENGTH_SHORT).show()
+    LaunchedEffect(Unit) { model.loadScenarioList() }
+    // 「私教来电」选了现在练习 → 直接弹 严格/自由 第一问
+    val reminderScene by model.reminderPracticeScene.collectAsState()
+    LaunchedEffect(reminderScene) {
+        reminderScene?.let {
+            model.reminderPracticeScene.value = null
+            modeDialogFor = it
         }
     }
 
     Column(Modifier.fillMaxSize().background(RT.Background).imePadding()) {
-        // 顶栏
+        // 顶栏：标题 + 关闭
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 44.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(36.dp).background(RT.BrandBrush, CircleShape)
-                    .clickable { showAccount = true },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text((user?.displayName ?: "我").take(1), color = Color.White, fontWeight = FontWeight.SemiBold)
+            Column(Modifier.weight(1f)) {
+                Text("选择场景", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
+                Text("选一个场景，严格按剧本或自由发挥地练", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
             }
-            Spacer(Modifier.width(10.dp))
-            Column {
-                Text("RealTalk", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
-                Text("场景列表与日期选择", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
-            }
-            Spacer(Modifier.weight(1f))
-            // 主界面最右侧：AI英语私教入口——绿色圆形电话按钮（与左侧圆形头像对称）
-            Box(
-                Modifier.size(36.dp).background(RT.Success, CircleShape).clickable { model.startFreeTalk() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("☎", color = Color.White, fontSize = 18.sp)
-            }
+            Text("✕", color = RT.TextSecondary, fontSize = 16.sp,
+                modifier = Modifier.clickable { close() }.padding(10.dp))
         }
-
-        // 顶部状态：低调的「圆点 + 文字」指示器，不再是抢眼的彩色胶囊
-        Row(
-            Modifier.align(Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Box(Modifier.size(6.dp).background(statusColor, CircleShape))
-            Text(statusText, fontSize = (12 * fontScale).sp, fontWeight = FontWeight.Medium, color = RT.TextSecondary)
-        }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(2.dp))
 
         Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             BrandSegmented(
@@ -432,7 +392,7 @@ fun MainChatScreen(model: AppViewModel) {
                 fontScale = fontScale,
                 expandedGroup = expandedPresetGroup,
                 onToggleGroup = { g -> expandedPresetGroup = if (expandedPresetGroup == g) null else g },
-                onPickScene = { scene -> if (!busy) roleDialogFor = model.presetSummary(scene) },
+                onPickScene = { scene -> if (!busy) modeDialogFor = model.presetSummary(scene) },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
         } else {
@@ -485,7 +445,7 @@ fun MainChatScreen(model: AppViewModel) {
                                 items.forEach { summary ->
                                     Box(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp)) {
                                         ScenarioCard(summary, fontScale, showDate = false,
-                                            onClick = { if (!busy) roleDialogFor = summary },
+                                            onClick = { if (!busy) modeDialogFor = summary },
                                             onLongClick = { menuScene = summary })
                                     }
                                 }
@@ -503,29 +463,36 @@ fun MainChatScreen(model: AppViewModel) {
                 ) {
                     items(todayItems, key = { it.sceneId }) { summary ->
                         ScenarioCard(summary, fontScale, showDate = false,
-                            onClick = { if (!busy) roleDialogFor = summary },
+                            onClick = { if (!busy) modeDialogFor = summary },
                             onLongClick = { menuScene = summary })
                     }
                 }
             }
         }
 
-        // 主操作按钮：录音中为红色，其余用品牌渐变（Box 才能铺渐变）
-        Box(
-            Modifier
-                .fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).height(56.dp)
-                .background(
-                    if (isRecording) androidx.compose.ui.graphics.SolidColor(Color.Red) else RT.BrandBrush,
-                    RoundedCornerShape(99.dp),
-                )
-                .clickable(enabled = !busy) { model.toggleRecording() },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (isRecording) "停止采集并生成场景" else "开始采集日常对话",
-                color = Color.White, fontWeight = FontWeight.SemiBold,
-            )
-        }
+    }
+
+    // 第一问：严格按剧本 / 围绕场景自由发挥（两种都全程纠错指导）
+    modeDialogFor?.let { summary ->
+        AlertDialog(
+            onDismissRequest = { modeDialogFor = null },
+            title = { Text("「${summary.title}」怎么练？") },
+            text = {
+                Column {
+                    OutlinedButton(
+                        onClick = { modeDialogFor = null; roleDialogFor = summary },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("严格按剧本对话（逐句提示与纠正）") }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = { modeDialogFor = null; model.startFreeScene(summary); close() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("围绕场景自由发挥（不按死流程）") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { modeDialogFor = null }) { Text("取消") } },
+        )
     }
 
     // 角色选择
@@ -544,7 +511,8 @@ fun MainChatScreen(model: AppViewModel) {
                                 if (summary.inProgress) {
                                     resumeChoiceFor = summary to role.id   // 有未完成进度：先问继续/重新开始
                                 } else {
-                                    model.startScenarioPractice(summary, role.id)
+                                    model.startStrictScene(summary, role.id)
+                                    close()
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -565,12 +533,12 @@ fun MainChatScreen(model: AppViewModel) {
             text = {
                 Column {
                     OutlinedButton(
-                        onClick = { resumeChoiceFor = null; model.startScenarioPractice(summary, roleId, resume = true) },
+                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = true); close() },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("继续上次进度") }
                     Spacer(Modifier.height(6.dp))
                     OutlinedButton(
-                        onClick = { resumeChoiceFor = null; model.startScenarioPractice(summary, roleId, resume = false) },
+                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = false); close() },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("从头重新开始") }
                 }
@@ -618,108 +586,8 @@ fun MainChatScreen(model: AppViewModel) {
         )
     }
 
-    // 对话前询问（指导/对话方式设为 ask 时）
-    PrePracticeDialog(model)
-
-    if (showAccount) {
-        ModalBottomSheet(onDismissRequest = { showAccount = false }) {
-            AccountSheet(model)
-        }
-    }
-
-    // 沉浸式对练字幕：开练后全屏覆盖在主界面之上
-    if (showImmersive) ImmersiveRoleplayScreen(model)
-    // 高级会员沉浸式 + 实时语音大模型对练
-    if (showVoiceLLM) ImmersiveVoiceLLMScreen(model)
-    // 自由对话（一对一语音老师）
-    val showFreeTalk by model.showFreeTalk.collectAsState()
-    if (showFreeTalk) FreeTalkScreen(model)
-    // 学习提醒「私教来电」
-    val incomingReminder by model.incomingReminder.collectAsState()
-    incomingReminder?.let { ReminderCallScreen(model, it) }
-    // 来电中选「现在练习」→ 走与点场景卡完全相同的流程（选角色 → 继续/重新 → 对话方式）
-    val reminderScene by model.reminderPracticeScene.collectAsState()
-    LaunchedEffect(reminderScene) {
-        reminderScene?.let {
-            model.reminderPracticeScene.value = null
-            roleDialogFor = it
-        }
-    }
 }
 
-/** 对话前询问：指导/对话方式设为「每次询问」时，开练前选择本次方式（可勾选以后不再询问）。 */
-@Composable
-private fun PrePracticeDialog(model: AppViewModel) {
-    val pending by model.pendingPractice.collectAsState()
-    val convPref by model.conversationPreference.collectAsState()
-    val guidPref by model.guidancePreference.collectAsState()
-    val user by model.user.collectAsState()
-    if (pending == null) return
-
-    var conversation by remember { mutableStateOf("manual") }   // 默认手工触发式
-    var guidance by remember { mutableStateOf("realtime") }
-    var rememberConv by remember { mutableStateOf(false) }
-    var rememberGuid by remember { mutableStateOf(false) }
-    // 语音模型对话仅高级会员可选
-    val convOptions = buildList {
-        if (user?.planTier == "premium") add("voice" to "语音模型")
-        add("immersive" to "沉浸式")
-        add("manual" to "手工触发")
-    }
-
-    AlertDialog(
-        onDismissRequest = { model.cancelPendingPractice() },
-        title = { Text("开始练习") },
-        text = {
-            Column {
-                if (convPref == "ask") {
-                    Text("对话方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        convOptions.forEach { (k, l) ->
-                            OutlinedButton(
-                                onClick = { conversation = k },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp, vertical = 8.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (conversation == k) RT.Accent else RT.Hairline),
-                            ) { Text(l, fontSize = 13.sp, color = if (conversation == k) RT.Accent else RT.TextSecondary) }
-                        }
-                    }
-                    if (conversation == "voice") {
-                        Spacer(Modifier.height(4.dp))
-                        Text("与实时语音大模型直接语音对话，结束后给出评分。", fontSize = 11.sp, color = RT.TextSecondary)
-                    }
-                    CheckRow(rememberConv) { rememberConv = it }
-                    Spacer(Modifier.height(12.dp))
-                }
-                // 语音模型对话不走逐句文字指导，故选它时不再询问指导方式
-                if (guidPref == "ask" && conversation != "voice") {
-                    Text("指导方式", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = RT.TextPrimary)
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("realtime" to "实时指导", "final" to "结束后指导").forEach { (k, l) ->
-                            OutlinedButton(
-                                onClick = { guidance = k },
-                                modifier = Modifier.weight(1f),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (guidance == k) RT.Accent else RT.Hairline),
-                            ) { Text(l, color = if (guidance == k) RT.Accent else RT.TextSecondary) }
-                        }
-                    }
-                    CheckRow(rememberGuid) { rememberGuid = it }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                // 非 ask 时按保存的偏好（含 voice），由 VM 负责把 voice 解析为高级会员专属
-                val conv = if (convPref == "ask") conversation else convPref
-                val guid = if (guidPref == "ask") guidance else if (guidPref == "final") "final" else "realtime"
-                model.confirmPendingPractice(conv, guid, rememberConv, rememberGuid)
-            }) { Text("开始") }
-        },
-        dismissButton = { TextButton(onClick = { model.cancelPendingPractice() }) { Text("取消") } },
-    )
-}
 
 @Composable
 private fun CheckRow(checked: Boolean, onChange: (Boolean) -> Unit) {

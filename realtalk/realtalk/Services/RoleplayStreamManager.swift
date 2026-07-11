@@ -22,8 +22,20 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var onCommitted: (() -> Void)?      // 一句录音已提交后端（用于「已发送，正在识别评分…」状态提示）
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕(带中文翻译)。协议其余部分与沉浸式完全一致。
     var onFreeTalkHistory: (([(speaker: String, text: String)]) -> Void)?
-    var onUserText: ((String, String) -> Void)?   // (text, translation)
+    /// (text, translation, 词级发音详情, 语速wpm)——词级来自本地语音服务器 whisper 置信度，云端无词级时为空
+    var onUserText: ((String, String, [WordScore], Int) -> Void)?
     var onAIText: ((String, String) -> Void)?      // (text, translation)
+    var onTerminated: ((String) -> Void)?          // 涉敏感话题被后端中断：提示并退出会话
+
+    /// 词级发音详情（低置信 ≈ 发音待提高）
+    struct WordScore {
+        let word: String
+        let probability: Double
+    }
+
+    /// 手动触发模式（常规「点击说话」）：VAD 只做电平显示，录音的开始/发送都由用户点按驱动。
+    @Published private(set) var manualRecording = false
+    var manualCommit = false
 
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
@@ -199,6 +211,19 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         audioLevel = level
         guard connected, isPaused == false else { return }
 
+        if manualCommit {
+            // 手动模式：点按开始→流式上传，点按结束→commit；不做自动静音判定/语音抢话
+            if isAISpeaking {
+                if let p = aiPlayer, p.isPlaying {
+                    p.updateMeters()
+                    aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
+                }
+                return
+            }
+            if manualRecording { sendFrame(data) }
+            return
+        }
+
         if isAISpeaking {
             if let p = aiPlayer, p.isPlaying {
                 p.updateMeters()
@@ -254,6 +279,44 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     private func sendFrame(_ data: Data) {
         task?.send(.data(data)) { _ in }
+    }
+
+    // MARK: 手动触发（常规「点击说话」）与键盘输入
+
+    /// 点按开始说话：AI 正在朗读则先打断；随后帧流式上传直到 endManualUtterance。
+    func beginManualUtterance() {
+        guard manualCommit, connected else { return }
+        if isAISpeaking {
+            sendJSON(["type": "interrupt"])
+            suppressAiAudio = true
+            aiPlayer?.stop(); aiPlayer = nil
+            aiQueue.removeAll()
+            isAISpeaking = false
+            aiAudioLevel = 0
+        }
+        sendJSON(["type": "reset_audio"])   // 清掉可能残留的帧，从干净状态开始
+        manualRecording = true
+        if engineRunning == false { startRecording() }
+    }
+
+    /// 点按结束：提交本句（跳过 VAD 噪音门槛——用户明确点了发送）。
+    func endManualUtterance() {
+        guard manualCommit, manualRecording else { return }
+        manualRecording = false
+        suppressAiAudio = false
+        sendJSON(["type": "commit", "format": "pcm16", "sample_rate": 16000, "guidance_mode": guidanceMode])
+        onCommitted?()
+    }
+
+    /// 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
+    func sendText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return }
+        if manualRecording { manualRecording = false }   // 丢弃未完成的录音轮
+        resetUtterance(sendReset: true)
+        suppressAiAudio = false
+        sendJSON(["type": "text", "text": trimmed])
+        onCommitted?()
     }
 
     private func bargeIn() {
@@ -361,7 +424,17 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             }
             startRecording()
         case "user_text":
-            if let t = obj["text"] as? String { onUserText?(t, obj["translation"] as? String ?? "") }
+            if let t = obj["text"] as? String {
+                let words = (obj["words"] as? [[String: Any]] ?? []).compactMap { w -> WordScore? in
+                    guard let word = w["word"] as? String, word.isEmpty == false else { return nil }
+                    return WordScore(word: word, probability: (w["probability"] as? Double) ?? 1.0)
+                }
+                onUserText?(t, obj["translation"] as? String ?? "", words, (obj["wpm"] as? Int) ?? 0)
+            }
+        case "terminated":
+            // 涉敏感话题：后端已中断会话——提示并整体退出
+            onTerminated?(obj["reason"] as? String ?? "本次对话已结束")
+            stop()
         case "ai_text":
             if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
         case "ai_line":

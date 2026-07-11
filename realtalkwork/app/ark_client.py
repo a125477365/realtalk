@@ -531,6 +531,62 @@ def translate_instructions() -> str:
     )
 
 
+async def generate_refinements(user_text: str, user_id: str | None = None) -> list[dict[str, str]]:
+    """语境润色（详细指导浮层用）：把用户这句话改写成 地道美式/商务正式/地道英式 三种风格。
+    一次调用产出三风格；模型不可用直接抛错（#9 无兜底）。计费与文字模型一致(kind=chat)。"""
+    config = resolve_ai_config()
+    if not config.enabled:
+        raise RuntimeError("AI 模型未配置：请在管理台「系统设置 → 模型」中配置")
+    system = (
+        _SCOPE_POLICY
+        + "You polish ONE English learner utterance into three styles. Respond with ONLY a JSON object "
+          '(no markdown): {"casual": "...", "business": "...", "british": "..."}\n'
+          "- casual: natural everyday American English.\n"
+          "- business: polite, professional business English.\n"
+          "- british: idiomatic British English.\n"
+          "Keep the original meaning; fix grammar; each ≤ 2 sentences. If the input is Chinese, first express it in English."
+        + _SENSITIVE_CONTENT_POLICY + _UNTRUSTED_DATA_POLICY
+    )
+    content = await _chat_completion(
+        [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
+        temperature=0.4,
+        kind="chat",
+        user_id=user_id,
+        config=config,
+    )
+    try:
+        data = _extract_json(content)
+        items = [
+            {"style": "地道美式", "text": str(data.get("casual", "")).strip()},
+            {"style": "商务正式", "text": str(data.get("business", "")).strip()},
+            {"style": "地道英式", "text": str(data.get("british", "")).strip()},
+        ]
+        if all(i["text"] for i in items):
+            return items
+    except Exception:  # noqa: BLE001 — 小模型常不按 JSON 输出，走下方逐风格纯文本回退
+        pass
+    # 弱模型回退：三次极简单风格改写（每次只要一句纯文本，小模型稳定得多）。
+    styles = [
+        ("地道美式", "natural everyday American English"),
+        ("商务正式", "polite professional business English"),
+        ("地道英式", "idiomatic British English"),
+    ]
+    items = []
+    for label, style_en in styles:
+        text = await _chat_completion(
+            [{"role": "system", "content": (
+                f"Rewrite the user's sentence in {style_en}. Fix grammar, keep the meaning. "
+                "Output ONLY the rewritten sentence — no quotes, no explanations."
+            )}, {"role": "user", "content": user_text}],
+            temperature=0.3,
+            kind="chat",
+            user_id=user_id,
+            config=config,
+        )
+        items.append({"style": label, "text": text.strip().strip('"').strip()})
+    return items
+
+
 async def generate_translation(user_text: str, user_id: str | None = None) -> str:
     """实时翻译一轮（分步管线路径用）：英→简中 / 中→英，只回译文。
     模型不可用直接抛错（#9 无兜底）。计费与文字模型一致(kind=chat)。"""
@@ -611,7 +667,14 @@ async def generate_freetalk_reply(
                     return m.group(1).replace('\\"', '"').replace("\\n", " ").strip()
             reply_en = _field("reply_en")
             if not reply_en:
-                raise RuntimeError("模型输出格式异常（近似 JSON 但无法提取 reply_en）；请重试或更换更强模型")
+                # 近似 JSON 但连 reply_en 字段都抠不出（弱模型偶发）：从残文里打捞英文句子当回复，
+                # 剥掉 JSON 脚手架（花括号/键名/引号），绝不把大括号原文上屏/朗读。仍抠不到才回退开场白。
+                salvage = re.sub(r'"[a-z_]+"\s*:', " ", plain)          # 去键名
+                salvage = re.sub(r'[{}\[\]"]', " ", salvage)             # 去结构符号
+                salvage = re.sub(r"\s+", " ", salvage).strip(" ,:")
+                reply_en = salvage or _FREETALK_FALLBACK["reply_en"]
+                print(f"[ai] 自由对话回复JSON残缺，打捞英文句采用：{reply_en[:60]!r}", flush=True)
+                return {"user_display": "", "user_translation": "", "reply_en": reply_en, "reply_zh": ""}
             print(f"[ai] 自由对话回复JSON解析失败，正则提取字段采用：{reply_en[:60]!r}", flush=True)
             return {"user_display": _field("user_display"), "user_translation": _field("user_translation"),
                     "reply_en": reply_en, "reply_zh": _field("reply_zh")}

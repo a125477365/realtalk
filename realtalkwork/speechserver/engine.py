@@ -19,8 +19,8 @@ import wave
 MODELS_DIR = os.getenv("MODELS_DIR", "/models")
 DEVICE = os.getenv("SPEECH_DEVICE", "cpu")                      # cpu / cuda
 ASR_MODEL = os.getenv("SPEECH_ASR_MODEL", "small")              # whisper 尺寸 tiny/base/small/medium/large-v3
-LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
-LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-0.5b-instruct-q4_k_m.gguf")
+LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
+LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LLM_BASE_URL = os.getenv("SPEECH_LLM_BASE_URL", "")             # 设了则代理外部 OpenAI 兼容 LLM，不在本进程加载
 LLM_CTX = int(os.getenv("SPEECH_LLM_CTX", "8192"))
 TTS_VOICE_EN = os.getenv("SPEECH_TTS_VOICE_EN", "en_US-lessac-medium")
@@ -28,7 +28,9 @@ TTS_VOICE_ZH = os.getenv("SPEECH_TTS_VOICE_ZH", "zh_CN-huayan-medium")
 HF_BASE = (os.getenv("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
 
 _ASR_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_ASR_CONCURRENCY", "3")))
-_LLM_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_LLM_CONCURRENCY", "2")))
+# LLM 并发必须为 1：llama.cpp 进程内单实例【非线程安全】，并发调用会崩溃重启整个容器。
+# 需要更高并发时用 SPEECH_LLM_BASE_URL 代理外部 llama-server（多实例/连续批处理），而不是调大这里。
+_LLM_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_LLM_CONCURRENCY", "1")))
 _TTS_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_TTS_CONCURRENCY", "6")))
 
 _WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
@@ -102,23 +104,50 @@ class Engines:
 
 async def transcribe(audio_bytes: bytes, language: str | None, prompt: str | None = None) -> str:
     """ASR：语音→文字。language: en/zh/None(自动)。并发受限，超出排队。"""
+    text, _words, _dur = await transcribe_verbose(audio_bytes, language, prompt)
+    return text
+
+
+async def transcribe_verbose(
+    audio_bytes: bytes, language: str | None, prompt: str | None = None
+) -> tuple[str, list[dict], float]:
+    """ASR 词级详情：返回 (文本, words[{word,start,end,probability}], 音频时长秒)。
+    词级 probability 供客户端发音标色（低置信≈发音待提高的近似信号）；start/end 供语速/停顿分析。"""
     async with _ASR_SEM:
         return await asyncio.to_thread(_transcribe_sync, audio_bytes, language, prompt)
 
 
-def _transcribe_sync(audio_bytes: bytes, language: str | None, prompt: str | None) -> str:
+def _transcribe_sync(audio_bytes: bytes, language: str | None, prompt: str | None) -> tuple[str, list[dict], float]:
     model = Engines.whisper()
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=True) as fh:
         fh.write(audio_bytes)
         fh.flush()
-        segments, _info = model.transcribe(
-            fh.name, language=language or None, beam_size=1, vad_filter=True, initial_prompt=prompt or None
+        segments, info = model.transcribe(
+            fh.name, language=language or None, beam_size=1, vad_filter=True,
+            initial_prompt=prompt or None, word_timestamps=True,
         )
-        out = "".join(seg.text for seg in segments).strip()
-        if not out:   # 短句偶被 VAD 全滤 → 关 VAD 再试一次
-            segments, _info = model.transcribe(fh.name, language=language or None, beam_size=1, vad_filter=False)
-            out = "".join(seg.text for seg in segments).strip()
-    return out
+        text, words = _collect_words(segments)
+        if not text:   # 短句偶被 VAD 全滤 → 关 VAD 再试一次
+            segments, info = model.transcribe(
+                fh.name, language=language or None, beam_size=1, vad_filter=False, word_timestamps=True
+            )
+            text, words = _collect_words(segments)
+    return text, words, float(getattr(info, "duration", 0.0) or 0.0)
+
+
+def _collect_words(segments) -> tuple[str, list[dict]]:
+    parts: list[str] = []
+    words: list[dict] = []
+    for seg in segments:   # segments 是生成器：迭代即触发实际解码
+        parts.append(seg.text)
+        for w in (seg.words or []):
+            words.append({
+                "word": w.word.strip(),
+                "start": round(float(w.start), 2),
+                "end": round(float(w.end), 2),
+                "probability": round(float(w.probability), 3),
+            })
+    return "".join(parts).strip(), words
 
 
 async def chat(messages: list[dict], temperature: float = 0.6, max_tokens: int = 512, stream_cb=None) -> str:

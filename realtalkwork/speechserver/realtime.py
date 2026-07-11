@@ -208,8 +208,10 @@ async def handle_session(ws: WebSocket) -> None:
                     continue
                 if (ev.get("format") or "").lstrip(".") in ("pcm16", "pcm"):
                     audio = _pcm16_to_wav(audio, int(ev.get("sample_rate") or 16000))
-                text = await engine.transcribe(audio, language)
-                await _sj({"type": "conversation.item.input_audio_transcription.completed", "transcript": text})
+                text, words, duration = await engine.transcribe_verbose(audio, language)
+                # words/duration：词级置信度与时长（发音标色/语速分析），调用方可忽略
+                await _sj({"type": "conversation.item.input_audio_transcription.completed",
+                           "transcript": text, "words": words, "duration": duration})
                 # 对齐 OpenAI 语义：commit 只转写；等调用方发 response.create 才推理
                 # （api 后端沉浸式要先做评分/进度判断再决定说什么，必须能只拿转写）
                 pending_user_text = text

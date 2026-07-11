@@ -235,6 +235,11 @@ final class APIClient {
         )
     }
 
+    /// 语境润色（详细指导浮层）：一句话 → 地道美式/商务正式/地道英式 三风格。
+    func refine(text: String, token: String) async throws -> RefineResponse {
+        try await post("/practice/refine", body: RefineRequest(text: text), token: token)
+    }
+
     func submitRoleplayMessage(
         sessionId: String,
         message: String,
@@ -328,11 +333,13 @@ final class APIClient {
     }
 
     /// 自由对话（一对一语音老师）流地址；协议同沉浸式流。'+' 强制编码为 %2B（原因见 roleplayStreamURL）。
-    /// mode: chat=私教对话（默认）/ translate=实时翻译（同界面切换，英↔中同传并朗读译文）。
-    func freeTalkStreamURL(token: String, mode: String = "chat") -> URL? {
+    /// mode: chat=对话（默认）/ translate=实时翻译；sceneId 非空 = 带场景剧本进场（自由发挥式场景对话）。
+    func freeTalkStreamURL(token: String, mode: String = "chat", sceneId: String = "") -> URL? {
         var comps = URLComponents(url: url(for: "/freetalk/stream"), resolvingAgainstBaseURL: false)
-        comps?.queryItems = [URLQueryItem(name: "token", value: token),
-                             URLQueryItem(name: "mode", value: mode)]
+        var items = [URLQueryItem(name: "token", value: token),
+                     URLQueryItem(name: "mode", value: mode)]
+        if sceneId.isEmpty == false { items.append(URLQueryItem(name: "scene_id", value: sceneId)) }
+        comps?.queryItems = items
         if let encoded = comps?.percentEncodedQuery {
             comps?.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
         }

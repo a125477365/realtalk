@@ -1,7 +1,16 @@
 import Foundation
 
 enum AppConfig {
-    static let apiBaseURL = URL(string: "http://192.168.6.3:8000")!
+    static let apiBaseURL: URL = {
+        #if DEBUG
+        // UI 自动化验证钩子（仅 Debug）：simctl launch 传 --uiverify-api <url> 指向本机联调后端
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "--uiverify-api"), i + 1 < args.count, let u = URL(string: args[i + 1]) {
+            return u
+        }
+        #endif
+        return URL(string: "http://192.168.6.3:8000")!
+    }()
     static let subscriptionProductID = "realtalk.pro.monthly"
     static let localRetentionDays = 3
 

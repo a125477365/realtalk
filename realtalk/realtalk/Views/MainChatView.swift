@@ -46,18 +46,23 @@ enum RTTheme {
     )
 }
 
-struct MainChatView: View {
+/// 「严格/自由」二选一弹窗载荷（选场景后的第一问）。
+private struct ModeChoice: Identifiable {
+    let id = UUID()
+    let summary: ScenarioSummary
+}
+
+/// 场景选择二级页（原主界面列表下沉）：今天/全部/通用场景 → 点卡片 →
+/// 「严格按剧本 / 自由发挥」→ 严格再选角色（含续练判断）→ 回常规主界面进入场景对话。
+struct ScenarioPickerView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var auth: AuthStore
-    @EnvironmentObject private var speech: SpeechCaptureManager
-    @EnvironmentObject private var practiceSpeech: SpeechPracticeManager
-    @EnvironmentObject private var voice: VoicePromptPlayer
+    @Environment(\.dismiss) private var dismiss
 
-    @State private var showingAccount = false
+    @State private var modeChoice: ModeChoice?
     @State private var roleDialogScenario: ScenarioSummary?
     /// 选完角色后、若该场景有未完成进度，弹「继续 / 重新开始」二选一。
     @State private var resumeChoice: ResumeChoice?
-    @State private var showImmersive = false
     @State private var scenarioScope = "today"
     @State private var expandedPresetGroupID: String?
     @State private var expandedDate: Date?
@@ -69,62 +74,36 @@ struct MainChatView: View {
                 RTTheme.background.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    topBar
-                    statusPill
+                    header
                     scenarioScopePicker
                     scenarioStrip
-                    captureButton
                 }
-            }
-            // 中断流程的系统/模型/额度异常：弹失败提示框
-            .alert(item: $model.failureAlert) { alert in
-                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
-            }
-            // 开始对练即进入沉浸式字幕；练习完成或退出回到聊天
-            .onChange(of: model.roleplay?.sessionId) { _, sid in
-                if sid != nil, model.roleplay?.completed == false { showImmersive = true }
-            }
-            .fullScreenCover(isPresented: $showImmersive) {
-                ImmersiveRoleplayView()
-            }
-            // 高级会员沉浸式 + 实时语音大模型对练
-            .fullScreenCover(isPresented: $model.showVoiceLLM) {
-                ImmersiveVoiceLLMView()
-            }
-            .fullScreenCover(isPresented: $model.showFreeTalk) {
-                FreeTalkView(stream: model.freeStream)
-            }
-            // 学习提醒「私教来电」
-            .fullScreenCover(isPresented: Binding(
-                get: { model.incomingReminder != nil },
-                set: { if $0 == false { model.incomingReminder = nil } }
-            )) {
-                if let scenario = model.incomingReminder {
-                    ReminderCallView(scenario: scenario)
-                }
-            }
-            // 来电中选「现在练习」→ 走与点场景卡完全相同的流程（选角色 → 继续/重新 → 对话方式）
-            .onChange(of: model.reminderPracticeScene) { _, scene in
-                if let scene {
-                    model.reminderPracticeScene = nil
-                    roleDialogScenario = scene
-                }
-            }
-            .sheet(isPresented: Binding(
-                get: { model.pendingPractice != nil },
-                set: { if $0 == false { model.cancelPendingPractice() } }
-            )) {
-                PrePracticeSheet()
             }
             .task {
-                // 登录后进入主界面时加载数据（bootstrap 在登录前已跑过、那时无 token 被跳过）
-                await model.loadBillingAccount()
                 await model.loadScenarioList()
                 await model.loadPracticeHistory()
             }
-            .sheet(isPresented: $showingAccount) {
-                AccountPanelView()
-                    .presentationDetents([.large])
+            // 选场景 → 第一问：严格按剧本 / 围绕场景自由发挥（两种都全程纠错指导）
+            .confirmationDialog(
+                modeChoice.map { "「\($0.summary.title)」怎么练？" } ?? "选择方式",
+                isPresented: Binding(
+                    get: { modeChoice != nil },
+                    set: { if $0 == false { modeChoice = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let choice = modeChoice {
+                    Button("严格按剧本对话（逐句提示与纠正）") {
+                        modeChoice = nil
+                        roleDialogScenario = choice.summary
+                    }
+                    Button("围绕场景自由发挥（不按死流程）") {
+                        modeChoice = nil
+                        model.startFreeScene(choice.summary)
+                        dismiss()
+                    }
+                    Button("取消", role: .cancel) { modeChoice = nil }
+                }
             }
             .confirmationDialog(
                 roleDialogScenario.map { "练习「\($0.title)」，你想扮演谁？" } ?? "选择角色",
@@ -142,7 +121,8 @@ struct MainChatView: View {
                                 // 有未完成进度：先问继续还是重新开始
                                 resumeChoice = ResumeChoice(summary: summary, roleId: role.id)
                             } else {
-                                Task { await model.startScenarioPractice(summary, roleId: role.id) }
+                                Task { await model.startStrictScene(summary, roleId: role.id) }
+                                dismiss()
                             }
                         }
                     }
@@ -160,11 +140,13 @@ struct MainChatView: View {
                 if let choice = resumeChoice {
                     Button("继续上次进度") {
                         resumeChoice = nil
-                        Task { await model.startScenarioPractice(choice.summary, roleId: choice.roleId, resume: true) }
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: true) }
+                        dismiss()
                     }
                     Button("从头重新开始") {
                         resumeChoice = nil
-                        Task { await model.startScenarioPractice(choice.summary, roleId: choice.roleId, resume: false) }
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: false) }
+                        dismiss()
                     }
                     Button("取消", role: .cancel) { resumeChoice = nil }
                 }
@@ -190,63 +172,27 @@ struct MainChatView: View {
 
     // MARK: 顶栏
 
-    private var topBar: some View {
-        HStack(spacing: 12) {
-            Button {
-                showingAccount = true
-            } label: {
-                ZStack {
-                    Circle().fill(RTTheme.brandGradient)
-                    Text((auth.user?.displayName ?? "我").prefix(1))
-                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.plain)
-
+    private var header: some View {
+        HStack {
             VStack(alignment: .leading, spacing: 1) {
-                Text("RealTalk")
+                Text("选择场景")
                     .font(.headline)
                     .foregroundStyle(RTTheme.textPrimary)
-                Text("场景列表与日期选择")
+                Text("选一个场景，严格按剧本或自由发挥地练")
                     .font(.system(size: 11 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
             }
-
             Spacer()
-
-            // 主界面最右侧：AI英语私教入口——绿色圆形电话按钮（与左侧圆形头像对称）
-            Button {
-                model.startFreeTalk()
-            } label: {
-                ZStack {
-                    Circle().fill(RTTheme.success)
-                    Image(systemName: "phone.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 34, height: 34)
-                .shadow(color: RTTheme.success.opacity(0.35), radius: 6, y: 2)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(RTTheme.textSecondary)
+                    .padding(9)
+                    .background(RTTheme.hairline, in: Circle())
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    // 顶部状态：低调的「圆点 + 文字」指示器，不再是抢眼的彩色胶囊
-    private var statusPill: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 6, height: 6)
-            Text(model.statusMessage.isEmpty ? statusText : model.statusMessage)
-                .font(.system(size: 12 * model.fontScale, weight: .medium))
-                .foregroundStyle(RTTheme.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.bottom, 10)
+        .padding(.vertical, 12)
     }
 
     private var scenarioScopePicker: some View {
@@ -502,7 +448,7 @@ struct MainChatView: View {
                     ForEach(group.scenes) { scene in
                         Divider().background(RTTheme.hairline).padding(.leading, 14)
                         Button {
-                            roleDialogScenario = model.summary(for: scene)
+                            modeChoice = ModeChoice(summary: model.summary(for: scene))
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "play.circle")
@@ -552,7 +498,7 @@ struct MainChatView: View {
     @ViewBuilder
     private func scenarioCard(_ summary: ScenarioSummary) -> some View {
         Button {
-            roleDialogScenario = summary
+            modeChoice = ModeChoice(summary: summary)
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -585,7 +531,7 @@ struct MainChatView: View {
         // 长按弹「开始对话 / 删除场景」；单击仍是直接进入对练（不变）
         .contextMenu {
             Button {
-                roleDialogScenario = summary
+                modeChoice = ModeChoice(summary: summary)
             } label: { Label("开始对话", systemImage: "bubble.left.and.bubble.right") }
             Button(role: .destructive) {
                 deleteCandidate = summary
@@ -593,120 +539,9 @@ struct MainChatView: View {
         }
     }
 
-    private var captureButton: some View {
-        Button {
-            Task { await model.toggleRecording() }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: speech.isRecording ? "stop.fill" : "waveform.badge.plus")
-                    .font(.system(size: 20, weight: .semibold))
-                Text(speech.isRecording ? "停止采集并生成场景" : "开始采集日常对话")
-                    .font(.system(size: 16 * model.fontScale, weight: .semibold))
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .background(speech.isRecording ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.brandGradient), in: Capsule())
-            .padding(.horizontal, 18)
-            .padding(.top, 8)
-            .padding(.bottom, 14)
-        }
-        .buttonStyle(.plain)
-        // 等待后台处理（含通用场景生成）时禁用，避免误触发新请求；采集中仍可点击以停止
-        .disabled(model.isBusy)
-        .opacity(model.isBusy ? 0.55 : 1)
-        .background(RTTheme.background)
-    }
 
-    private var statusText: String {
-        if voice.isSpeaking { return "AI 正在说话…" }
-        if practiceSpeech.isListening { return "正在听你说英语…" }
-        if speech.isRecording { return "正在采集真实对话…" }
-        if model.isWorking { return "正在处理，请稍等" }
-        if let usage = model.billingAccount?.usage, usage.overBudget {
-            return "本月 AI 额度已用完"
-        }
-        return auth.user?.tierName ?? "用真实生活练英语"
-    }
 
-    private var statusColor: Color {
-        if speech.isRecording { return .red }
-        if voice.isSpeaking { return .orange }
-        if practiceSpeech.isListening { return RTTheme.success }
-        if model.isWorking { return RTTheme.accent }
-        return RTTheme.textSecondary
-    }
 
 }
 
 /// 「对话前询问」：指导/对话方式设为每次询问时，开练前选择本次方式（可勾选以后不再询问）。
-private struct PrePracticeSheet: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var conversation: AppModel.ConversationMode = .manual   // 默认手工触发式
-    @State private var guidance: AppModel.GuidanceMode = .realtime
-    @State private var rememberConversation = false
-    @State private var rememberGuidance = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                if model.conversationPreference == .ask {
-                    Section("对话方式") {
-                        Picker("对话方式", selection: $conversation) {
-                            if model.isPremium {
-                                Text("语音模型对话").tag(AppModel.ConversationMode.voice)
-                            }
-                            Text("沉浸式对话").tag(AppModel.ConversationMode.immersive)
-                            Text("手工触发式对话").tag(AppModel.ConversationMode.manual)
-                        }
-                        .pickerStyle(.segmented)
-                        if conversation == .voice {
-                            Text("与实时语音大模型直接语音对话，结束后给出评分。")
-                                .font(.system(size: 12 * model.fontScale))
-                                .foregroundStyle(.secondary)
-                        }
-                        Toggle("以后不再询问，按此设置", isOn: $rememberConversation)
-                    }
-                }
-                // 语音模型对话不走逐句文字指导，故选它时不再询问指导方式
-                if model.guidancePreference == .ask && conversation != .voice {
-                    Section("指导方式") {
-                        Picker("指导方式", selection: $guidance) {
-                            Text("实时指导").tag(AppModel.GuidanceMode.realtime)
-                            Text("结束后指导").tag(AppModel.GuidanceMode.final)
-                        }
-                        .pickerStyle(.segmented)
-                        Toggle("以后不再询问，按此设置", isOn: $rememberGuidance)
-                    }
-                }
-            }
-            .navigationTitle("开始练习")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { model.cancelPendingPractice() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("开始") {
-                        let conv: AppModel.ConversationMode = model.conversationPreference == .ask
-                            ? conversation
-                            : model.resolvedConversationMode(model.conversationPreference)
-                        let guid: AppModel.GuidanceMode = model.guidancePreference == .ask
-                            ? guidance
-                            : (model.guidancePreference == .final ? .final : .realtime)
-                        Task {
-                            await model.confirmPendingPractice(
-                                conversation: conv,
-                                guidance: guid,
-                                rememberConversation: rememberConversation,
-                                rememberGuidance: rememberGuidance
-                            )
-                        }
-                    }
-                    .fontWeight(.semibold)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-    }
-}

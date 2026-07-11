@@ -35,6 +35,8 @@ import java.time.LocalTime
 import java.util.UUID
 
 /** 与 iOS AppModel 等价的业务编排层。 */
+private var nextItemId = 1L
+
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val auth = AuthStore(application)
@@ -83,58 +85,264 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val myTickets = MutableStateFlow<List<com.example.realtalkad.data.SupportTicket>>(emptyList())
     val roleplayState = MutableStateFlow<RoleplayState?>(null)
     val showImmersive = MutableStateFlow(false)
-    // 自由对话（一对一语音老师）：无场景、无指导区，只有字幕
-    val showFreeTalk = MutableStateFlow(false)
-    // 私教字幕行：speaker(user/ai) + 文本 + 中文翻译(AI行=中译；用户说中文时=英译)
-    data class FreeTalkLine(val speaker: String, val text: String, val translation: String = "")
-    val freeTalkMessages = MutableStateFlow<List<FreeTalkLine>>(emptyList())
-    val freeTalkStatus = MutableStateFlow("")
-    val freeTalkAiSpeaking = MutableStateFlow(false)
-    val freeTalkLevel = MutableStateFlow(0f)
-    val freeTalkAiLevel = MutableStateFlow(0f)
-    val freeTalkPaused = MutableStateFlow(false)
-    val freeTalkWorking = MutableStateFlow(false)   // 已发送、等待后端转写+回复（圈变红，不能打断）
-    val freeTalkMode = MutableStateFlow("chat")     // chat=私教对话 / translate=实时翻译（同界面切换）
+    // ==== 常规主界面（聊天流）：自由聊天 / 自由场景 / 严格场景 统一渲染管道 ====
+    // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
-    fun toggleFreeTalkPause() {
-        freeTalkPaused.value = freeStream.togglePause()
-    }
+    enum class HomeKind { USER, AI, GUIDANCE, HINT }   // GUIDANCE=指导卡；HINT=严格场景下一句中文提示
+    data class HomeChatItem(
+        val id: Long = nextItemId++,
+        val kind: HomeKind,
+        val text: String,
+        val translation: String = "",
+        val words: List<RoleplayStreamClient.WordScore> = emptyList(),
+        val wpm: Int = 0,
+        val masked: Boolean = false,          // 严格场景：AI 说话中先打码，说完再显示
+        val showTranslation: Boolean = false, // 卡内「译」按钮切换
+    )
 
-    fun startFreeTalk(mode: String? = null) {
-        if (mode != null) freeTalkMode.value = mode
-        val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始自由对话"); return }
-        freeTalkMessages.value = emptyList()
-        freeTalkStatus.value = "连接中…"
-        freeTalkWorking.value = false
+    val homeItems = MutableStateFlow<List<HomeChatItem>>(emptyList())
+    val homeStatus = MutableStateFlow("")
+    val homeWorking = MutableStateFlow(false)
+    val homeConnected = MutableStateFlow(false)
+    val homeSceneName = MutableStateFlow<String?>(null)
+    val homeSceneStrict = MutableStateFlow(false)
+    val showTutor = MutableStateFlow(false)
+    val showScenePicker = MutableStateFlow(false)
+    val tutorImmersive = MutableStateFlow(true)     // 私教：沉浸式(自动) / 常规式(点击说话)
+    val tutorMode = MutableStateFlow("chat")        // 私教：chat / translate
+    val homeAiSpeaking = MutableStateFlow(false)
+    val homeUserLevel = MutableStateFlow(0f)
+    val homeAiLevel = MutableStateFlow(0f)
+    val homeManualRecording = MutableStateFlow(false)
+
+    /** 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；null=自由闲聊）。 */
+    fun startHomeChat(sceneId: String? = null, sceneName: String? = null) {
+        val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始对话"); return }
+        homeItems.value = emptyList()
+        homeStatus.value = "连接中…"
+        homeWorking.value = false
+        homeSceneName.value = sceneName
+        homeSceneStrict.value = false
+        freeStream.manualCommit = !showTutor.value || !tutorImmersive.value
         freeStream.onFreeTalkHistory = { items ->
-            freeTalkMessages.value = items.map { FreeTalkLine(it.first, it.second) }; freeTalkStatus.value = ""
+            homeConnected.value = true
+            homeItems.value = items.map { HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second) }
+            homeStatus.value = ""
         }
-        freeStream.onCommitted = { freeTalkWorking.value = true }   // 已发送 → 等后端
-        freeStream.onUserText = { t, tr -> freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("user", t, tr) }
-        freeStream.onAIText = { t, tr -> freeTalkWorking.value = false; freeTalkMessages.value = freeTalkMessages.value + FreeTalkLine("ai", t, tr) }
-        freeStream.onError = { msg -> freeTalkWorking.value = false; freeTalkStatus.value = msg }
-        // 轻提示(没听清/噪音)：清掉“正在思考”红态、显示一下即可，流程已回到聆听
-        freeStream.onResultMessage = { msg -> freeTalkWorking.value = false; freeTalkStatus.value = msg }
-        freeStream.onStatus = { msg -> freeTalkStatus.value = msg }
-        freeStream.onAiSpeaking = { s -> freeTalkAiSpeaking.value = s }
-        freeStream.onUserLevel = { l -> freeTalkLevel.value = l }
-        freeStream.onAiLevel = { l -> freeTalkAiLevel.value = l }
-        freeTalkPaused.value = false
-        showFreeTalk.value = true
-        freeStream.start(api.freeTalkStreamUrl(token, freeTalkMode.value), "realtime")
+        freeStream.onCommitted = { homeWorking.value = true; homeManualRecording.value = false }
+        freeStream.onUserText = { t, tr, words, wpm ->
+            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
+        }
+        freeStream.onAIText = { t, tr ->
+            homeWorking.value = false
+            // 严格场景走 roleplay 流；这里 masked 恒为 false（自由聊天/自由场景直接明文）
+            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr)
+        }
+        freeStream.onError = { msg -> homeWorking.value = false; homeStatus.value = msg; homeConnected.value = false }
+        freeStream.onResultMessage = { msg -> homeWorking.value = false; homeStatus.value = msg }
+        freeStream.onStatus = { msg -> homeStatus.value = msg }
+        freeStream.onAiSpeaking = { s -> homeAiSpeaking.value = s; if (!s) revealMasked() }
+        freeStream.onUserLevel = { l -> homeUserLevel.value = l }
+        freeStream.onAiLevel = { l -> homeAiLevel.value = l }
+        freeStream.onTerminated = { reason ->
+            homeWorking.value = false
+            homeConnected.value = false
+            homeStatus.value = "对话已结束，点击说话重新开始"
+            presentFailure(reason, title = "对话已结束")
+        }
+        freeStream.start(api.freeTalkStreamUrl(token, tutorMode.value, sceneId ?: ""), "realtime")
     }
 
-    fun stopFreeTalk() {
+    fun stopHomeChat() {
         freeStream.stop()
-        freeTalkWorking.value = false
-        showFreeTalk.value = false
+        homeConnected.value = false
+        homeWorking.value = false
+        homeManualRecording.value = false
     }
 
-    /** 界面内切换 对话/实时翻译：断开当前流、按新模式重连（bye 会让语音服务器立即清理旧上下文）。 */
-    fun switchFreeTalkMode(mode: String) {
-        if (mode == freeTalkMode.value) return
+    /** 严格场景：AI 音频播完 → 揭示打码的台词。 */
+    fun revealMasked() {
+        if (homeItems.value.any { it.masked }) {
+            homeItems.value = homeItems.value.map { if (it.masked) it.copy(masked = false) else it }
+        }
+    }
+
+    /** 卡内「译」按钮：切换该条消息的中文翻译显示。 */
+    fun toggleItemTranslation(id: Long) {
+        homeItems.value = homeItems.value.map { if (it.id == id) it.copy(showTranslation = !it.showTranslation) else it }
+    }
+
+    /** 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。 */
+    fun startFreeScene(summary: ScenarioSummary) {
         freeStream.stop()
-        startFreeTalk(mode)
+        stream.stop()
+        homeSceneStrict.value = false
+        startHomeChat(sceneId = summary.sceneId, sceneName = summary.title)
+    }
+
+    /** 退出场景（场景条 X）：严格=结束 roleplay 流；自由=按无场景重连。回到自由闲聊。 */
+    fun exitHomeScene() {
+        if (homeSceneStrict.value) {
+            stream.stop()
+            roleplay = null
+            roleplayState.value = null
+            homeSceneStrict.value = false
+        } else {
+            freeStream.stop()
+        }
+        homeSceneName.value = null
+        startHomeChat()
+    }
+
+    /** 键盘手工输入：自由聊天/自由场景走 freetalk 文字通道；严格场景走 roleplay REST。 */
+    fun sendHomeText(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        if (homeSceneStrict.value) {
+            sendStrictTyped(trimmed)
+        } else {
+            if (!homeConnected.value) startHomeChat(null, homeSceneName.value)
+            freeStream.sendText(trimmed)
+        }
+    }
+
+    /** 常规「点击说话」：未连接则先重连；再按手动模式开始/结束录音。严格场景走 roleplay 流。 */
+    fun toggleHomeTalk() {
+        if (homeSceneStrict.value) {
+            if (stream.manualRecording) { stream.endManualUtterance(); homeManualRecording.value = false }
+            else { stream.beginManualUtterance(); homeManualRecording.value = stream.manualRecording }
+            return
+        }
+        if (!homeConnected.value) { startHomeChat(null, homeSceneName.value); return }
+        if (freeStream.manualRecording) { freeStream.endManualUtterance(); homeManualRecording.value = false }
+        else { freeStream.beginManualUtterance(); homeManualRecording.value = freeStream.manualRecording }
+    }
+
+    /** 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。 */
+    fun startStrictScene(summary: ScenarioSummary, roleId: String, resume: Boolean = false) {
+        stopHomeChat()
+        homeItems.value = emptyList()
+        homeSceneName.value = summary.title
+        homeSceneStrict.value = true
+        homeStatus.value = "连接中…"
+        conversationMode.value = "immersive"
+        guidanceMode.value = "realtime"
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            isWorking.value = true
+            runCatching {
+                scenario = api.scenarioDetail(summary.sceneId, token)
+                selectedRole = roleId
+                val state = api.startRoleplay(summary.sceneId, roleId, token, resume)
+                conversationExited = false
+                handleRoleplayState(state, drivenByStream = true)
+                applyStrictState(state)
+                startImmersiveStream()
+                stream.manualCommit = true          // 常规界面 = 点击说话手动提交
+                homeStatus.value = ""
+            }.onFailure {
+                presentFailure(it.message, title = "无法开始练习")
+                homeSceneStrict.value = false
+                homeSceneName.value = null
+            }
+            isWorking.value = false
+        }
+    }
+
+    /** 严格场景的键盘输入：走 roleplay REST，一样返回整轮状态。 */
+    private fun sendStrictTyped(text: String) {
+        val token = auth.token ?: return
+        val rp = roleplay ?: return
+        homeWorking.value = true
+        viewModelScope.launch {
+            try {
+                val state = api.sendRoleplayMessage(rp.sessionId, text, guidanceMode.value, token)
+                homeWorking.value = false
+                roleplay = state
+                roleplayState.value = state
+                applyStrictState(state)
+            } catch (e: Exception) {
+                homeWorking.value = false
+                homeStatus.value = e.message ?: "发送失败"
+            }
+        }
+    }
+
+    /** 把 roleplay 整轮状态映射进主界面聊天流：台词气泡（AI 最新一条打码到朗读结束）→ 指导卡 → 中文提示。 */
+    fun applyStrictState(state: RoleplayState) {
+        val items = mutableListOf<HomeChatItem>()
+        for (msg in state.messages) {
+            items.add(HomeChatItem(
+                kind = if (msg.speaker == "user") HomeKind.USER else HomeKind.AI,
+                text = msg.content,
+                translation = msg.translation ?: "",
+            ))
+        }
+        val lastAi = items.indexOfLast { it.kind == HomeKind.AI }
+        if (lastAi >= 0 && (homeAiSpeaking.value || homeWorking.value)) {
+            items[lastAi] = items[lastAi].copy(masked = true)
+        }
+        if (state.latestAccepted == false && !state.latestFeedback.isNullOrBlank()) {
+            var text = state.latestFeedback
+            val missed = state.pronunciation.filter { !it.ok }.map { it.word }
+            if (missed.isNotEmpty()) text += "\n发音再注意：" + missed.joinToString("、")
+            items.add(HomeChatItem(kind = HomeKind.GUIDANCE, text = text))
+        }
+        if (!state.completed) {
+            state.nextLine?.let { next ->
+                items.add(HomeChatItem(kind = HomeKind.HINT,
+                    text = "提示：接下来你说「${next.sourceText}」", translation = next.english))
+            }
+        } else {
+            items.add(HomeChatItem(kind = HomeKind.GUIDANCE, text = "🎉 场景对话完成！综合得分 ${(state.score * 100).toInt()}"))
+        }
+        homeItems.value = items
+    }
+
+    // ==== 私教（电话按钮全屏）：与主界面共享同一条流；沉浸/常规只是提交方式不同 ====
+
+    /** 进入私教：chat 模式直接沿用主界面连接（上下文连续）；translate 模式按需重连。 */
+    fun startTutor() {
+        if (tutorMode.value == "translate") {
+            freeStream.stop()
+            startHomeChat()
+        } else if (!homeConnected.value) {
+            startHomeChat(null, homeSceneName.value)
+        }
+        freeStream.manualCommit = !tutorImmersive.value
+    }
+
+    /** 私教内切换 沉浸式(自动发送) / 常规式(点击说话)：不断线，只换提交方式。 */
+    fun toggleTutorImmersive() {
+        tutorImmersive.value = !tutorImmersive.value
+        freeStream.manualCommit = !tutorImmersive.value
+        if (tutorImmersive.value && freeStream.manualRecording) {
+            freeStream.endManualUtterance()   // 手动录到一半切沉浸：把这句发出去，随后交给 VAD
+        }
+    }
+
+    /** 断线重连（私教「重连」按钮）。 */
+    fun reconnectTutor() {
+        freeStream.stop()
+        startHomeChat(null, homeSceneName.value)
+        freeStream.manualCommit = !tutorImmersive.value
+    }
+
+    /** 退出私教（电源键）：回主界面（常规=手动提交）；翻译模式退出时切回普通对话流。 */
+    fun closeTutor() {
+        showTutor.value = false
+        freeStream.manualCommit = true
+        if (tutorMode.value == "translate") {
+            tutorMode.value = "chat"
+            freeStream.stop()
+            startHomeChat(null, homeSceneName.value)
+        }
+    }
+
+    /** 语境润色（详细指导浮层）。 */
+    suspend fun refineText(text: String): List<RefineItem> {
+        val token = auth.token ?: return emptyList()
+        return api.refine(text, token).items
     }
 
     // ---- 学习提醒（智能电话）：App 主导触发（多活后端只提供幂等查询/拒绝接口，绝不重复来电）----
@@ -186,7 +394,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val token = auth.token ?: return
         if (incomingReminder.value != null || reminderPracticeScene.value != null) return
         // 明确忙碌：正在对话/私教/实时语音/采集/处理中都不打扰
-        if (isVoiceActive.value || showFreeTalk.value || showVoiceLLM.value || showImmersive.value ||
+        if (isVoiceActive.value || showTutor.value || showVoiceLLM.value || showImmersive.value ||
             isRecording.value || isWorking.value) return
         val cal = java.util.Calendar.getInstance()
         val nowMin = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
@@ -971,6 +1179,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         state.latestFeedback?.takeIf { it.isNotBlank() }?.let { appendChat(ChatMessage.Sender.ASSISTANT, it) }
         handleRoleplayState(state, drivenByStream = true)
+        if (homeSceneStrict.value) {
+            homeWorking.value = false
+            applyStrictState(state)   // 严格场景：状态同步进主界面聊天流
+        }
     }
 
     private fun handleRoleplayState(state: RoleplayState, spokenPreface: String? = null, drivenByStream: Boolean = false) {

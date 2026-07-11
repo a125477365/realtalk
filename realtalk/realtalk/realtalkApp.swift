@@ -66,11 +66,15 @@ struct realtalkApp: App {
                             if uiArgs.contains("--uiverify-login"), model.auth.token == nil {
                                 await model.auth.loginWithWeChat()   // 开发模拟登录（未配微信 SDK 时）
                             }
-                            if model.showFreeTalk == false, model.auth.token != nil {
+                            if model.showTutor == false, model.auth.token != nil {
                                 if uiArgs.contains("--uiverify-freetalk-translate") {
-                                    model.startFreeTalk(mode: "translate")
+                                    model.tutorMode = "translate"
+                                    model.showTutor = true
                                 } else if uiArgs.contains("--uiverify-freetalk") {
-                                    model.startFreeTalk(mode: "chat")
+                                    model.tutorMode = "chat"
+                                    model.showTutor = true
+                                } else if uiArgs.contains("--uiverify-scenepicker") {
+                                    model.showScenePicker = true
                                 }
                             }
                             #endif

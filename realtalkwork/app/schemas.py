@@ -75,6 +75,20 @@ class AIChatRequest(BaseModel):
 
 class AIChatResponse(BaseModel):
     reply: str
+    terminated: bool = False   # true=涉敏感话题已中断，客户端应结束本次对话
+
+
+class RefineRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class RefineItem(BaseModel):
+    style: str   # 地道美式 / 商务正式 / 地道英式
+    text: str
+
+
+class RefineResponse(BaseModel):
+    items: list[RefineItem]
 
 
 class TranscriptUploadRequest(BaseModel):

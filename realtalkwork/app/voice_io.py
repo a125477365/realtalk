@@ -320,6 +320,14 @@ async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: s
     """把一小段练习录音转成文字（OpenAI 兼容 /audio/transcriptions，参考句 prompt 偏置宽容识别）。
     B 类【对话】：地址由 conv_voice 一张卡派生（未配置回退通用 asr_*）。suffix=.pcm16 表示裸 PCM16@16k
     （客户端流式上行），提交前封成 WAV。成功后按分钟计费（a 类）。"""
+    text, _words, _dur = await transcribe_verbose(audio_bytes, suffix, reference_text, language, user_id)
+    return text
+
+
+async def transcribe_verbose(audio_bytes: bytes, suffix: str = ".m4a", reference_text: str | None = None,
+                             language: str = "en", user_id: str | None = None) -> tuple[str, list[dict], float]:
+    """转写 + 词级详情：返回 (文本, words[{word,start,end,probability}], 音频时长秒)。
+    词级 probability 供发音标色；本地语音服务器支持 verbose_json，云端不带词级时 words 为空。"""
     cv = resolve_conv_voice()
     if cv["base_url"]:
         base_url, api_key, model = cv["base_url"], cv["api_key"], "whisper-1"
@@ -329,14 +337,14 @@ async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: s
         ov = db.get_app_settings_map(["asr_base_url", "asr_api_key", "asr_model"])
         base_url, api_key, model = ov.get("asr_base_url"), ov.get("asr_api_key"), ov.get("asr_model") or "whisper-1"
     if settings.asr_dev_mode and not (base_url and api_key):
-        return (reference_text or "").strip()  # 开发模式：假定识别到参考句，链路可端到端联调
+        return (reference_text or "").strip(), [], 0.0  # 开发模式：假定识别到参考句，链路可端到端联调
     if not (base_url and api_key):
         raise RuntimeError("B·对话语音转写未配置，请在管理台「系统设置 → B·对话语音模型」中配置")
 
     seconds = _estimate_seconds(audio_bytes, suffix)
     if suffix == ".pcm16":
         audio_bytes, suffix = _pcm16_to_wav(audio_bytes), ".wav"
-    data = {"model": model, "language": language, "response_format": "json"}
+    data = {"model": model, "language": language, "response_format": "verbose_json"}
     if reference_text:
         data["prompt"] = reference_text  # whisper 把 prompt 当上下文偏置 → 更宽容地识别成目标句
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:
@@ -348,7 +356,10 @@ async def transcribe(audio_bytes: bytes, suffix: str = ".m4a", reference_text: s
         )
     resp.raise_for_status()
     record_asr_cost(user_id, seconds)   # a 类计费：调一次算一次
-    return str(resp.json().get("text", "")).strip()
+    body = resp.json()
+    words = body.get("words") if isinstance(body.get("words"), list) else []
+    duration = float(body.get("duration") or seconds or 0.0)
+    return str(body.get("text", "")).strip(), words, duration
 
 
 def _tokens(s: str) -> list[str]:

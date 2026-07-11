@@ -38,8 +38,18 @@ class RoleplayStreamClient(private val context: Context) {
     var onAiSpeaking: ((Boolean) -> Unit)? = null
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
     var onFreeTalkHistory: ((List<Pair<String, String>>) -> Unit)? = null   // (speaker, text)
-    var onUserText: ((String, String) -> Unit)? = null   // (text, translation)
+    /** (text, translation, 词级发音详情, 语速wpm)——词级来自本地语音服务器 whisper 置信度，云端无词级为空 */
+    var onUserText: ((String, String, List<WordScore>, Int) -> Unit)? = null
     var onAIText: ((String, String) -> Unit)? = null      // (text, translation)
+    var onTerminated: ((String) -> Unit)? = null          // 涉敏感话题被后端中断：提示并退出会话
+
+    /** 词级发音详情（低置信 ≈ 发音待提高） */
+    data class WordScore(val word: String, val probability: Double)
+
+    /** 手动触发模式（常规「点击说话」）：录音开始/发送由用户点按驱动，不做自动静音提交/语音抢话。 */
+    var manualCommit = false
+    var manualRecording = false
+        private set
 
     private val wsClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -209,6 +219,11 @@ class RoleplayStreamClient(private val context: Context) {
         if (!active) return
         onUserLevel?.invoke(level)
         if (!connected || paused) return
+        if (manualCommit) {
+            // 手动模式：点按开始→流式上传，点按结束→commit；不做自动静音判定/语音抢话
+            if (!aiSpeaking && manualRecording) runCatching { webSocket?.send(chunk.toByteString()) }
+            return
+        }
         if (aiSpeaking) {
             aiSpeakMs += tickMs
             if (aiSpeakMs >= bargeGraceMs && level >= bargeLevel) {
@@ -246,6 +261,47 @@ class RoleplayStreamClient(private val context: Context) {
 
 
 
+
+    // ---- 手动触发（常规「点击说话」）与键盘输入 ----
+
+    /** 点按开始说话：AI 正在朗读则先打断；随后帧流式上传直到 endManualUtterance。 */
+    fun beginManualUtterance() {
+        if (!manualCommit || !connected) return
+        if (aiSpeaking) {
+            runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
+            suppressAiAudio = true
+            runCatching { player?.stop() }; runCatching { player?.release() }; player = null
+            aiQueue.clear()
+            aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
+        }
+        runCatching { webSocket?.send(JSONObject(mapOf("type" to "reset_audio")).toString()) }
+        manualRecording = true
+        if (audioRecord == null) startRecording()
+    }
+
+    /** 点按结束：提交本句（用户明确点了发送，跳过噪音门槛）。 */
+    fun endManualUtterance() {
+        if (!manualCommit || !manualRecording) return
+        manualRecording = false
+        suppressAiAudio = false
+        runCatching {
+            webSocket?.send(JSONObject(mapOf(
+                "type" to "commit", "format" to "pcm16", "sample_rate" to 16000,
+                "guidance_mode" to guidanceMode)).toString())
+        }
+        scope.launch { onCommitted?.invoke() }
+    }
+
+    /** 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。 */
+    fun sendText(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        manualRecording = false
+        resetUtterance(sendReset = true)
+        suppressAiAudio = false
+        runCatching { webSocket?.send(JSONObject(mapOf("type" to "text", "text" to trimmed)).toString()) }
+        scope.launch { onCommitted?.invoke() }
+    }
 
     private fun bargeIn() {
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "interrupt")).toString()) }
@@ -346,7 +402,23 @@ class RoleplayStreamClient(private val context: Context) {
                 }
                 startRecording()
             }
-            "user_text" -> onUserText?.invoke(obj.optString("text"), obj.optString("translation"))
+            "user_text" -> {
+                val words = obj.optJSONArray("words")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { i ->
+                        arr.optJSONObject(i)?.let { w ->
+                            val word = w.optString("word")
+                            if (word.isBlank()) null else WordScore(word, w.optDouble("probability", 1.0))
+                        }
+                    }
+                } ?: emptyList()
+                onUserText?.invoke(obj.optString("text"), obj.optString("translation"), words, obj.optInt("wpm", 0))
+            }
+            "terminated" -> {
+                // 涉敏感话题：后端已中断会话——提示并整体退出
+                val reason = obj.optString("reason").ifBlank { "本次对话已结束" }
+                onTerminated?.invoke(reason)
+                stop()
+            }
             "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {

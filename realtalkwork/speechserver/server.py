@@ -44,7 +44,10 @@ async def transcriptions(
     response_format: str = Form(default="json"),
 ) -> JSONResponse:
     audio = await file.read()
-    text = await engine.transcribe(audio, language or None, prompt or None)
+    text, words, duration = await engine.transcribe_verbose(audio, language or None, prompt or None)
+    if response_format == "verbose_json":
+        # OpenAI verbose_json 子集 + 词级 probability（发音标色/语速分析用）
+        return JSONResponse({"text": text, "duration": duration, "words": words})
     return JSONResponse({"text": text})
 
 

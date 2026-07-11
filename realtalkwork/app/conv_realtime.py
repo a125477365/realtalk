@@ -99,11 +99,22 @@ class ConvRealtimeSession:
 
     async def commit_and_transcribe(self, timeout: float, audio_format: str = "pcm16", sample_rate: int = 16000) -> str:
         """commit 后等待转写事件（其余事件忽略）。audio_format 告知服务器如何封包（pcm16/m4a）。"""
+        text, _words, _dur = await self.commit_and_transcribe_verbose(timeout, audio_format, sample_rate)
+        return text
+
+    async def commit_and_transcribe_verbose(
+        self, timeout: float, audio_format: str = "pcm16", sample_rate: int = 16000
+    ) -> tuple[str, list[dict], float]:
+        """同 commit_and_transcribe，另返回词级详情与音频时长（本地语音服务器提供；OpenAI 无词级则为空）。"""
         await self.send({"type": "input_audio_buffer.commit", "format": audio_format, "sample_rate": sample_rate})
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
             if ev.get("type") == "conversation.item.input_audio_transcription.completed":
-                return (ev.get("transcript") or "").strip()
+                return (
+                    (ev.get("transcript") or "").strip(),
+                    ev.get("words") or [],
+                    float(ev.get("duration") or 0.0),
+                )
             if ev.get("type") == "error":
                 raise RuntimeError(ev.get("message") or "实时通道转写失败")
 

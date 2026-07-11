@@ -12,13 +12,29 @@ struct ContentView: View {
                 // 安全：本地有 token 也不直接进主界面，先向服务端校验会话有效性
                 SessionCheckingView()
             case .signedIn:
-                MainChatView()
+                ChatHomeView(freeStream: model.freeStream, rpStream: model.stream)
             case .signedOut:
                 LoginView()
             }
         }
         .task {
             await model.bootstrap()
+            #if DEBUG
+            // UI 自动化验证钩子（仅 Debug）：在 bootstrap 之后可靠触发（scenePhase.onChange 冷启动不稳）
+            let uiArgs = ProcessInfo.processInfo.arguments
+            if uiArgs.contains("--uiverify-login"), auth.phase != .signedIn {
+                await model.auth.loginWithWeChat()
+            }
+            if model.showTutor == false, model.auth.token != nil {
+                if uiArgs.contains("--uiverify-freetalk-translate") {
+                    model.tutorMode = "translate"; model.showTutor = true
+                } else if uiArgs.contains("--uiverify-freetalk") {
+                    model.tutorMode = "chat"; model.showTutor = true
+                } else if uiArgs.contains("--uiverify-scenepicker") {
+                    model.showScenePicker = true
+                }
+            }
+            #endif
         }
     }
 }
