@@ -120,7 +120,9 @@ class ConvRealtimeSession:
 
     async def create_response(self, timeout: float) -> tuple[str, str, bytes | None]:
         """response.create 后收文本流+语音流；返回 (回复文本, 中文翻译, WAV字节或None)。
-        兼容本地(response.text.done 带 translation)与 OpenAI(response.audio_transcript.done)事件名。"""
+        事件名三代兼容：本地(response.text.done 带 translation)、OpenAI Realtime beta(v1：
+        response.audio.delta/audio_transcript.done)、OpenAI Realtime GA(gpt-realtime/gpt-realtime-2：
+        response.output_audio.delta/output_audio_transcript.done/output_text.done)。"""
         await self.send({"type": "response.create"})
         text = ""
         translation = ""
@@ -129,12 +131,13 @@ class ConvRealtimeSession:
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
             kind = ev.get("type")
-            if kind == "response.text.done":
-                text = (ev.get("text") or "").strip()
-                translation = (ev.get("translation") or "").strip()
-            elif kind == "response.audio_transcript.done":   # OpenAI：口播文本
+            if kind in ("response.text.done", "response.output_text.done"):
+                text = (ev.get("text") or "").strip() or text
+                translation = (ev.get("translation") or "").strip() or translation
+            elif kind in ("response.audio_transcript.done", "response.output_audio_transcript.done"):
+                # OpenAI：口播文本（GA 版事件名带 output_ 前缀）
                 text = text or (ev.get("transcript") or "").strip()
-            elif kind == "response.audio.delta":
+            elif kind in ("response.audio.delta", "response.output_audio.delta"):
                 rate = int(ev.get("sample_rate") or rate)
                 try:
                     pcm.extend(base64.b64decode(ev.get("delta", "")))

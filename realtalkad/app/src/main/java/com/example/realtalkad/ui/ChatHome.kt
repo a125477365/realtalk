@@ -383,9 +383,12 @@ fun GuidanceDetailSheet(model: AppViewModel, item: AppViewModel.HomeChatItem, fo
                 )
             }
         }
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             Text("🔊 AI 朗读", color = RT.Accent, fontSize = (13 * fontScale).sp,
                 modifier = Modifier.clickable { model.speakText(item.text) })
+            Text("📋 复制", color = RT.Accent, fontSize = (13 * fontScale).sp,
+                modifier = Modifier.clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString(item.text)) })
         }
         HorizontalDivider(color = RT.Hairline)
 
@@ -427,8 +430,12 @@ fun GuidanceDetailSheet(model: AppViewModel, item: AppViewModel.HomeChatItem, fo
                 }
                 refinements!!.firstOrNull { it.style == style }?.let { cur ->
                     Text("优化后的句子：${cur.text}", fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
-                    Text("🔊 AI 朗读", color = RT.Accent, fontSize = (13 * fontScale).sp,
-                        modifier = Modifier.clickable { model.speakText(cur.text) })
+                    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                        Text("🔊 AI 朗读", color = RT.Accent, fontSize = (13 * fontScale).sp,
+                            modifier = Modifier.clickable { model.speakText(cur.text) })
+                        Text("📋 复制", color = RT.Accent, fontSize = (13 * fontScale).sp,
+                            modifier = Modifier.clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString(cur.text)) })
+                    }
                 }
             }
         }
