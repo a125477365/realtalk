@@ -21,6 +21,10 @@ _TTL_SECONDS = 3600  # 1 小时未完成的采集会话自动过期回收
 _VALID_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
+class CaptureLimitError(ValueError):
+    pass
+
+
 def _valid(upload_id: str) -> bool:
     return bool(_VALID_ID.match(upload_id or ""))
 
@@ -51,7 +55,30 @@ class _RedisBackend:
         key = self._key(user_id, upload_id)
         if not self.r.exists(key):
             return -1
-        self.r.hset(key, f"chunk:{chunk_index:06d}", json.dumps(items, ensure_ascii=False))
+        field = f"chunk:{chunk_index:06d}"
+        encoded = json.dumps(items, ensure_ascii=False)
+        # Redis Hash 中只保存短命的采集会话，但仍必须给每个会话设置总量上限。
+        data = self.r.hgetall(key)
+        old = data.get(field, "")
+        chunk_fields = [name for name in data if name.startswith("chunk:")]
+        if field not in data and len(chunk_fields) >= settings.capture_upload_max_chunks:
+            raise CaptureLimitError("采集分块数超过上限")
+        total_bytes = sum(len(value.encode("utf-8")) for name, value in data.items() if name.startswith("chunk:"))
+        total_bytes += len(encoded.encode("utf-8")) - len(old.encode("utf-8"))
+        if total_bytes > settings.capture_upload_max_bytes:
+            raise CaptureLimitError("采集内容超过大小上限")
+        total_items = 0
+        for name, value in data.items():
+            if not name.startswith("chunk:") or name == field:
+                continue
+            try:
+                total_items += len(json.loads(value))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        total_items += len(items)
+        if total_items > settings.capture_upload_max_items:
+            raise CaptureLimitError("采集条目数超过上限")
+        self.r.hset(key, field, encoded)
         self.r.expire(key, _TTL_SECONDS)
         return sum(1 for field in self.r.hkeys(key) if field.startswith("chunk:"))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import base64
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
+from cryptography import x509
 from fastapi import HTTPException, Request, status
 
 from .schemas import ApplePurchaseVerifyRequest
@@ -323,13 +325,14 @@ class AppleBillingVerifier:
         from .storage import db   # 单一来源：bundle/product/issuer/key/私钥 只读 DB（沙箱与 dev 旁路是每节点 env）
         return db.resolve_apple_iap_config()
 
-    async def verify(self, request: ApplePurchaseVerifyRequest) -> tuple[bool, datetime | None, str]:
+    async def verify(self, request: ApplePurchaseVerifyRequest) -> tuple[bool, datetime | None, str, str]:
         cfg = self._cfg()
         if request.product_id != cfg["product_id"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="内购商品 ID 不匹配")
 
         if settings.apple_iap_dev_bypass:
-            return True, datetime.now(timezone.utc) + timedelta(days=31), "开发环境已记录订阅"
+            # 开发模式没有 Apple 回执；仍以 transaction_id 作为本地测试交易唯一标识。
+            return True, datetime.now(timezone.utc) + timedelta(days=31), "开发环境已记录订阅", request.transaction_id
 
         if not self._has_server_api_credentials():
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Apple IAP 服务端校验未配置")
@@ -344,7 +347,10 @@ class AppleBillingVerifier:
         if expires_at and expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="订阅已过期")
 
-        return True, expires_at, "Apple 订阅已验证"
+        original_transaction_id = str(payload.get("originalTransactionId") or "")
+        if not original_transaction_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Apple 回执缺少原始交易 ID")
+        return True, expires_at, "Apple 订阅已验证", original_transaction_id
 
     async def _fetch_transaction_payload(self, transaction_id: str) -> dict[str, Any]:
         token = self._make_app_store_server_token()
@@ -354,7 +360,22 @@ class AppleBillingVerifier:
             response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
             response.raise_for_status()
         signed_info = response.json()["signedTransactionInfo"]
-        return jwt.decode(signed_info, options={"verify_signature": False})
+        # Apple Server API 返回的 JWS 仍必须验签；不能把 payload 当成普通 JSON 解码。
+        # x5c 证书链由 Apple 返回，传输本身又受 HTTPS + App Store Server API Bearer 认证保护。
+        try:
+            header = jwt.get_unverified_header(signed_info)
+            if header.get("alg") != "ES256":
+                raise ValueError("unexpected JWS algorithm")
+            chain = header.get("x5c")
+            if not isinstance(chain, list) or not chain or not isinstance(chain[0], str):
+                raise ValueError("missing JWS certificate")
+            cert = x509.load_der_x509_certificate(base64.b64decode(chain[0]))
+            return jwt.decode(
+                signed_info, cert.public_key(), algorithms=["ES256"],
+                options={"verify_aud": False, "verify_iss": False},
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Apple 交易签名校验失败") from exc
 
     def _make_app_store_server_token(self) -> str:
         cfg = self._cfg()

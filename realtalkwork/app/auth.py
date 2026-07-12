@@ -153,18 +153,22 @@ def create_refresh_token(user_id: str, device_id: str | None = None, token_versi
     return f"{payload_b64}.{signature}"
 
 
-def verify_refresh_token(token: str) -> tuple[str, str | None, int, str]:
+def verify_refresh_token(token: str) -> tuple[str, str | None, int, str, str]:
     payload = _decode_token(token, expected_type="refresh", expired_detail="刷新令牌已过期")
     user_id = payload.get("sub")
     if not isinstance(user_id, str) or not user_id:
         raise _unauthorized()
     device_id = payload.get("did")
     surface = payload.get("sur")
+    jti = payload.get("jti")
+    if not isinstance(jti, str) or not jti:
+        raise _unauthorized()
     return (
         user_id,
         (device_id if isinstance(device_id, str) and device_id else None),
         int(payload.get("tv", 1) or 1),
         (surface if surface in ("app", "web") else "app"),
+        jti,
     )
 
 

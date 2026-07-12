@@ -461,10 +461,11 @@ if $DEPLOY_BACKEND; then
     fi
   fi
 
-  # 配了 SMTP 才真正发邮件（验证码/找回密码）；没配就保持开发模式（不外发）。
-  EMAIL_DEV="true"; [ -n "$SMTP_HOST" ] && EMAIL_DEV="false"
+  # 仅开发环境、且未配 SMTP 时才返回联调验证码；生产环境绝不返回验证码。
+  EMAIL_DEV="false"; [ "$DEV" = true ] && [ -z "$SMTP_HOST" ] && EMAIL_DEV="true"
   ENV_LINES+=(
     "REALTALK_REGION=prod"
+    "REALTALK_ENV=$([ \"$DEV\" = true ] && echo development || echo production)"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"

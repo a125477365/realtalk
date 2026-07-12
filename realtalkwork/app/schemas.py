@@ -92,7 +92,8 @@ class RefineResponse(BaseModel):
 
 
 class TranscriptUploadRequest(BaseModel):
-    items: list[TranscriptItem]
+    # 固定上限阻止单次 JSON 无限膨胀；更大的历史导入请走分块采集接口。
+    items: list[TranscriptItem] = Field(max_length=5000)
 
 
 class TranscriptUploadResponse(BaseModel):

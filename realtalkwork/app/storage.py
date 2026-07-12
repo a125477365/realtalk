@@ -99,12 +99,21 @@ users = Table(
     Column("plan_expires_at", Text),
     Column("active_device_id", Text),  # 当前唯一允许登录的设备编号（单设备登录）
     Column("token_version", Integer, nullable=False, default=1),  # 递增即吊销该用户全部令牌
+    Column("refresh_token_jti", Text),  # 当前有效 refresh token 的唯一编号，轮换后旧令牌立即作废
     Column("plan_monthly_price_cents", Integer),  # 购买会员时锁定的档位标准月费（分），用于月度额度计算
     Column("plan_purchased_at", Text),  # 当前连续会员期的起始购买日，作为每月额度重置的锚点
     Column("tts_voice", Text),  # 用户选择的 AI 朗读音色（练习时朗读 AI 台词用）
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
+
+apple_transaction_claims = Table(
+    "apple_transaction_claims",
+    metadata,
+    Column("original_transaction_id", Text, primary_key=True),
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("created_at", Text, nullable=False),
+)
 
 transcripts = Table(
     "transcripts",
@@ -460,6 +469,7 @@ class Database:
             self._ensure_column(conn, "users", "plan_expires_at", "TEXT")
             self._ensure_column(conn, "users", "active_device_id", "TEXT")
             self._ensure_column(conn, "users", "token_version", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "users", "refresh_token_jti", "TEXT")
             self._ensure_column(conn, "users", "tts_voice", "TEXT")
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
@@ -633,6 +643,10 @@ class Database:
                 update(users).where(users.c.id == user_id).values(active_device_id=device_id)
             )
 
+    def set_refresh_token_jti(self, user_id: str, jti: str | None) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(update(users).where(users.c.id == user_id).values(refresh_token_jti=jti))
+
     def get_active_device(self, user_id: str) -> str | None:
         with self.engine.connect() as conn:
             row = conn.execute(
@@ -653,7 +667,7 @@ class Database:
             conn.execute(
                 update(users)
                 .where(users.c.id == user_id)
-                .values(token_version=users.c.token_version + 1)
+                .values(token_version=users.c.token_version + 1, refresh_token_jti=None)
             )
             row = conn.execute(
                 select(users.c.token_version).where(users.c.id == user_id)
@@ -673,6 +687,7 @@ class Database:
             "active_device_id": row["active_device_id"] if row.get("active_device_id") else None,
             "token_version": int(row["token_version"]) if row.get("token_version") is not None else 1,
             "last_seen_at": _parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,
+            "refresh_token_jti": row["refresh_token_jti"] if row.get("refresh_token_jti") else None,
         }
 
     def get_monthly_price_cents(self) -> int:
@@ -1453,6 +1468,37 @@ class Database:
             raise ValueError("user not found")
         return user
 
+    def claim_apple_subscription(
+        self, user_id: str, original_transaction_id: str, expires_at: datetime | None
+    ) -> UserOut:
+        """原子地把 Apple 原始交易绑定到一个账号；交易不可跨账号重复领取。"""
+        if not original_transaction_id:
+            raise ValueError("missing original transaction id")
+        now = _now()
+        with self.engine.begin() as conn:
+            claim = conn.execute(
+                select(apple_transaction_claims.c.user_id).where(
+                    apple_transaction_claims.c.original_transaction_id == original_transaction_id
+                )
+            ).fetchone()
+            if claim is not None and claim[0] != user_id:
+                raise ValueError("Apple 订阅已绑定到其他账号")
+            if claim is None:
+                conn.execute(insert(apple_transaction_claims).values(
+                    original_transaction_id=original_transaction_id, user_id=user_id, created_at=_iso(now)
+                ))
+            conn.execute(
+                update(users).where(users.c.id == user_id).values(
+                    plan="basic", plan_expires_at=_iso(expires_at) if expires_at else None,
+                    apple_original_transaction_id=original_transaction_id,
+                    subscription_expires_at=_iso(expires_at) if expires_at else None,
+                )
+            )
+        user = self.get_user(user_id)
+        if user is None:
+            raise ValueError("user not found")
+        return user
+
     def update_user_password(self, user_id: str, salt: str, password_hash: str) -> bool:
         with self.engine.begin() as conn:
             result = conn.execute(
@@ -1727,8 +1773,10 @@ class Database:
             raise ValueError("user not found")
         return _payment_order_from_row(order, "支付成功"), user
 
-    def mark_recharge_paid_by_order_id(self, order_id: str, paid_amount_cents: int) -> tuple[RechargeOrderResponse, UserOut]:
-        """Mark a recharge order as paid using only the order_id. Used by payment webhooks."""
+    def mark_recharge_paid_by_order_id(
+        self, order_id: str, paid_amount_cents: int, *, manual: bool = False
+    ) -> tuple[RechargeOrderResponse, UserOut]:
+        """支付回调必须金额相符；仅管理员人工对账可显式跳过第三方金额字段。"""
         now = _now()
         with self.engine.begin() as conn:
             order = (
@@ -1746,7 +1794,10 @@ class Database:
                 user = self.get_user(order["user_id"])
                 return _payment_order_from_row(order, "已支付"), user
 
-            amount_cents = paid_amount_cents or int(order["amount_cents"])
+            expected_amount_cents = int(order["amount_cents"])
+            if not manual and paid_amount_cents != expected_amount_cents:
+                raise ValueError("支付金额与订单金额不一致")
+            amount_cents = expected_amount_cents
             result = conn.execute(
                 update(payment_orders)
                 .where(

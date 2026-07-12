@@ -157,12 +157,12 @@ from .schemas import (
     TtsVoicesResponse,
     VoiceServersRequest,
 )
-from .capture_store import capture_store
+from .capture_store import CaptureLimitError, capture_store
 from .conv_realtime import ConvRealtimeSession, _pcm_to_wav as pcm_to_wav, resolve_conv_realtime_url
 from . import voice_pipeline
 from . import voice_io
 from . import payments
-from .settings import settings
+from .settings import is_production, settings
 from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
@@ -179,7 +179,8 @@ _is_localhost_af = (
 class DynamicCORSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         origin = request.headers.get("origin", "")
-        allowed = _is_localhost_af or origin == _af_url
+        # 即使本地开发也只允许配置的管理端 Origin，不能因默认 localhost 配置而反射任意来源。
+        allowed = bool(origin) and origin == _af_url
         # 预检请求必须在路由之前直接应答，否则跨域 JSON 请求会因 405 失败
         if request.method == "OPTIONS" and allowed and origin:
             return Response(
@@ -239,8 +240,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """在解析 JSON 前拒绝过大的请求体，避免 Pydantic/JSON 先占满内存。"""
+
+    async def dispatch(self, request: Request, call_next):
+        length = request.headers.get("content-length")
+        if not length:
+            return await call_next(request)
+        try:
+            size = int(length)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="非法 Content-Length")
+        limit = settings.audio_chunk_max_bytes if request.url.path == "/audio/upload/chunk" else settings.api_max_json_body_bytes
+        if size > limit:
+            return Response(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content=_json.dumps({"detail": "请求体超过允许大小"}), media_type="application/json",
+            )
+        return await call_next(request)
+
+
 # 先加限流（内层），再加 CORS（外层）：429 响应也能带上 CORS 头
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(DynamicCORSMiddleware)
 
 
@@ -254,6 +276,8 @@ def _warn_insecure_config() -> None:
         warnings.append("WECHAT_AUTH_DEV_MODE=true（微信登录走开发模拟，未校验真实身份）")
     if settings.apple_iap_dev_bypass:
         warnings.append("APPLE_IAP_DEV_BYPASS=true（内购校验被绕过）")
+    if settings.email_dev_mode:
+        warnings.append("EMAIL_DEV_MODE=true（验证码会返回给客户端）")
     if settings.admin_password == "admin123456":
         warnings.append("使用默认管理员密码 admin123456（务必修改）")
     if warnings:
@@ -261,6 +285,8 @@ def _warn_insecure_config() -> None:
             "[security] ⚠️ 上线前请处理以下开发旁路 / 弱配置：\n  - " + "\n  - ".join(warnings),
             flush=True,
         )
+    if is_production() and warnings:
+        raise RuntimeError("生产环境禁止启用开发旁路或默认管理员密码；请修正 .env 后重启")
 
 
 @app.on_event("startup")
@@ -315,6 +341,22 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
     return _authenticate_token(credentials.credentials)
+
+
+def _websocket_user(websocket: WebSocket, legacy_query_token: str | None) -> UserOut:
+    """生产环境只接受握手 Authorization，避免把长期 Bearer token 写进 URL/访问日志。
+
+    开发环境暂保留 ?token= 兼容旧测试和旧 App；上线客户端应改为
+    Authorization: Bearer <access token>。
+    """
+    authorization = websocket.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return _authenticate_token(authorization[7:].strip())
+    if is_production():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="WebSocket 缺少 Authorization 凭证")
+    if not legacy_query_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少登录凭证")
+    return _authenticate_token(legacy_query_token)
 
 
 def current_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(admin_security)) -> dict:
@@ -389,7 +431,7 @@ async def admin_login(request: Request, response: Response) -> dict:
         max_age=60 * 60 * 24 * 7,
         path="/",
         samesite="lax",
-        secure=False,
+        secure=is_production(),
     )
     return {
         "ok": True,
@@ -782,10 +824,18 @@ def create_support_ticket(
     request: SupportTicketCreate,
     user: UserOut = Depends(current_user),
 ) -> SupportTicketOut:
-    # 截图为 base64 data URL：限制数量与总大小，避免超大请求
-    images = [img for img in request.images if isinstance(img, str) and img.startswith("data:image")][:4]
+    # 只接受可安全作为 <img> 渲染的常见位图，拒绝 SVG/data HTML，防管理端存储型脚本注入。
+    allowed_image_prefixes = ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+    images = [img for img in request.images if isinstance(img, str) and img.startswith(allowed_image_prefixes)][:4]
+    if len(images) != len(request.images):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="截图仅支持 PNG、JPEG 或 WebP 格式")
     if sum(len(img) for img in images) > 8 * 1024 * 1024:  # base64 总长约 8MB（≈6MB 原图）
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="截图过大，请压缩后再上传（最多 4 张、合计约 6MB）")
+    try:
+        for image in images:
+            _b64.b64decode(image.split(",", 1)[1], validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="截图编码无效") from exc
     ticket = db.create_support_ticket(
         user_id=user.id,
         category=request.category,
@@ -1226,7 +1276,7 @@ def admin_mark_order_paid(
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
     try:
-        order, user = db.mark_recharge_paid_by_order_id(order_id, 0)
+        order, user = db.mark_recharge_paid_by_order_id(order_id, 0, manual=True)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在") from exc
     return {"order": order.model_dump(), "user_balance_cents": user.balance_cents}
@@ -1359,7 +1409,11 @@ def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict
 def _issue_token_pair(user_id: str, device_id: str | None, surface: str = "app") -> tuple[str, str]:
     """按用户当前令牌版本签发 access + refresh 令牌对；surface 决定该会话的闲置超时时长。"""
     tv = db.get_token_version(user_id)
-    return create_token(user_id, device_id, tv, surface), create_refresh_token(user_id, device_id, tv, surface)
+    refresh = create_refresh_token(user_id, device_id, tv, surface)
+    # refresh JTI 存库实现真正的一次性轮换；旧 token 再次使用会被拒绝。
+    _, _, _, _, jti = verify_refresh_token(refresh)
+    db.set_refresh_token_jti(user_id, jti)
+    return create_token(user_id, device_id, tv, surface), refresh
 
 
 @app.post("/auth/wechat/login", response_model=AuthResponse)
@@ -1512,7 +1566,7 @@ def confirm_password_reset(
 def refresh_token(
     request: TokenRefreshRequest,
 ) -> AuthTokenResponse:
-    user_id, device_id, token_version, surface = verify_refresh_token(request.refresh_token)
+    user_id, device_id, token_version, surface, refresh_jti = verify_refresh_token(request.refresh_token)
     session = db.get_user_session(user_id)
     if session is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
@@ -1531,6 +1585,8 @@ def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="登录状态已失效，请重新登录",
         )
+    if not session.get("refresh_token_jti") or session["refresh_token_jti"] != refresh_jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="刷新令牌已失效，请重新登录")
     # 闲置超时：太久没活动则刷新也不能续命，需重新登录（与 _authenticate_token 一致）
     last_seen = session["last_seen_at"]
     now = datetime.now(timezone.utc)
@@ -1815,8 +1871,12 @@ async def verify_apple_purchase(
     request: ApplePurchaseVerifyRequest,
     user: UserOut = Depends(current_user),
 ) -> BillingResponse:
-    verified, expires_at, message = await apple_billing.verify(request)
-    updated_user = db.update_subscription(user.id, request.original_transaction_id, expires_at)
+    verified, expires_at, message, original_transaction_id = await apple_billing.verify(request)
+    try:
+        # 交易归属以 Apple 服务端返回为准，绝不信任客户端 request.original_transaction_id。
+        updated_user = db.claim_apple_subscription(user.id, original_transaction_id, expires_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return BillingResponse(user=updated_user, verified=verified, message=message)
 
 
@@ -2037,12 +2097,15 @@ def capture_upload_chunk(
 ) -> CaptureUploadChunkResponse:
     require_ai_access(user)
     items = clean_transcript_items(request.items)
-    count = capture_store.append_chunk(
-        upload_id=request.upload_id,
-        user_id=user.id,
-        chunk_index=request.chunk_index,
-        items=[item.model_dump(mode="json") for item in items],
-    )
+    try:
+        count = capture_store.append_chunk(
+            upload_id=request.upload_id,
+            user_id=user.id,
+            chunk_index=request.chunk_index,
+            items=[item.model_dump(mode="json") for item in items],
+        )
+    except CaptureLimitError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
     if count < 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
     return CaptureUploadChunkResponse(
@@ -2061,6 +2124,8 @@ async def capture_upload_complete(
     """采集分块上传收尾。改为异步：快速校验+配额后把生成任务推入 Redis 队列即返回，
     App 收到「上传成功」即可删除本地文件，不必等待大模型生成；场景生成完会出现在场景列表。"""
     require_ai_access(user)
+    if len(request.items) > settings.transcript_upload_max_items:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="转写条目数超过上限，请改用分块采集上传")
     items = await asyncio.to_thread(capture_store.load_items, request.upload_id, user.id)
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
@@ -2216,6 +2281,10 @@ async def audio_upload_init(
         return AudioUploadInitResponse(upload_id=body.md5, received_bytes=existing.stat().st_size, done=done)
     dest = voice_pipeline.audio_path(user.id, body.md5, ext)
     dest.touch()
+    # 服务端保存初始声明的总大小，complete 时据此校验，避免客户端以 size_bytes=0 跳过完整性检查。
+    voice_pipeline.upload_meta_path(dest).write_text(
+        _json.dumps({"size_bytes": body.size_bytes}), encoding="utf-8"
+    )
     return AudioUploadInitResponse(upload_id=body.md5, received_bytes=0, done=False)
 
 
@@ -2259,12 +2328,19 @@ async def audio_upload_chunk(
     # 用 r+b 定位到 offset 覆盖写（幂等：重发同一段不会损坏文件）
     with part.open("r+b") as fh:
         fh.seek(offset)
+        written = 0
         async for chunk in request.stream():
             if not chunk:
                 continue
             fh.seek(offset)
             fh.write(chunk)
             offset += len(chunk)
+            written += len(chunk)
+            if written > settings.audio_chunk_max_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"单个分片超过 {settings.audio_chunk_max_bytes // (1024 * 1024)}MB 上限",
+                )
             if offset > settings.audio_max_bytes:
                 fh.truncate(settings.audio_max_bytes)
                 raise HTTPException(
@@ -2291,11 +2367,24 @@ async def audio_upload_complete(
     part = voice_pipeline.find_audio(user.id, md5)
     if part is None or part.stat().st_size == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传未完成或文件为空")
-    if size_bytes > 0 and part.stat().st_size < size_bytes:
+    expected_size = size_bytes
+    meta_path = voice_pipeline.upload_meta_path(part)
+    try:
+        expected_size = int(_json.loads(meta_path.read_text(encoding="utf-8")).get("size_bytes", size_bytes))
+    except (OSError, ValueError, TypeError, _json.JSONDecodeError):
+        pass  # 兼容升级前已开始的上传；仍使用调用方提供的长度校验。
+    if expected_size <= 0 or part.stat().st_size != expected_size:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="文件尚未上传完成，请继续上传",
+            detail="文件大小校验失败，请重新上传",
         )
+    # 文件名 MD5 参与路由和去重，必须与真实字节一致，不能只信任客户端参数。
+    digest = hashlib.md5()
+    with part.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    if digest.hexdigest().lower() != md5.lower():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件校验失败（MD5 不匹配）")
     # 打 .ready 标记：定时任务据此识别「已传完，可转写」
     voice_pipeline.ready_marker(part).touch()
     return AudioUploadCompleteResponse(upload_id=md5, status="uploaded")
@@ -2828,7 +2917,7 @@ def _ws_reason(text: object, max_bytes: int = 120) -> str:
 @app.websocket("/roleplay/stream")
 async def roleplay_stream(
     websocket: WebSocket,
-    token: str = Query(...),
+    token: str | None = Query(default=None),
     session_id: str = Query(...),
 ) -> None:
     """方式2 沉浸式后端语音：客户端流式上传音频帧 + 客户端 VAD 在一句结束时发 commit；
@@ -2836,7 +2925,7 @@ async def roleplay_stream(
     操作步骤与原沉浸式一致，只是识别/朗读搬到后端，并支持抢话打断。"""
     await websocket.accept()
     try:
-        user = _authenticate_token(token)
+        user = _websocket_user(websocket, token)
         require_ai_access(user, estimated_cents=0.0)
     except HTTPException as exc:
         await websocket.close(code=4401, reason=_ws_reason(exc.detail))
@@ -3050,7 +3139,7 @@ def _wpm(words: list[dict], duration: float) -> int:
 @app.websocket("/freetalk/stream")
 async def freetalk_stream(
     websocket: WebSocket,
-    token: str = Query(...),
+    token: str | None = Query(default=None),
     mode: str = Query("chat"),
     scene_id: str = Query(""),
     live: int = Query(0),
@@ -3063,7 +3152,7 @@ async def freetalk_stream(
     无人设/无历史/无记忆沉淀，每句独立同传；两条管线（实时通道/分步）同样支持，计费同私教。"""
     await websocket.accept()
     try:
-        user = _authenticate_token(token)
+        user = _websocket_user(websocket, token)
         require_ai_access(user, estimated_cents=0.0)
     except HTTPException as exc:
         await websocket.close(code=4401, reason=_ws_reason(exc.detail))

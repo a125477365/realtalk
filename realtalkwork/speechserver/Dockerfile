@@ -36,14 +36,14 @@ RUN if [ "$DEVICE" = "cuda" ]; then \
     && if [ "$DEVICE" = "cpu" ]; then \
          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
            "torch==2.7.1+cpu" "torchaudio==2.7.1+cpu" \
-         && pip install --no-cache-dir --find-links \
-           https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cpu \
-           "qwentts-cpp-python==0.3.0+cpu" ; \
+         && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then WHEEL_ARCH=aarch64; else WHEEL_ARCH=x86_64; fi \
+         && pip install --no-cache-dir \
+           "https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cpu/qwentts_cpp_python-0.3.0%2Bcpu-py3-none-manylinux_2_34_${WHEEL_ARCH}.manylinux_2_35_${WHEEL_ARCH}.whl" ; \
        else \
          pip install --no-cache-dir torch torchaudio \
-         && pip install --no-cache-dir --find-links \
-           https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu124 \
-           "qwentts-cpp-python==0.3.0+cu124" ; \
+         && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then WHEEL_ARCH=aarch64; else WHEEL_ARCH=x86_64; fi \
+         && pip install --no-cache-dir \
+           "https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cu124/qwentts_cpp_python-0.3.0%2Bcu124-py3-none-manylinux_2_35_${WHEEL_ARCH}.whl" ; \
        fi \
     && pip install --no-cache-dir "speech-to-speech[faster-whisper]==0.2.10" \
     && python -c "import nltk; nltk.download('punkt_tab'); nltk.download('averaged_perceptron_tagger_eng')"

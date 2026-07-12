@@ -93,6 +93,11 @@ def ready_marker(audio: Path) -> Path:
     return audio.with_name(audio.name + ".ready")
 
 
+def upload_meta_path(audio: Path) -> Path:
+    """上传会话的服务端元数据（声明长度）；不使用客户端 complete 请求里的可伪造值。"""
+    return audio.with_name(audio.name + ".upload.json")
+
+
 def txt_path(user_id: str, md5: str) -> Path:
     return voice_dir() / f"{_safe(user_id)}_{md5}.txt"
 

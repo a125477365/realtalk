@@ -43,6 +43,8 @@ _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 @dataclass(frozen=True)
 class Settings:
+    # development（默认）保留本地联调能力；production 会拒绝危险的开发旁路，避免误上线。
+    runtime_env: str = os.getenv("REALTALK_ENV", "development").strip().lower()
     database_url: str | None = os.getenv("DATABASE_URL")
     database_path: Path = Path(os.getenv("REALTALK_DB", "realtalk.sqlite3"))
     deployment_region: str = os.getenv("REALTALK_REGION") or os.getenv("REGION", "local")
@@ -81,6 +83,12 @@ class Settings:
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", "./uploads"))
     audio_max_bytes: int = int(os.getenv("AUDIO_MAX_BYTES", str(300 * 1024 * 1024)))
     audio_max_seconds: int = int(os.getenv("AUDIO_MAX_SECONDS", str(6 * 3600)))
+    audio_chunk_max_bytes: int = int(os.getenv("AUDIO_CHUNK_MAX_BYTES", str(32 * 1024 * 1024)))
+    api_max_json_body_bytes: int = int(os.getenv("API_MAX_JSON_BODY_BYTES", str(12 * 1024 * 1024)))
+    transcript_upload_max_items: int = int(os.getenv("TRANSCRIPT_UPLOAD_MAX_ITEMS", "5000"))
+    capture_upload_max_items: int = int(os.getenv("CAPTURE_UPLOAD_MAX_ITEMS", "200000"))
+    capture_upload_max_chunks: int = int(os.getenv("CAPTURE_UPLOAD_MAX_CHUNKS", "2500"))
+    capture_upload_max_bytes: int = int(os.getenv("CAPTURE_UPLOAD_MAX_BYTES", str(16 * 1024 * 1024)))
     # 语音转写：全部走 OpenAI 兼容 API（api 后端不再内置引擎）
     asr_base_url: str | None = os.getenv("ASR_BASE_URL")
     asr_api_key: str | None = os.getenv("ASR_API_KEY")
@@ -220,3 +228,7 @@ class Settings:
 
 
 settings = Settings()
+
+
+def is_production() -> bool:
+    return settings.runtime_env in {"production", "prod"}
