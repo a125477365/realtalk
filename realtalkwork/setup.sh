@@ -28,6 +28,55 @@ ask_secret() {
   REPLY_VALUE="$input"
 }
 
+# 再配置时读取旧 .env 的字面值作为默认值；只解析 KEY=VALUE，绝不 source/执行旧配置。
+declare -A PREVIOUS_ENV=()
+load_previous_env() {
+  local path="$1" line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+    key="${line%%=*}"; value="${line#*=}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && PREVIOUS_ENV["$key"]="$value"
+  done < "$path"
+}
+
+old_default() { # KEY FALLBACK
+  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then printf '%s' "${PREVIOUS_ENV[$1]}"; else printf '%s' "$2"; fi
+}
+old_yes_if_set() { [[ -n "${PREVIOUS_ENV[$1]:-}" ]] && printf 'yes' || printf 'no'; }
+old_app_selection() {
+  local profiles=",${PREVIOUS_ENV[COMPOSE_PROFILES]:-}," out=""
+  [[ "$profiles" == *",backend,"* ]] && out="${out}1,"
+  [[ "$profiles" == *",admin,"* ]] && out="${out}2,"
+  [[ "$profiles" == *",web,"* ]] && out="${out}3,"
+  [[ "$profiles" == *",speech,"* ]] && out="${out}4,"
+  [[ "$profiles" == *",backend-redis,"* ]] && out="${out}5,"
+  [[ "$profiles" == *",backend-db,"* ]] && out="${out}6,"
+  printf '%s' "${out%,}"
+}
+
+ask_config() { # KEY PROMPT FALLBACK
+  ask "$2" "$(old_default "$1" "$3")"
+}
+
+ask_secret_config() { # KEY PROMPT；旧值不回显，回车保留，输入 - 清空
+  local input
+  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then
+    read -r -s -p "$2 [已保存，回车保留，-=清空]: " input; echo
+    if [ -z "$input" ]; then REPLY_VALUE="${PREVIOUS_ENV[$1]}";
+    elif [ "$input" = "-" ]; then REPLY_VALUE="";
+    else REPLY_VALUE="$input"; fi
+  else
+    ask_secret "$2"
+  fi
+}
+
+ask_generated_secret_config() { # KEY PROMPT FALLBACK；新配置仍显示可记录的自动值，旧配置不回显
+  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then ask_secret_config "$1" "$2"; else ask "$2" "$3"; fi
+}
+ask_secret_default_config() { # KEY PROMPT FALLBACK；旧值不回显，新配置用默认值
+  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then ask_secret_config "$1" "$2"; else ask "$2" "$3"; fi
+}
+
 rand() { LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "${1:-32}"; }
 
 check_local_postgres_auth() {
@@ -64,6 +113,7 @@ say "=============================================="
 echo
 
 if [ -f .env ]; then
+  load_previous_env .env
   ask "检测到已有 .env，是否覆盖重新生成？(yes/no)" "no"
   if [ "$REPLY_VALUE" != "yes" ]; then
     # 保留 .env 也要把完整部署跑完——尤其是【数据库供给(db_init)】这一步，
@@ -101,7 +151,8 @@ echo "    3) 用户 Web 端（充值/会员/场景/录音上传）"
 echo "    4) 本地实时语音模型服务器（ASR+TTS+LLM，OpenAI 兼容接口）"
 echo "    5) Redis（采集暂存/缓存/实时上下文）"
 echo "    6) PostgreSQL 数据库"
-ask "要部署哪些应用？" "1,2,3,5,6"
+OLD_APPS="$(old_app_selection)"
+ask "要部署哪些应用？" "${OLD_APPS:-1,2,3,5,6}"
 SEL=",$REPLY_VALUE,"
 DEPLOY_BACKEND=false; DEPLOY_ADMIN=false; DEPLOY_WEB=false; DEPLOY_SPEECH=false; DEPLOY_REDIS=false; DEPLOY_PG=false
 [[ "$SEL" == *",1,"* ]] && DEPLOY_BACKEND=true
@@ -128,7 +179,7 @@ if $DEPLOY_PG; then
   echo; say "[2] PostgreSQL 数据库参数（本机内置库）"
   PROFILES+=("backend-db")
   PG_DEPLOYED_LOCAL=true
-  ask "PostgreSQL 数据目录" "./data/postgres"
+  ask_config POSTGRES_DATA_DIR "PostgreSQL 数据目录" "./data/postgres"
   PG_DATA_DIR="$REPLY_VALUE"
   ENV_LINES+=("POSTGRES_DATA_DIR=$PG_DATA_DIR")
 
@@ -173,16 +224,16 @@ if $DEPLOY_PG; then
 
   if $PG_INITED; then
     note "请输入该数据目录原本的 PostgreSQL 密码（最初部署设置的，老版本默认为 realtalk）。"
-    ask "原 PostgreSQL 密码" "realtalk"
+    ask_secret_default_config POSTGRES_PASSWORD "原 PostgreSQL 密码" "realtalk"
     PG_PW="$REPLY_VALUE"
   else
-    ask "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
+    ask_generated_secret_config POSTGRES_PASSWORD "PostgreSQL 密码（回车自动生成）" "$(rand 20)"
     PG_PW="$REPLY_VALUE"
     FRESH_DB=true   # 新初始化的内置库 → 需要把模型/语音等参数写入并落库
   fi
 
   note "内置 PostgreSQL 容器对外端口（拆机部署时供远程后端连接），默认不使用 5432（避免与宿主机已有库冲突）。"
-  ask "PostgreSQL 对外端口" "5433"
+  ask_config POSTGRES_PORT "PostgreSQL 对外端口" "5433"
   PG_PORT_VAL="$REPLY_VALUE"
   ENV_LINES+=("POSTGRES_PORT=$PG_PORT_VAL")
 
@@ -206,10 +257,10 @@ if $DEPLOY_REDIS; then
   PROFILES+=("backend-redis")
   REDIS_DEPLOYED_LOCAL=true
   note "对话采集分块暂存 / 实时语音上下文用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
-  ask "Redis 数据目录" "./data/redis"
+  ask_config REDIS_DATA_DIR "Redis 数据目录" "./data/redis"
   ENV_LINES+=("REDIS_DATA_DIR=$REPLY_VALUE")
   note "内置 Redis 容器对外端口，默认不使用 6379（避免与宿主机已有 Redis 冲突）。"
-  ask "Redis 对外端口" "6380"
+  ask_config REDIS_PORT "Redis 对外端口" "6380"
   REDIS_PORT_VAL="$REPLY_VALUE"
   ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
   ENV_LINES+=("REDIS_URL=redis://redis:6379/0")   # 同机后端走内部 service 名 redis:6379
@@ -220,7 +271,7 @@ if $DEPLOY_BACKEND; then
   echo; say "[4] 后端 API 参数"
   PROFILES+=("backend")
 
-  ask "API 对外端口" "8000"
+  ask_config API_PORT "API 对外端口" "8000"
   ENV_LINES+=("API_PORT=$REPLY_VALUE")
   API_PORT="$REPLY_VALUE"
 
@@ -231,7 +282,7 @@ if $DEPLOY_BACKEND; then
     echo
     note "本机未部署 PostgreSQL(菜单 6)：填写远程数据库连接串。"
     note "示例：postgresql+psycopg://user:pass@db.example.com:5432/realtalk?sslmode=require"
-    ask "数据库连接串 DATABASE_URL" ""
+    ask_config DATABASE_URL "数据库连接串 DATABASE_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "外部数据库必须填写连接串"; exit 1; }
     ENV_LINES+=("DATABASE_URL=$REPLY_VALUE")
   fi
@@ -244,18 +295,18 @@ if $DEPLOY_BACKEND; then
     note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
     note "本机未部署 Redis(菜单 5)：填写远程 Redis 连接串。"
     note "示例：redis://:你的密码@redis.example.com:6379/0（走 TLS 用 rediss://）"
-    ask "Redis 连接串 REDIS_URL" ""
+    ask_config REDIS_URL "Redis 连接串 REDIS_URL" ""
     [ -n "$REPLY_VALUE" ] || { say "Redis 是必选项，必须填写连接串"; exit 1; }
     ENV_LINES+=("REDIS_URL=$REPLY_VALUE")
   fi
 
-  ask "JWT 密钥（回车自动生成强随机密钥）" "$(rand 48)"
+  ask_generated_secret_config JWT_SECRET "JWT 密钥（回车自动生成强随机密钥）" "$(rand 48)"
   ENV_LINES+=("JWT_SECRET=$REPLY_VALUE")
 
-  ask "管理员用户名" "admin"
+  ask_config ADMIN_USERNAME "管理员用户名" "admin"
   ENV_LINES+=("ADMIN_USERNAME=$REPLY_VALUE")
   note "管理员初始密码默认自动生成强随机值（请记下，登录后可在管理台改密）。"
-  ask "管理员初始密码（回车=自动生成）" "$(rand 16)"
+  ask_generated_secret_config ADMIN_PASSWORD "管理员初始密码（回车=自动生成）" "$(rand 16)"
   ADMIN_PW_VALUE="$REPLY_VALUE"
   ENV_LINES+=("ADMIN_PASSWORD=$ADMIN_PW_VALUE")
 
@@ -266,7 +317,7 @@ if $DEPLOY_BACKEND; then
   note "             ASR/TTS 未配置即报错、邮件按 SMTP 真发。正式上线必须 prod。"
   note "  dev 联调：任意设备直接登录、支付下单自动到账、内购校验旁路、ASR/TTS 未配置返回占位、"
   note "             邮件不外发、Apple/支付宝走沙箱。便于本地联调，切勿用于线上。"
-  ask "部署模式 (prod / dev)" "prod"
+  ask_config DEPLOYMENT_MODE "部署模式 (prod / dev)" "prod"
   DEPLOYMENT_MODE="$REPLY_VALUE"
   DEV=false; [ "$DEPLOYMENT_MODE" = "dev" ] && DEV=true
 
@@ -274,11 +325,11 @@ if $DEPLOY_BACKEND; then
   # 仅在新建数据库时询问并写入（首次启动会落库）；连接已有库时库里已有，跳过询问，可在管理台改。
   if $FRESH_DB; then
     note "AI 模型可跳过，部署后在管理台「系统设置 → AI 模型对接」配置（推荐）。"
-    ask "AI Base URL（回车跳过）" ""
+    ask_config AI_BASE_URL "AI Base URL（回车跳过）" ""
     AI_BASE_URL="$REPLY_VALUE"
     if [ -n "$AI_BASE_URL" ]; then
-      ask_secret "AI API Key"; AI_KEY="$REPLY_VALUE"
-      ask "模型名称" "doubao-seed-1-6-251015"
+      ask_secret_config AI_API_KEY "AI API Key"; AI_KEY="$REPLY_VALUE"
+      ask_config AI_MODEL "模型名称" "doubao-seed-1-6-251015"
       ENV_LINES+=("AI_BASE_URL=$AI_BASE_URL" "AI_API_KEY=$AI_KEY" "AI_MODEL=$REPLY_VALUE")
     else
       ENV_LINES+=("AI_BASE_URL=" "AI_API_KEY=" "AI_MODEL=")
@@ -291,11 +342,11 @@ if $DEPLOY_BACKEND; then
     # A 场景生成（高级会员上传音频文件→场景）：ASR + 文字模型（文字模型槽位在管理台「模型」卡，可留空跟随对话模型）
     echo
     note "A · 场景生成 — 语音转写 ASR（上传音频文件→场景；可指本地语音服务器 http://<IP>:9100/v1 或云端）："
-    ask "A·ASR Base URL（留空=之后在管理台配）" ""; SASR_BASE="$REPLY_VALUE"
+    ask_config SCENARIO_ASR_BASE_URL "A·ASR Base URL（留空=之后在管理台配）" ""; SASR_BASE="$REPLY_VALUE"
     SASR_KEY=""; SASR_MODEL="whisper-1"
     if [ -n "$SASR_BASE" ]; then
-      ask_secret "A·ASR API Key（本地语音服务器可填 local）"; SASR_KEY="$REPLY_VALUE"
-      ask "A·ASR 模型名称" "whisper-1"; SASR_MODEL="$REPLY_VALUE"
+      ask_secret_config SCENARIO_ASR_API_KEY "A·ASR API Key（本地语音服务器可填 local）"; SASR_KEY="$REPLY_VALUE"
+      ask_config SCENARIO_ASR_MODEL "A·ASR 模型名称" "whisper-1"; SASR_MODEL="$REPLY_VALUE"
     fi
     ENV_LINES+=("SCENARIO_ASR_BASE_URL=$SASR_BASE" "SCENARIO_ASR_API_KEY=$SASR_KEY" "SCENARIO_ASR_MODEL=$SASR_MODEL")
     # api 后端不内置任何语音引擎：全部走 A/B 配置的模型地址（本地语音服务器或云端）
@@ -305,14 +356,14 @@ if $DEPLOY_BACKEND; then
     echo
     note "B · 对话语音模型（手动/沉浸式/私教）：本地语音服务器填 http://<IP>:9100/v1（Key=local），"
     note "或 OpenAI 填 https://api.openai.com/v1；转写/合成/对话/实时通道自动派生，无需分别配置。"
-    ask "B·语音模型 Base URL（留空=之后在管理台配）" ""; CV_BASE="$REPLY_VALUE"
+    ask_config CONV_VOICE_BASE_URL "B·语音模型 Base URL（留空=之后在管理台配）" ""; CV_BASE="$REPLY_VALUE"
     CV_KEY=""; CV_MODEL=""; CV_VOICE=""
     TTS_VOICES_VAL="alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar"; TTS_DEFAULT_VOICE_VAL="marin"
     if [ -n "$CV_BASE" ]; then
-      ask_secret "B·语音模型 API Key（本地填 local）"; CV_KEY="$REPLY_VALUE"
-      ask "B·实时模型名（OpenAI 如 gpt-realtime；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
+      ask_secret_config CONV_VOICE_API_KEY "B·语音模型 API Key（本地填 local）"; CV_KEY="$REPLY_VALUE"
+      ask_config CONV_VOICE_MODEL "B·实时模型名（OpenAI 如 gpt-realtime；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
       case "$CV_BASE" in
-        *openai*) ask "B·默认音色" "marin"; CV_VOICE="$REPLY_VALUE" ;;
+        *openai*) ask_config CONV_VOICE_VOICE "B·默认音色" "marin"; CV_VOICE="$REPLY_VALUE" ;;
         *) note "本地 Qwen3-TTS 音色由后面的本地模型步骤统一选择，这里无需重复填写。"
            CV_VOICE=""
            TTS_VOICES_VAL="Aiden,Vivian,Serena,Uncle_Fu,Dylan,Eric,Ryan,Ono_Anna,Sohee"
@@ -321,9 +372,9 @@ if $DEPLOY_BACKEND; then
     fi
     ENV_LINES+=("CONV_VOICE_BASE_URL=$CV_BASE" "CONV_VOICE_API_KEY=$CV_KEY" "CONV_VOICE_MODEL=$CV_MODEL" "CONV_VOICE_VOICE=$CV_VOICE")
     # 分端点计费单价（a=转写分/分钟、b=合成分/百万字符、d=实时通道分/分钟；c=token 单价在模型卡）
-    ask "a·语音转写单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("ASR_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
-    ask "b·语音合成单价（分/百万字符，0=不计费）" "0"; ENV_LINES+=("TTS_PRICE_PER_1M_CHARS_CENTS=$REPLY_VALUE")
-    ask "d·实时通道单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("CONV_VOICE_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
+    ask_config ASR_PRICE_PER_MINUTE_CENTS "a·语音转写单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("ASR_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
+    ask_config TTS_PRICE_PER_1M_CHARS_CENTS "b·语音合成单价（分/百万字符，0=不计费）" "0"; ENV_LINES+=("TTS_PRICE_PER_1M_CHARS_CENTS=$REPLY_VALUE")
+    ask_config CONV_VOICE_PRICE_PER_MINUTE_CENTS "d·实时通道单价（分/分钟，0=不计费）" "0"; ENV_LINES+=("CONV_VOICE_PRICE_PER_MINUTE_CENTS=$REPLY_VALUE")
     # 通用旧键兜底（B 留空时回退；api 后端无内置引擎）
     ENV_LINES+=(
       "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV"
@@ -343,18 +394,18 @@ if $DEPLOY_BACKEND; then
     )
   fi
 
-  ask "worker 进程数（建议=CPU核数）" "4"
+  ask_config WEB_CONCURRENCY "worker 进程数（建议=CPU核数）" "4"
   ENV_LINES+=("WEB_CONCURRENCY=$REPLY_VALUE")
 
   # ---- 语音文件服务器（高级会员上传录音）----
   note "高级会员上传的录音文件，会按【文件 MD5】路由到「可处理语音的服务器」，由其每小时定时任务转写并生成场景。"
   note "可处理语音的【服务器列表】在【管理台 → 系统设置 → 语音文件服务器】中配置（格式 ip:port;ip:port），未配置则语音上传直接报错。"
-  ask "本机是否作为语音文件服务器（处理上传的录音文件）？(yes/no)" "no"
+  ask "本机是否作为语音文件服务器（处理上传的录音文件）？(yes/no)" "$(old_yes_if_set VOICE_NODE_ADDR)"
   VOICE_NODE_ADDR_VAL=""
   if [ "$REPLY_VALUE" = "yes" ]; then
     note "请填【本机在语音服务器列表中的地址 ip:port】，其它服务器须能通过它访问本机；服务据此判断某文件是否归本机处理。"
     note "首次启动时本机地址会自动加入【管理台 → 系统设置 → 语音文件服务器】列表，之后可在管理台删除（删除后重启不会再自动加回）。"
-    ask "本机语音服务地址 VOICE_NODE_ADDR（如 192.168.6.3:8000；必填）" ""
+    ask_config VOICE_NODE_ADDR "本机语音服务地址 VOICE_NODE_ADDR（如 192.168.6.3:8000；必填）" ""
     VOICE_NODE_ADDR_VAL="$REPLY_VALUE"
     [ -z "$VOICE_NODE_ADDR_VAL" ] && note "未填本机地址 → 本机不会注册为语音服务器，也不会自动加入列表。"
   fi
@@ -363,7 +414,7 @@ if $DEPLOY_BACKEND; then
   # ---- 采集功能：上传的真实对话录音存放目录（映射到容器 /app/uploads）----
   note "【采集】高级会员上传的真实对话录音存这里（转写后生成练习场景，3 天自动清理）；语音服务器尤其占空间，建议放数据盘。"
   note "注：场景对练时说的话不存这里——内存即时转写评分后立即丢弃，无需配置目录。"
-  ask "采集录音上传目录" "./data/uploads"
+  ask_config UPLOAD_DATA_DIR "采集录音上传目录" "./data/uploads"
   ENV_LINES+=("UPLOAD_DATA_DIR=$REPLY_VALUE")
 
 
@@ -372,13 +423,13 @@ if $DEPLOY_BACKEND; then
   note "微信登录：默认开发模拟模式（任意设备直接登录，便于联调）。"
   if $DEV; then REPLY_VALUE="no"; else ask "现在配置正式微信登录凭据吗？(yes/no)" "no"; fi
   if [ "$REPLY_VALUE" = "yes" ]; then
-    ask "移动应用 AppID（微信开放平台 · 移动应用）" ""
+    ask_config WECHAT_APP_ID "移动应用 AppID（微信开放平台 · 移动应用）" ""
     WX_APPID="$REPLY_VALUE"
-    ask_secret "移动应用 AppSecret"; WX_SECRET="$REPLY_VALUE"
-    ask "网站应用 AppID（用于 Web 扫码登录，可留空）" ""
+    ask_secret_config WECHAT_APP_SECRET "移动应用 AppSecret"; WX_SECRET="$REPLY_VALUE"
+    ask_config WECHAT_WEB_APP_ID "网站应用 AppID（用于 Web 扫码登录，可留空）" ""
     WX_WEB_APPID="$REPLY_VALUE"
     WX_WEB_SECRET=""
-    [ -n "$WX_WEB_APPID" ] && { ask_secret "网站应用 AppSecret"; WX_WEB_SECRET="$REPLY_VALUE"; }
+    [ -n "$WX_WEB_APPID" ] && { ask_secret_config WECHAT_WEB_APP_SECRET "网站应用 AppSecret"; WX_WEB_SECRET="$REPLY_VALUE"; }
     ENV_LINES+=(
       "WECHAT_AUTH_DEV_MODE=false"
       "WECHAT_APP_ID=$WX_APPID" "WECHAT_APP_SECRET=$WX_SECRET"
@@ -402,14 +453,14 @@ if $DEPLOY_BACKEND; then
   RECV_NAME="RealTalk"; WX_RECV=""; ALI_RECV=""
   if [ "$REPLY_VALUE" = "yes" ]; then
     PAY_DEV_CONFIRM=false
-    ask "收款主体名称（显示给用户）" "RealTalk"
+    ask_config PAYMENT_RECEIVER_NAME "收款主体名称（显示给用户）" "RealTalk"
     RECV_NAME="$REPLY_VALUE"
     note "支付回调必须验签后才入账（防伪造通知白嫖会员）。这些凭证也可稍后在管理台「支付验签配置」维护。"
-    ask "配置微信支付商户？(yes/no)" "no"
+    ask "配置微信支付商户？(yes/no)" "$(old_yes_if_set WECHAT_MCHID)"
     if [ "$REPLY_VALUE" = "yes" ]; then
-      ask "微信支付商户号 MCHID" ""; WX_MCHID="$REPLY_VALUE"
-      ask_secret "微信支付 APIv3 密钥（回调验签解密用）"; WX_APIKEY="$REPLY_VALUE"
-      ask "微信平台证书序列号（回调验签用，可留空稍后在管理台填）" ""; WX_SERIAL="$REPLY_VALUE"
+      ask_config WECHAT_MCHID "微信支付商户号 MCHID" ""; WX_MCHID="$REPLY_VALUE"
+      ask_secret_config WECHAT_API_KEY "微信支付 APIv3 密钥（回调验签解密用）"; WX_APIKEY="$REPLY_VALUE"
+      ask_config WECHAT_CERT_SERIAL "微信平台证书序列号（回调验签用，可留空稍后在管理台填）" ""; WX_SERIAL="$REPLY_VALUE"
       ask "微信平台证书 PEM 文件路径（回调验签用，可留空稍后在管理台粘贴）" ""; WX_CERT_PATH="$REPLY_VALUE"
       if [ -n "$WX_CERT_PATH" ] && [ -f "$WX_CERT_PATH" ]; then
         # 多行 PEM → 字面 \n 单行写入 .env（后端 _multiline_env 还原）
@@ -425,19 +476,19 @@ if $DEPLOY_BACKEND; then
       fi
       ask "微信支付回调地址 NOTIFY_URL" "https://your-domain.com/payment/wechat/webhook"; WX_NOTIFY="$REPLY_VALUE"
     fi
-    ask "配置支付宝当面付？(yes/no)" "no"
+    ask "配置支付宝当面付？(yes/no)" "$(old_yes_if_set ALIPAY_APP_ID)"
     if [ "$REPLY_VALUE" = "yes" ]; then
-      ask "支付宝 AppID" ""; ALI_APPID="$REPLY_VALUE"
+      ask_config ALIPAY_APP_ID "支付宝 AppID" ""; ALI_APPID="$REPLY_VALUE"
       ask "支付宝应用私钥 PEM 文件路径（下单签名用，可留空稍后在管理台粘贴）" ""; ALI_PRIV_PATH="$REPLY_VALUE"
       if [ -n "$ALI_PRIV_PATH" ] && [ -f "$ALI_PRIV_PATH" ]; then
         ALI_PRIV="$(sed ':a;N;$!ba;s/\n/\\n/g' "$ALI_PRIV_PATH")"
       fi
-      ask_secret "支付宝公钥"; ALI_PUB="$REPLY_VALUE"
+      ask_secret_config ALIPAY_PUBLIC_KEY "支付宝公钥"; ALI_PUB="$REPLY_VALUE"
       ask "支付宝回调地址 NOTIFY_URL" "https://your-domain.com/payment/alipay/webhook"; ALI_NOTIFY="$REPLY_VALUE"
     fi
     note "未接入官方支付时，可填个人收款码账号，用户转账后在管理台「充值订单」人工确认。"
-    ask "微信收款账号/备注（可留空）" ""; WX_RECV="$REPLY_VALUE"
-    ask "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
+    ask_config WECHAT_RECEIVER_ACCOUNT "微信收款账号/备注（可留空）" ""; WX_RECV="$REPLY_VALUE"
+    ask_config ALIPAY_RECEIVER_ACCOUNT "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
   fi
 
   # ---- 集成凭据：邮件 SMTP / Apple 内购（多活后端共用，入库；微信登录在上面已单独配过）----
@@ -447,19 +498,19 @@ if $DEPLOY_BACKEND; then
   AP_PRODUCT="realtalk.pro.monthly"; AP_BUNDLE="com.realtalk.app"; AP_ISSUER=""; AP_KEYID=""; AP_PRIV=""
   if $DEV; then REPLY_VALUE="no"; else ask "现在配置集成凭据（邮件 SMTP / Apple 内购）吗？(yes/no)" "no"; fi
   if [ "$REPLY_VALUE" = "yes" ]; then
-    ask "配置邮件 SMTP？(yes/no)" "no"
+    ask "配置邮件 SMTP？(yes/no)" "$(old_yes_if_set SMTP_HOST)"
     if [ "$REPLY_VALUE" = "yes" ]; then
-      ask "SMTP 主机" ""; SMTP_HOST="$REPLY_VALUE"
-      ask "SMTP 用户名" ""; SMTP_USER="$REPLY_VALUE"
-      ask_secret "SMTP 密码"; SMTP_PW="$REPLY_VALUE"
-      ask "发件人" "RealTalk <noreply@realtalk.local>"; SMTP_FROM_VAL="$REPLY_VALUE"
+      ask_config SMTP_HOST "SMTP 主机" ""; SMTP_HOST="$REPLY_VALUE"
+      ask_config SMTP_USERNAME "SMTP 用户名" ""; SMTP_USER="$REPLY_VALUE"
+      ask_secret_config SMTP_PASSWORD "SMTP 密码"; SMTP_PW="$REPLY_VALUE"
+      ask_config SMTP_FROM "发件人" "RealTalk <noreply@realtalk.local>"; SMTP_FROM_VAL="$REPLY_VALUE"
     fi
-    ask "配置 Apple 内购服务端校验？(yes/no)" "no"
+    ask "配置 Apple 内购服务端校验？(yes/no)" "$(old_yes_if_set APPLE_ISSUER_ID)"
     if [ "$REPLY_VALUE" = "yes" ]; then
-      ask "product_id" "realtalk.pro.monthly"; AP_PRODUCT="$REPLY_VALUE"
-      ask "bundle_id" "com.realtalk.app"; AP_BUNDLE="$REPLY_VALUE"
-      ask "issuer_id" ""; AP_ISSUER="$REPLY_VALUE"
-      ask "key_id" ""; AP_KEYID="$REPLY_VALUE"
+      ask_config APPLE_PRODUCT_ID "product_id" "realtalk.pro.monthly"; AP_PRODUCT="$REPLY_VALUE"
+      ask_config APPLE_BUNDLE_ID "bundle_id" "com.realtalk.app"; AP_BUNDLE="$REPLY_VALUE"
+      ask_config APPLE_ISSUER_ID "issuer_id" ""; AP_ISSUER="$REPLY_VALUE"
+      ask_config APPLE_KEY_ID "key_id" ""; AP_KEYID="$REPLY_VALUE"
       ask "私钥 .p8 文件路径（可留空稍后在管理台粘贴）" ""; AP_PRIV_PATH="$REPLY_VALUE"
       if [ -n "$AP_PRIV_PATH" ] && [ -f "$AP_PRIV_PATH" ]; then
         AP_PRIV="$(sed ':a;N;$!ba;s/\n/\\n/g' "$AP_PRIV_PATH")"
@@ -500,13 +551,13 @@ fi
 if $DEPLOY_ADMIN; then
   echo; say "[5] 管理台参数"
   PROFILES+=("admin")
-  ask "管理台对外端口" "8001"
+  ask_config ADMIN_PORT "管理台对外端口" "8001"
   ADMIN_PORT="$REPLY_VALUE"
   ENV_LINES+=("ADMIN_PORT=$ADMIN_PORT")
   if $DEPLOY_BACKEND; then
     note "后端在同机部署，管理台自动走内部网络 $API_UPSTREAM_DEFAULT"
   else
-    ask "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
+    ask_config API_UPSTREAM "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
     API_UPSTREAM_DEFAULT="$REPLY_VALUE"
   fi
 fi
@@ -515,11 +566,11 @@ fi
 if $DEPLOY_WEB; then
   echo; say "[6] 用户 Web 端参数"
   PROFILES+=("web")
-  ask "用户 Web 端对外端口" "8002"
+  ask_config WEB_PORT "用户 Web 端对外端口" "8002"
   WEB_PORT="$REPLY_VALUE"
   ENV_LINES+=("WEB_PORT=$WEB_PORT")
   if ! $DEPLOY_BACKEND && ! $DEPLOY_ADMIN; then
-    ask "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
+    ask_config API_UPSTREAM "后端 API 地址（另一台机器）" "http://192.168.1.10:8000"
     API_UPSTREAM_DEFAULT="$REPLY_VALUE"
   fi
 fi
@@ -533,24 +584,24 @@ if $DEPLOY_SPEECH; then
   note "REST（字幕/上传生成场景/手动朗读）：faster-whisper(ASR) + 同一 Qwen GGUF(LLM) + Qwen3-TTS。"
   note "实时 WS（沉浸/私教）：speech-to-speech 原生编排 Silero VAD → faster-whisper → 同一 Qwen GGUF → Qwen3-TTS。"
   note "无需 venv：全部依赖在一个 speech 容器内，9100 是唯一对外端口；S2S 内部端口不对外。"
-  ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
+  ask_config SPEECH_DEVICE "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ENV_LINES+=("SPEECH_LLAMA_CPU_PORTABLE=true")
   note "CPU 模式默认源码构建便携 llama.cpp（关闭 AVX2/FMA），兼容仅支持 AVX 的旧 Xeon；构建会慢一些，但避免首次推理 exit 132。"
-  ask "共享 faster-whisper ASR 模型大小（REST 与 S2S 使用同一份模型文件）(tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
+  ask_config SPEECH_ASR_MODEL "共享 faster-whisper ASR 模型大小（REST 与 S2S 使用同一份模型文件）(tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
   note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
   note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
-  ask "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
-  ask "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
-  ask "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
+  ask_config SPEECH_LLM_REPO "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+  ask_config SPEECH_LLM_FILE "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  ask_config SPEECH_REALTIME_ENGINE "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
   note "CPU 推荐 0.6B Qwen3-TTS：比 1.7B 更省内存、首包更快；需要更细腻音色可改 1.7B（CPU 会更慢）。"
-  ask "统一 Qwen3-TTS 模型（REST 与 realtime 共用配置）" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_TTS_MODEL=$REPLY_VALUE")
-  ask "统一 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_TTS_SPEAKER=$REPLY_VALUE")
-  ask "Qwen3-TTS GGUF 量化（CPU 推荐 Q4_K_M）" "Q4_K_M"; ENV_LINES+=("SPEECH_TTS_QUANT=$REPLY_VALUE")
+  ask_config SPEECH_TTS_MODEL "统一 Qwen3-TTS 模型（REST 与 realtime 共用配置）" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_TTS_MODEL=$REPLY_VALUE")
+  ask_config SPEECH_TTS_SPEAKER "统一 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_TTS_SPEAKER=$REPLY_VALUE")
+  ask_config SPEECH_TTS_QUANT "Qwen3-TTS GGUF 量化（CPU 推荐 Q4_K_M）" "Q4_K_M"; ENV_LINES+=("SPEECH_TTS_QUANT=$REPLY_VALUE")
   note "下方目录统一保存 faster-whisper、GGUF LLM、Qwen3-TTS 和 HuggingFace 缓存。"
-  ask "全部语音/文字模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
-  ask "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
+  ask_config SPEECH_MODELS_DIR "全部语音/文字模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
+  ask_config SPEECH_PORT "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
   SPEECH_PORT_VAL="$REPLY_VALUE"
-  ask "用 HuggingFace 镜像站下模型？(yes=hf-mirror.com / no=官方直连)" "yes"
+  ask "用 HuggingFace 镜像站下模型？(yes=hf-mirror.com / no=官方直连)" "$( [ "${PREVIOUS_ENV[HF_ENDPOINT]:-}" = "https://hf-mirror.com" ] && echo yes || echo no )"
   if [ "$REPLY_VALUE" = "yes" ]; then
     ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com")
   else
@@ -564,7 +615,7 @@ if $DEPLOY_SPEECH; then
       ENV_LINES+=("SPEECH_REDIS_URL=redis://redis:6379/1")
     else
       note "legacy 模式需远程 Redis（建议 /1 库与后端 /0 隔离）。"
-      ask "语音服务器 Redis 连接串 SPEECH_REDIS_URL" ""
+      ask_config SPEECH_REDIS_URL "语音服务器 Redis 连接串 SPEECH_REDIS_URL" ""
       [ -n "$REPLY_VALUE" ] || { say "legacy 实时上下文需要 Redis，必须填写连接串"; exit 1; }
       ENV_LINES+=("SPEECH_REDIS_URL=$REPLY_VALUE")
     fi
@@ -578,6 +629,16 @@ IFS=,; ENV_LINES+=("COMPOSE_PROFILES=${PROFILES[*]}"); unset IFS
 
 # ============ 写入 .env 并部署 ============
 echo; say "[8] 生成 .env（应用: ${PROFILES[*]}）"
+# 对于因组件/模式选择而未再次询问的旧键，原样保留；本轮确认或生成的键优先。
+declare -A GENERATED_ENV_KEYS=()
+for line in "${ENV_LINES[@]}"; do
+  [[ "$line" == \#* || "$line" != *=* ]] && continue
+  GENERATED_ENV_KEYS["${line%%=*}"]=1
+done
+for key in "${!PREVIOUS_ENV[@]}"; do
+  [[ "$key" = "REALTALK_ENV" || -n ${GENERATED_ENV_KEYS[$key]+present} ]] && continue
+  ENV_LINES+=("$key=${PREVIOUS_ENV[$key]}")
+done
 printf '%s\n' "${ENV_LINES[@]}" > .env
 say ".env 已生成。"
 
