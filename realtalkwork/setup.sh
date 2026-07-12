@@ -75,10 +75,10 @@ if [ -f .env ]; then
     check_local_postgres_auth || exit 1
     if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
       say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
-      if docker compose run --rm api python -m app.db_init; then
+      if docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init; then
         say "${GREEN}✔ 数据库已供给${RESET}"
       else
-        say "数据库供给失败，请重试：docker compose run --rm api python -m app.db_init"
+        say "数据库供给失败，请重试：docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init"
       fi
     fi
     say "完成。常用命令：docker compose ps / logs -f api / down"
@@ -586,10 +586,10 @@ if [ "$REPLY_VALUE" = "yes" ]; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
     # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。
     say "初始化数据库（建表 + 系统参数入库，仅一次）…"
-    if docker compose run --rm api python -m app.db_init; then
+    if docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init; then
       say "${GREEN}✔ 数据库已初始化${RESET}"
     else
-      say "数据库初始化失败，请检查后重试：docker compose run --rm api python -m app.db_init"
+      say "数据库初始化失败，请检查后重试：docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init"
     fi
     say "等待 API 就绪…（选了本地 ASR/TTS 时，首次启动会预拉模型，可能需要几分钟）"
     for _ in $(seq 1 90); do   # 最长约 3 分钟，给首次预拉本地模型留时间
