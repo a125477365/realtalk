@@ -593,7 +593,7 @@ if $DEPLOY_SPEECH; then
   note "无需 venv：全部依赖在一个 speech 容器内，9100 是唯一对外端口；S2S 内部端口不对外。"
   ask_config SPEECH_DEVICE "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ENV_LINES+=("SPEECH_LLAMA_CPU_PORTABLE=true")
-  note "CPU 模式默认源码构建便携 llama.cpp（关闭 AVX2/FMA），兼容仅支持 AVX 的旧 Xeon；构建会慢一些，但避免首次推理 exit 132。"
+  note "CPU 模式默认源码构建最保守 llama.cpp（关闭 AVX/AVX2/FMA），兼容 NAS/iStoreOS 等无 AVX CPU；构建会慢一些，但避免首次推理 exit 132。"
   ask_config SPEECH_ASR_MODEL "共享 faster-whisper ASR 模型大小（REST 与 S2S 使用同一份模型文件）(tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
   note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
   note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
