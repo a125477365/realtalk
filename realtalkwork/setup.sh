@@ -40,7 +40,14 @@ load_previous_env() {
 }
 
 old_default() { # KEY FALLBACK
-  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then printf '%s' "${PREVIOUS_ENV[$1]}"; else printf '%s' "$2"; fi
+  if [[ -n ${PREVIOUS_ENV[$1]+present} ]]; then
+    printf '%s' "${PREVIOUS_ENV[$1]}"
+  elif [ "$1" = "DEPLOYMENT_MODE" ] && [[ -n ${PREVIOUS_ENV[REALTALK_ENV]+present} ]]; then
+    # 旧命名 development/production 无缝迁移到新界面同名选项 dev/prod。
+    case "${PREVIOUS_ENV[REALTALK_ENV]}" in development|dev) printf 'dev' ;; *) printf 'prod' ;; esac
+  else
+    printf '%s' "$2"
+  fi
 }
 old_yes_if_set() { [[ -n "${PREVIOUS_ENV[$1]:-}" ]] && printf 'yes' || printf 'no'; }
 old_app_selection() {
