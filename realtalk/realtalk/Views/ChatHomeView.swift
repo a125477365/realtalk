@@ -4,7 +4,7 @@ import SwiftUI
 /// - AI 卡片：朗读中动画、卡内「译」按钮显示中文、严格场景朗读中打码；
 /// - 用户气泡：下方发音分/语速小行，点开进「详细指导」浮层（逐词标色/评分/语境润色）；
 /// - 指导/提示卡直接插在字幕流里（不再有专门指导界面）；
-/// - 底部：选场景/实时翻译/采集 工具条 + 点击说话 + 键盘输入 + 电话（私教）。
+/// - 顶部：重听 / 场景入口 + 当前用户；底部：采集 + 居中点击说话 + 键盘 / 私教。
 struct ChatHomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var auth: AuthStore
@@ -24,17 +24,14 @@ struct ChatHomeView: View {
                 RTTheme.background.ignoresSafeArea()
                 VStack(spacing: 0) {
                     topBar
+                    statusStrip
                     chatStream
                     if let scene = model.homeSceneName { sceneBanner(scene) }
-                    toolStrip
                     inputBar
                 }
             }
             .alert(item: $model.failureAlert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
-            }
-            .fullScreenCover(isPresented: $model.showTutor) {
-                TutorCallView(stream: model.freeStream)
             }
             .sheet(isPresented: $model.showScenePicker) {
                 ScenarioPickerView()
@@ -66,6 +63,10 @@ struct ChatHomeView: View {
             .onChange(of: freeStream.isAISpeaking) { _, speaking in
                 if speaking == false { model.revealMasked() }
             }
+            .onChange(of: model.showTutor) { _, enabled in
+                // 私教与常规模式共用这一套字幕界面，只切换底层实时通道。
+                if enabled { model.startTutor() }
+            }
             .task {
                 await model.reloadAll()
                 if model.homeConnected == false, model.showTutor == false {
@@ -78,34 +79,129 @@ struct ChatHomeView: View {
     // MARK: 顶栏
 
     private var topBar: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(RTTheme.brandGradient)
-                .frame(width: 34, height: 34)
-                .overlay(Text("R").font(.system(size: 17, weight: .bold)).foregroundStyle(.white))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("AI 老师")
-                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
+        HStack(spacing: 8) {
+            Button { replayLatestAI() } label: {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(latestAIText == nil ? RTTheme.textSecondary : RTTheme.accent)
+                    .frame(width: 42, height: 42)
+                    .background(RTTheme.surface, in: Circle())
+                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(latestAIText == nil)
+            .accessibilityLabel("重听老师上一句")
+
+            Menu {
+                Button {
+                    model.showScenePicker = true
+                } label: {
+                    Label("选择练习场景", systemImage: "film")
+                }
+                Button {
+                    model.tutorMode = "translate"
+                    model.showTutor = true
+                } label: {
+                    Label("实时翻译", systemImage: "globe")
+                }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(RTTheme.textPrimary)
-                Text(statusLine)
-                    .font(.system(size: 11 * model.fontScale))
-                    .foregroundStyle(speech.isRecording ? .red : RTTheme.textSecondary)
+                    .frame(width: 42, height: 42)
+                    .background(RTTheme.surface, in: Circle())
+                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
             }
             Spacer()
             Button { showingAccount = true } label: {
-                Image(systemName: "person.crop.circle")
-                    .font(.system(size: 24))
-                    .foregroundStyle(RTTheme.textSecondary)
+                HStack(spacing: 8) {
+                    userAvatar
+                    Text(displayName)
+                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                .padding(.trailing, 10)
+                .padding(.leading, 4)
+                .frame(height: 42)
+                .background(RTTheme.surface, in: Capsule())
+                .overlay(Capsule().stroke(RTTheme.hairline, lineWidth: 1))
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("账户与会员设置")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
+    @ViewBuilder
+    private var userAvatar: some View {
+        if let raw = auth.user?.avatarUrl, let url = URL(string: raw) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    avatarFallback
+                }
+            }
+            .frame(width: 34, height: 34)
+            .clipShape(Circle())
+        } else {
+            avatarFallback
+        }
+    }
+
+    private var avatarFallback: some View {
+        Circle()
+            .fill(RTTheme.brandGradient)
+            .frame(width: 34, height: 34)
+            .overlay(
+                Text(String(displayName.prefix(1)))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+            )
+    }
+
+    private var displayName: String {
+        let value = auth.user?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "微信用户" : value
+    }
+
+    private var latestAIText: String? {
+        model.homeItems.last(where: { $0.kind == .ai })?.text
+    }
+
+    private func replayLatestAI() {
+        if let text = latestAIText { model.speakText(text) }
+    }
+
+    @ViewBuilder
+    private var statusStrip: some View {
+        if speech.isRecording || model.showTutor || model.homeStatus.isEmpty == false {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(speech.isRecording ? Color.red : (model.homeConnected ? RTTheme.success : RTTheme.textSecondary))
+                    .frame(width: 6, height: 6)
+                Text(statusLine)
+                    .font(.system(size: 11 * model.fontScale, weight: .medium))
+                    .foregroundStyle(speech.isRecording ? .red : RTTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(RTTheme.surface, in: Capsule())
+            .padding(.bottom, 4)
+        }
+    }
+
     private var statusLine: String {
         if speech.isRecording { return "正在采集真实对话…" }
+        if model.showTutor {
+            if model.tutorMode == "translate" { return "实时翻译 · 共用字幕界面" }
+            return model.tutorImmersive ? "私教 · 沉浸聆听中" : "私教 · 点击说话"
+        }
         if model.homeStatus.isEmpty == false { return model.homeStatus }
-        return auth.user?.tierName ?? "用真实生活练英语"
+        return model.homeConnected ? "已连接" : "正在连接"
     }
 
     // MARK: 字幕流
@@ -260,7 +356,7 @@ struct ChatHomeView: View {
 
     private func sceneBanner(_ name: String) -> some View {
         HStack(spacing: 8) {
-            Text("🎬 \(name)")
+            Label(name, systemImage: "film")
                 .font(.system(size: 14 * model.fontScale, weight: .semibold))
                 .foregroundStyle(RTTheme.textPrimary)
             Text(model.homeSceneStrict ? "严格按剧本" : "自由发挥")
@@ -282,40 +378,7 @@ struct ChatHomeView: View {
         .background(RTTheme.surface)
     }
 
-    // MARK: 工具条 + 输入区
-
-    private var toolStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                toolChip("选场景", icon: "film") { model.showScenePicker = true }
-                toolChip("实时翻译", icon: "globe") {
-                    model.tutorMode = "translate"
-                    model.showTutor = true
-                }
-                toolChip(speech.isRecording ? "停止采集并生成场景" : "采集日常对话",
-                         icon: speech.isRecording ? "stop.circle" : "waveform.badge.plus",
-                         tint: speech.isRecording ? .red : nil) {
-                    Task { await model.toggleRecording() }
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func toolChip(_ label: String, icon: String, tint: Color? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon).font(.system(size: 12))
-                Text(label).font(.system(size: 13 * model.fontScale, weight: .medium))
-            }
-            .foregroundStyle(tint ?? RTTheme.textPrimary)
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(RTTheme.surface, in: Capsule())
-            .overlay(Capsule().stroke(RTTheme.hairline, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
+    // MARK: 输入区
 
     private var inputBar: some View {
         HStack(spacing: 10) {
@@ -341,27 +404,52 @@ struct ChatHomeView: View {
                         .frame(width: 40, height: 44)
                 }
             } else {
+                HStack {
+                    Button {
+                        Task { await model.toggleRecording() }
+                    } label: {
+                        Image(systemName: speech.isRecording ? "stop.fill" : "waveform.badge.plus")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(speech.isRecording ? .white : RTTheme.accent)
+                            .frame(width: 48, height: 48)
+                            .background(speech.isRecording ? Color.red : RTTheme.surface, in: Circle())
+                            .overlay(Circle().stroke(speech.isRecording ? Color.clear : RTTheme.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(speech.isRecording ? "停止采集并生成场景" : "采集用户说话录音")
+                    Spacer(minLength: 0)
+                }
+                .frame(width: 92)
+
                 talkButton
-                Button {
-                    keyboardMode = true
-                    draftFocused = true
-                } label: {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 19))
-                        .foregroundStyle(RTTheme.textPrimary)
-                        .frame(width: 44, height: 50)
-                        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+
+                HStack(spacing: 8) {
+                    Button {
+                        keyboardMode = true
+                        draftFocused = true
+                    } label: {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 18))
+                            .foregroundStyle(RTTheme.textPrimary)
+                            .frame(width: 42, height: 48)
+                            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    Button {
+                        if model.showTutor {
+                            model.closeTutor()
+                        } else {
+                            model.tutorMode = "chat"
+                            model.showTutor = true
+                        }
+                    } label: {
+                        Image(systemName: model.showTutor ? "phone.down.fill" : "phone.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 42, height: 48)
+                            .background(model.showTutor ? Color.red : RTTheme.success, in: Circle())
+                    }
                 }
-                Button {
-                    model.tutorMode = "chat"
-                    model.showTutor = true
-                } label: {
-                    Image(systemName: "phone.fill")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 50, height: 50)
-                        .background(RTTheme.success, in: Circle())
-                }
+                .frame(width: 92, alignment: .trailing)
             }
         }
         .padding(.horizontal, 14)
@@ -374,11 +462,20 @@ struct ChatHomeView: View {
     }
 
     private var talkButton: some View {
-        Button { model.toggleHomeTalk() } label: {
+        Button {
+            if model.showTutor && model.tutorImmersive {
+                model.toggleTutorImmersive()
+            } else {
+                model.toggleHomeTalk()
+            }
+        } label: {
             HStack(spacing: 10) {
                 if model.homeWorking {
                     ProgressView().tint(.white)
                     Text("请稍候…")
+                } else if model.showTutor && model.tutorImmersive {
+                    Image(systemName: "waveform")
+                    Text("沉浸聆听中")
                 } else {
                     Image(systemName: recordingNow ? "stop.fill" : "mic.fill")
                     Text(recordingNow ? "说完了，发送" : "点击说话")
@@ -386,13 +483,14 @@ struct ChatHomeView: View {
             }
             .font(.system(size: 16 * model.fontScale, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 50)
             .frame(height: 50)
             .background(recordingNow ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.brandGradient),
                         in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
         .disabled(model.homeWorking)
+        .accessibilityHint(model.showTutor && model.tutorImmersive ? "切换为点击说话模式" : "开始或结束本轮录音")
     }
 
     private func sendDraft() {

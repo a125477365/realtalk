@@ -11,6 +11,7 @@ import com.example.realtalkad.data.BillingAccount
 import com.example.realtalkad.data.ChatMessage
 import com.example.realtalkad.data.PlanItem
 import com.example.realtalkad.data.RechargeOrder
+import com.example.realtalkad.data.RefineItem
 import com.example.realtalkad.data.RoleplayState
 import com.example.realtalkad.data.Scenario
 import com.example.realtalkad.data.ScenarioSummary
@@ -169,6 +170,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 卡内「译」按钮：切换该条消息的中文翻译显示。 */
     fun toggleItemTranslation(id: Long) {
         homeItems.value = homeItems.value.map { if (it.id == id) it.copy(showTranslation = !it.showTranslation) else it }
+    }
+
+    /** 卡内或顶栏重听老师上一句，统一走后端 TTS。 */
+    fun speakText(text: String) {
+        voice.speak(text)
     }
 
     /** 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。 */
@@ -609,7 +615,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.clear()
         isVoiceActive.value = false
         showImmersive.value = false
-        runCatching { realtime.cancel() }
         runCatching { practice.stop() }
         runCatching { voice.stop() }
         if (capture.isRecording) runCatching { capture.stop() }

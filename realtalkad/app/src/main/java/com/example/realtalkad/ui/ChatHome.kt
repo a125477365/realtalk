@@ -1,9 +1,19 @@
 package com.example.realtalkad.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,13 +30,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -54,7 +66,7 @@ import kotlinx.coroutines.delay
 /**
  * 常规对话主界面（新首页）：白底聊天流，自由聊天 / 自由场景 / 严格场景全在这一个界面。
  * AI 卡片（朗读/译/打码）、用户气泡（发音分/语速→详细指导浮层）、指导/提示卡直接插在字幕流里；
- * 底部：选场景/实时翻译/采集 工具条 + 点击说话 + 键盘输入 + 电话（私教）。
+ * 顶部：重听 / 场景入口 + 当前用户；底部：采集 + 居中点击说话 + 键盘 / 私教。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,6 +78,8 @@ fun ChatHomeScreen(model: AppViewModel) {
     val sceneName by model.homeSceneName.collectAsState()
     val sceneStrict by model.homeSceneStrict.collectAsState()
     val showTutor by model.showTutor.collectAsState()
+    val tutorMode by model.tutorMode.collectAsState()
+    val tutorImmersive by model.tutorImmersive.collectAsState()
     val showPicker by model.showScenePicker.collectAsState()
     val manualRecording by model.homeManualRecording.collectAsState()
     val isRecording by model.isRecording.collectAsState()
@@ -75,37 +89,95 @@ fun ChatHomeScreen(model: AppViewModel) {
     var keyboardMode by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var showAccount by remember { mutableStateOf(false) }
+    var showQuickMenu by remember { mutableStateOf(false) }
     var guidanceFor by remember { mutableStateOf<AppViewModel.HomeChatItem?>(null) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(Unit) { if (!connected && !showTutor) model.startHomeChat() }
+    LaunchedEffect(showTutor) { if (showTutor) model.startTutor() }
     LaunchedEffect(items.size) { if (items.isNotEmpty()) listState.animateScrollToItem(items.size - 1) }
 
     Box(Modifier.fillMaxSize().background(RT.Background)) {
         Column(Modifier.fillMaxSize()) {
-            // 顶栏
+            // 顶栏：不再展示 AI 老师或左侧用户头像，只保留声音/场景和右侧当前用户。
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 40.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val latestAi = items.lastOrNull { it.kind == AppViewModel.HomeKind.AI }?.text
                 Box(
-                    Modifier.size(34.dp).background(RT.BrandBrush, CircleShape),
+                    Modifier.size(42.dp).background(RT.Surface, CircleShape)
+                        .clickable(enabled = latestAi != null) { latestAi?.let(model::speakText) },
                     contentAlignment = Alignment.Center,
-                ) { Text("R", color = Color.White, fontWeight = FontWeight.Bold) }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("AI 老师", fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp, color = RT.TextPrimary)
-                    Text(
-                        when {
-                            isRecording -> "正在采集真实对话…"
-                            status.isNotBlank() -> status
-                            else -> user?.tierName ?: "用真实生活练英语"
-                        },
-                        fontSize = (11 * fontScale).sp,
-                        color = if (isRecording) Color.Red else RT.TextSecondary,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = "重听老师上一句",
+                        tint = if (latestAi == null) RT.TextSecondary else RT.Accent,
+                        modifier = Modifier.size(21.dp),
                     )
                 }
-                Text("👤", fontSize = 22.sp, modifier = Modifier.clickable { showAccount = true }.padding(6.dp))
+                Spacer(Modifier.width(8.dp))
+                Box {
+                    Box(
+                        Modifier.size(42.dp).background(RT.Surface, CircleShape).clickable { showQuickMenu = true },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "选择场景或实时翻译", tint = RT.TextPrimary)
+                    }
+                    DropdownMenu(expanded = showQuickMenu, onDismissRequest = { showQuickMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("选择练习场景") },
+                            leadingIcon = { Icon(Icons.Filled.Movie, contentDescription = null) },
+                            onClick = { showQuickMenu = false; model.showScenePicker.value = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("实时翻译") },
+                            leadingIcon = { Icon(Icons.Filled.Translate, contentDescription = null) },
+                            onClick = {
+                                showQuickMenu = false
+                                model.tutorMode.value = "translate"
+                                model.showTutor.value = true
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                val displayName = user?.displayName?.trim().takeUnless { it.isNullOrEmpty() } ?: "微信用户"
+                Row(
+                    Modifier.background(RT.Surface, RoundedCornerShape(50)).clickable { showAccount = true }
+                        .padding(start = 4.dp, end = 11.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(Modifier.size(34.dp).background(RT.BrandBrush, CircleShape), contentAlignment = Alignment.Center) {
+                        Text(displayName.take(1), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(displayName, fontSize = (14 * fontScale).sp, fontWeight = FontWeight.SemiBold,
+                        color = RT.TextPrimary, maxLines = 1)
+                }
+            }
+
+            if (isRecording || showTutor || status.isNotBlank()) {
+                val statusText = when {
+                    isRecording -> "正在采集真实对话…"
+                    showTutor && tutorMode == "translate" -> "实时翻译 · 共用字幕界面"
+                    showTutor && tutorImmersive -> "私教 · 沉浸聆听中"
+                    showTutor -> "私教 · 点击说话"
+                    status.isNotBlank() -> status
+                    connected -> "已连接"
+                    else -> "正在连接"
+                }
+                Row(
+                    Modifier.align(Alignment.CenterHorizontally).background(RT.Surface, RoundedCornerShape(50))
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.size(6.dp).background(if (isRecording) Color.Red else if (connected) RT.Success else RT.TextSecondary, CircleShape))
+                    Text(statusText, fontSize = (11 * fontScale).sp, fontWeight = FontWeight.Medium,
+                        color = if (isRecording) Color.Red else RT.TextSecondary, maxLines = 1)
+                }
             }
 
             // 字幕流
@@ -140,7 +212,9 @@ fun ChatHomeScreen(model: AppViewModel) {
                     Modifier.fillMaxWidth().background(RT.Surface).padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("🎬 $name", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
+                    Icon(Icons.Filled.Movie, contentDescription = null, tint = RT.TextPrimary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(name, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
                     Spacer(Modifier.width(8.dp))
                     Text(
                         if (sceneStrict) "严格按剧本" else "自由发挥",
@@ -155,24 +229,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                 }
             }
 
-            // 工具条：选场景 / 实时翻译 / 采集
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                ToolChip("🎬 选场景", fontScale) { model.showScenePicker.value = true }
-                ToolChip("🌐 实时翻译", fontScale) {
-                    model.tutorMode.value = "translate"
-                    model.showTutor.value = true
-                }
-                ToolChip(
-                    if (isRecording) "⏹ 停止采集并生成场景" else "🎙 采集日常对话",
-                    fontScale, tint = if (isRecording) Color.Red else null,
-                ) { model.toggleRecording() }
-            }
-
-            // 输入区：点击说话 + 键盘 + 电话
+            // 输入区：等宽左右控制区保证“点击说话”严格居中；采集按钮移到同一行最左。
             if (keyboardMode) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
@@ -200,12 +257,31 @@ fun ChatHomeScreen(model: AppViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Box(
+                        Modifier.width(92.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Box(
+                            Modifier.size(48.dp).background(if (isRecording) Color.Red else RT.Surface, CircleShape)
+                                .clickable { model.toggleRecording() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                if (isRecording) Icons.Filled.Stop else Icons.Filled.GraphicEq,
+                                contentDescription = if (isRecording) "停止采集并生成场景" else "采集用户说话录音",
+                                tint = if (isRecording) Color.White else RT.Accent,
+                            )
+                        }
+                    }
+                    Box(
                         Modifier.weight(1f).height(50.dp)
                             .background(
                                 if (manualRecording) Brush.linearGradient(listOf(Color.Red, Color.Red)) else RT.BrandBrush,
                                 RoundedCornerShape(16.dp),
                             )
-                            .clickable(enabled = !working) { model.toggleHomeTalk() },
+                            .clickable(enabled = !working) {
+                                if (showTutor && tutorImmersive) model.toggleTutorImmersive()
+                                else model.toggleHomeTalk()
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         if (working) {
@@ -214,30 +290,52 @@ fun ChatHomeScreen(model: AppViewModel) {
                                 Text("请稍候…", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp)
                             }
                         } else {
-                            Text(
-                                if (manualRecording) "⏹ 说完了，发送" else "🎙 点击说话",
-                                color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp,
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                Icon(
+                                    if (showTutor && tutorImmersive) Icons.Filled.GraphicEq
+                                    else if (manualRecording) Icons.Filled.Stop else Icons.Filled.Mic,
+                                    contentDescription = null, tint = Color.White, modifier = Modifier.size(19.dp),
+                                )
+                                Text(
+                                    when {
+                                        showTutor && tutorImmersive -> "沉浸聆听中"
+                                        manualRecording -> "说完了，发送"
+                                        else -> "点击说话"
+                                    },
+                                    color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (16 * fontScale).sp,
+                                )
+                            }
                         }
                     }
-                    Box(
-                        Modifier.size(50.dp).background(RT.Surface, RoundedCornerShape(16.dp))
-                            .clickable { keyboardMode = true },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("⌨️", fontSize = 20.sp) }
-                    Box(
-                        Modifier.size(50.dp).background(RT.Success, CircleShape)
-                            .clickable {
-                                model.tutorMode.value = "chat"
-                                model.showTutor.value = true
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) { Text("📞", fontSize = 20.sp) }
+                    Row(
+                        Modifier.width(92.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    ) {
+                        Box(
+                            Modifier.size(42.dp, 48.dp).background(RT.Surface, RoundedCornerShape(14.dp))
+                                .clickable { keyboardMode = true },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.Keyboard, contentDescription = "键盘输入", tint = RT.TextPrimary) }
+                        Box(
+                            Modifier.size(42.dp, 48.dp).background(if (showTutor) Color.Red else RT.Success, CircleShape)
+                                .clickable {
+                                    if (showTutor) model.closeTutor()
+                                    else {
+                                        model.tutorMode.value = "chat"
+                                        model.showTutor.value = true
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(if (showTutor) Icons.Filled.CallEnd else Icons.Filled.Call,
+                                contentDescription = if (showTutor) "退出私教" else "进入私教", tint = Color.White)
+                        }
+                    }
                 }
             }
         }
 
-        if (showTutor) TutorCallScreen(model)
         if (showPicker) ScenarioPickerOverlay(model)
         // 学习提醒「私教来电」
         val incomingReminder by model.incomingReminder.collectAsState()
@@ -257,19 +355,6 @@ fun ChatHomeScreen(model: AppViewModel) {
     LaunchedEffect(reminderScene) {
         if (reminderScene != null) model.showScenePicker.value = true
     }
-}
-
-@Composable
-private fun ToolChip(label: String, fontScale: Float, tint: Color? = null, onClick: () -> Unit) {
-    Text(
-        label,
-        fontSize = (13 * fontScale).sp, fontWeight = FontWeight.Medium,
-        color = tint ?: RT.TextPrimary,
-        modifier = Modifier
-            .background(RT.Surface, RoundedCornerShape(50))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-    )
 }
 
 /** AI 大卡片：文本(打码时模糊) + 朗读/译 按钮 + 中文翻译（卡内切换）。 */

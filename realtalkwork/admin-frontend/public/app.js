@@ -980,31 +980,6 @@ function renderPlanQuotaCards() {
     '  <button class="btn btn-primary" onclick="saveQuota()">保存限额</button>',
     "</div>",
     '<div class="card">',
-    "  <h2>A · 场景生成 — 语音转写<span class=\"subtitle\">高级会员上传音频文件→场景 用的 ASR（可指本地语音服务器或云端）</span></h2>",
-    '  <div id="asr-mode-banner"></div>',
-    '  <div id="asr-cloud-fields" class="form-grid">',
-    '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="http://<IP>:9100/v1 或云端地址" /></div>',
-    '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
-    '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label>',
-    '      <input type="password" id="asr-api-key" placeholder="留空保持不变（本地服务器可填 local）" autocomplete="new-password" /></div>',
-    "  </div>",
-    '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 A·场景生成 ASR</button>',
-    "</div>",
-    '<div class="card">',
-    "  <h2>B · 对话语音模型（一张卡搞定）<span class=\"subtitle\">手动/沉浸式/私教：填一个地址，转写/合成/对话/实时通道四端点自动派生。本地填 http://IP:9100/v1(Key=local)，OpenAI 填 https://api.openai.com/v1</span></h2>",
-    '  <div id="tts-mode-banner"></div>',
-    '  <div id="tts-cloud-fields" class="form-grid">',
-    '    <div class="form-group"><label>Base URL</label><input type="text" id="tts-base-url" placeholder="https://api.openai.com/v1" /></div>',
-    '    <div class="form-group"><label>实时模型名 <span class="subtitle">OpenAI 如 gpt-realtime；本地可留空</span></label><input type="text" id="tts-model" placeholder="本地留空" /></div>',
-    '    <div class="form-group"><label>API Key <span class="hint" id="tts-key-status"></span></label>',
-    '      <input type="password" id="tts-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
-    '    <div class="form-group"><label>实时通道（自动派生，只读）</label><input type="text" id="tts-rt-url" readonly style="opacity:.7" /></div>',
-    '    <div class="form-group"><label>可选音色（逗号分隔）</label><input type="text" id="tts-voices" placeholder="alloy,echo,fable,onyx,nova,shimmer" /></div>',
-    '    <div class="form-group"><label>默认音色</label><input type="text" id="tts-default-voice" placeholder="alloy" /></div>',
-    "  </div>",
-    '  <button class="btn btn-primary" id="tts-save-btn" style="margin-top:10px" onclick="saveTts()">保存 B·对话语音模型</button>',
-    "</div>",
-    '<div class="card">',
     "  <h2>语音文件服务器<span class=\"subtitle\">指定哪些服务器可处理高级会员上传的录音文件</span></h2>",
     '  <div class="hint" style="margin-bottom:8px;line-height:1.6">',
     "    格式 <code>ip:port;ip:port</code>，多台用分号隔开，例如 <code>192.168.6.12:8000;192.168.6.3:8000;192.168.6.4:8000</code>。<br/>",
@@ -1164,7 +1139,8 @@ function loadPlanQuotaAsr() {
       var saveBtn = getEl("tts-save-btn");
       if (banner) banner.innerHTML =
         '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1' +
-        '（Key 随意填如 local，格式选 wav，音色如 en_US-lessac-medium；中英混读自动双音色）。</div>';
+        '（Key 随意填如 local）。本地 <code>/audio/speech</code> 使用 Piper，默认音色可填 <code>en_US-lessac-medium</code>；' +
+        '<code>/realtime</code> 使用 speech-to-speech + Qwen3-TTS，实时音色在部署脚本中选择。</div>';
       if (cloud) cloud.style.display = "";
       if (saveBtn) saveBtn.style.display = "";
       if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
@@ -1509,11 +1485,17 @@ function renderSettingsPage() {
     '<div class="page-header"><h1>\u7cfb\u7edf\u8bbe\u7f6e</h1></div>',
 
     '<div class="card">',
-    "  <h2>AI \u6a21\u578b\u5bf9\u63a5 <span class=\"subtitle\">\u652f\u6301\u4efb\u610f OpenAI \u517c\u5bb9\u670d\u52a1\uff0c\u4fdd\u5b58\u540e\u7acb\u5373\u751f\u6548\uff0c\u65e0\u9700\u91cd\u542f</span></h2>",
+    "  <h2>模型中心 <span class=\"subtitle\">文字推理、场景 ASR、对话语音统一设置；支持任意 OpenAI 兼容服务，保存后立即生效</span></h2>",
+    '  <div class="hint" style="margin:0 0 12px;line-height:1.7">',
+    '    <b>三块配置职责不同：</b>C·文字推理（聊天、评分、场景生成）、A·场景 ASR（上传音频生成场景）、B·对话语音（App 手动/沉浸/私教）。使用本地 9100 服务时三处可以填同一个地址，但不是重复字段。<br/>',
+    '    本地推荐：<code>Base URL=http://IP:9100/v1</code>（不要追加 <code>/chat/completions</code>）、<code>模型名称=local</code>、<code>API Key=local</code>；本地成本单价填 0。',
+    '    <button class="btn btn-secondary" type="button" style="margin-left:10px" onclick="applyLocalModelPreset()">一键填入本机 local</button>',
+    '  </div>',
+    '  <h3 style="margin:0 0 6px">C · 文字推理 <span class="subtitle">聊天、评分、学习材料与场景生成</span></h3>',
     '  <div class="form-grid">',
     '    <div class="form-group"><label>\u670d\u52a1\u5546</label><select id="ms-provider" onchange="applyModelPreset()">' + presetOptions + "</select></div>",
-    '    <div class="form-group"><label>Base URL</label><input type="text" id="ms-base-url" placeholder="https://..." /></div>',
-    '    <div class="form-group"><label>\u6a21\u578b\u540d\u79f0</label><input type="text" id="ms-model" placeholder="\u5982 deepseek-chat" /></div>',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="ms-base-url" placeholder="本地：http://IP:9100/v1（不要加 /chat/completions）" /></div>',
+    '    <div class="form-group"><label>\u6a21\u578b\u540d\u79f0 <span class="subtitle">本地语音服务器固定填 local</span></label><input type="text" id="ms-model" placeholder="本地填 local；云端如 deepseek-chat" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="ms-key-status"></span></label>',
     '      <input type="password" id="ms-api-key" placeholder="\u7559\u7a7a\u4fdd\u6301\u4e0d\u53d8" autocomplete="new-password" /></div>',
     '    <div class="form-group"><label>Bot/\u667a\u80fd\u4f53 ID\uff08\u4ec5\u65b9\u821f\u5e94\u7528\u9700\u8981\uff09</label><input type="text" id="ms-bot-id" placeholder="\u9009\u586b" /></div>',
@@ -1533,10 +1515,31 @@ function renderSettingsPage() {
     '  <div class="hint" style="margin:6px 0">\u8be5\u503c\u4f5c\u4e3a\u666e\u901a\u6587\u5b57\u6a21\u578b\u8bf7\u6c42\u9ed8\u8ba4\u8d85\u65f6\uff1b\u8fde\u63a5\u6d4b\u8bd5\u3001\u7ea0\u9519\u3001\u804a\u5929\u4fdd\u6301\u5feb\u8def\u5f84\uff0c\u5b66\u4e60\u6750\u6599\u548c\u573a\u666f\u751f\u6210\u4f1a\u6309\u4e1a\u52a1\u81ea\u52a8\u653e\u5bbd\uff08\u771f\u5b9e\u91c7\u96c6\u573a\u666f\u9ed8\u8ba4\u53ef\u7b49\u5f85\u5230 1800 \u79d2\uff09\u3002</div>',
     '  <div class="hint" style="margin:6px 0 12px">\u4ef7\u683c\u4ec5\u7528\u4e8e\u300c\u6570\u636e\u6982\u89c8\u300d\u4e2d\u7684\u652f\u51fa\u4f30\u7b97\uff0c\u8bf7\u6309\u6240\u9009\u6a21\u578b\u7684\u5b98\u65b9\u62a5\u4ef7\u586b\u5199\u3002</div>',
     '  <div class="btn-row" style="justify-content:flex-start">',
-    '    <button class="btn btn-primary" onclick="saveModelSettings()">\u4fdd\u5b58\u6a21\u578b\u914d\u7f6e</button>',
+    '    <button class="btn btn-primary" onclick="saveModelSettings()">保存 C·文字推理</button>',
     '    <button class="btn btn-secondary" onclick="testModelSettings()">\u6d4b\u8bd5\u8fde\u63a5</button>',
     '    <span id="ms-test-result" class="hint"></span>',
     "  </div>",
+    '  <div style="border-top:1px solid var(--border,#e5e7eb);margin:20px 0 14px"></div>',
+    '  <h3 style="margin:0 0 6px">A · 场景 ASR <span class="subtitle">高级会员上传音频文件 → 转写 → 生成场景</span></h3>',
+    '  <div id="asr-mode-banner"></div>',
+    '  <div id="asr-cloud-fields" class="form-grid">',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="asr-base-url" placeholder="http://&lt;IP&gt;:9100/v1 或云端地址" /></div>',
+    '    <div class="form-group"><label>模型</label><input type="text" id="asr-model" placeholder="whisper-1" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="asr-key-status"></span></label><input type="password" id="asr-api-key" placeholder="留空保持不变（本地可填 local）" autocomplete="new-password" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 A·场景 ASR</button>',
+    '  <div style="border-top:1px solid var(--border,#e5e7eb);margin:20px 0 14px"></div>',
+    '  <h3 style="margin:0 0 6px">B · 对话语音 / Realtime <span class="subtitle">一个地址自动派生转写、合成、对话与实时 WS；本地 realtime 为 speech-to-speech 原生链路</span></h3>',
+    '  <div id="tts-mode-banner"></div>',
+    '  <div id="tts-cloud-fields" class="form-grid">',
+    '    <div class="form-group"><label>Base URL</label><input type="text" id="tts-base-url" placeholder="https://api.openai.com/v1" /></div>',
+    '    <div class="form-group"><label>实时模型名 <span class="subtitle">OpenAI 如 gpt-realtime；本地留空</span></label><input type="text" id="tts-model" placeholder="本地留空" /></div>',
+    '    <div class="form-group"><label>API Key <span class="hint" id="tts-key-status"></span></label><input type="password" id="tts-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
+    '    <div class="form-group"><label>实时通道（自动派生，只读）</label><input type="text" id="tts-rt-url" readonly style="opacity:.7" /></div>',
+    '    <div class="form-group"><label>可选音色（逗号分隔）</label><input type="text" id="tts-voices" placeholder="alloy,echo,fable,onyx,nova,shimmer" /></div>',
+    '    <div class="form-group"><label>默认 REST 音色</label><input type="text" id="tts-default-voice" placeholder="en_US-lessac-medium" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" id="tts-save-btn" style="margin-top:10px" onclick="saveTts()">保存 B·对话语音</button>',
     "</div>",
 
 
@@ -1550,6 +1553,37 @@ function applyModelPreset() {
   if (!preset) return;
   if (preset.base_url) getEl("ms-base-url").value = preset.base_url;
   if (preset.model) getEl("ms-model").value = preset.model;
+}
+
+function applyLocalModelPreset() {
+  var host = window.location.hostname || "127.0.0.1";
+  if (host.indexOf(":") >= 0 && host.charAt(0) !== "[") host = "[" + host + "]";
+  var baseUrl = "http://" + host + ":9100/v1";
+  getEl("ms-provider").value = "custom";
+  getEl("ms-base-url").value = baseUrl;
+  getEl("ms-model").value = "local";
+  getEl("ms-api-key").value = "local";
+  getEl("ms-bot-id").value = "";
+  getEl("ms-timeout").value = "120";
+  getEl("ms-timeout-long").value = "1800";
+  getEl("ms-maxtok").value = "4096";
+  getEl("ms-maxtok-long").value = "16384";
+  getEl("ms-in-price").value = "0";
+  getEl("ms-out-price").value = "0";
+  getEl("ms-asr-price").value = "0";
+  getEl("ms-tts-price").value = "0";
+  getEl("ms-cv-price").value = "0";
+  getEl("ms-sc-base").value = "";
+  getEl("ms-sc-model").value = "";
+  // 同一个 9100 聚合器的三个业务子配置一并填入；仍分别保存，方便日后把场景/语音切云端。
+  if (getEl("asr-base-url")) getEl("asr-base-url").value = baseUrl;
+  if (getEl("asr-model")) getEl("asr-model").value = "whisper-1";
+  if (getEl("asr-api-key")) getEl("asr-api-key").value = "local";
+  if (getEl("tts-base-url")) getEl("tts-base-url").value = baseUrl;
+  if (getEl("tts-model")) getEl("tts-model").value = "";
+  if (getEl("tts-api-key")) getEl("tts-api-key").value = "local";
+  if (getEl("tts-default-voice")) getEl("tts-default-voice").value = "en_US-lessac-medium";
+  toast("已填入本地 9100 的文字、场景 ASR、对话语音推荐值；请分别保存并测试", "success");
 }
 
 function loadModelSettings() {

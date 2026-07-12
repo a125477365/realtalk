@@ -143,7 +143,7 @@ final class AppModel: ObservableObject {
     // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
     struct HomeChatItem: Identifiable {
-        enum Kind { case user, ai, guidance, hint }   // guidance=指导卡；hint=严格场景下一句中文提示
+        enum Kind: Equatable { case user, ai, guidance, hint }   // guidance=指导卡；hint=严格场景下一句中文提示
         let id = UUID()
         let kind: Kind
         var text: String
@@ -160,7 +160,7 @@ final class AppModel: ObservableObject {
     @Published var homeConnected = false
     @Published var homeSceneName: String? = nil // 场景条（名字+退出）
     @Published var homeSceneStrict = false
-    @Published var showTutor = false            // 私教全屏（电话按钮）
+    @Published var showTutor = false            // 私教模式（与常规模式共用字幕界面）
     @Published var showScenePicker = false      // 场景选择二级页
     @Published var tutorImmersive = true        // 私教：沉浸式(自动) / 常规式(点击说话)
     @Published var tutorMode = "chat"           // 私教：chat / translate
