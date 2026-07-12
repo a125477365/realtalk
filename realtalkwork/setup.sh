@@ -71,7 +71,7 @@ if [ -f .env ]; then
     say "已保留现有 .env，按它重新部署…"
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
     # 两个 compose 文件恒定引入，起哪些服务由 .env 里的 COMPOSE_PROFILES 决定
-    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build --remove-orphans
     check_local_postgres_auth || exit 1
     if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
       say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
@@ -579,7 +579,7 @@ ask "是否立即构建并启动？(yes/no)" "yes"
 if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
   # 两个 compose 文件恒定引入，起哪些服务由 COMPOSE_PROFILES 决定（speech 服务带 profile）
-  docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+  docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build --remove-orphans
   check_local_postgres_auth || exit 1
   if $DEPLOY_BACKEND; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
