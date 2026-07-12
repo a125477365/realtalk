@@ -52,11 +52,6 @@ services:
     profiles: ["backend"]
     build:
       context: .
-      args:
-        # 默认随镜像装好本地 ASR(faster-whisper) / TTS(Piper)，与 API 同容器；
-        # 云端/本地切换只改 ASR_MODE/TTS_MODE 即可，不必重建。想要纯云端瘦镜像可设为 false。
-        WITH_LOCAL_ASR: ${WITH_LOCAL_ASR:-true}
-        WITH_LOCAL_TTS: ${WITH_LOCAL_TTS:-true}
     env_file:
       - .env
     environment:
@@ -96,3 +91,12 @@ services:
     ports:
       - "${WEB_PORT:-8002}:80"
     restart: unless-stopped
+
+# 容器间使用独立私网；对外访问仍只经过上面的 ports 映射到宿主机。
+# 若与 VPN/现有局域网冲突，可在 .env 覆盖 COMPOSE_SUBNET。
+networks:
+  default:
+    name: ${COMPOSE_NETWORK_NAME:-realtalk}
+    ipam:
+      config:
+        - subnet: ${COMPOSE_SUBNET:-172.28.0.0/16}

@@ -1,5 +1,4 @@
-# 本地实时语音模型服务器（可选组件）：ASR+TTS+LLM，OpenAI 兼容 API。
-# 多副本安全：实时上下文存 Redis；模型 PVC 建议 ReadWriteMany（多副本共享只读），或每副本独立盘各自预拉。
+# 单 Pod 本地语音模型服务器：REST + speech-to-speech Realtime，统一 Qwen3-TTS 音色。
 # GPU：镜像构建 --build-arg DEVICE=cuda，并解开 resources.limits 的 nvidia.com/gpu 注释。
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -35,13 +34,18 @@ spec:
             # llama.cpp 进程内单实例非线程安全：并发>1 崩 pod。高并发用 SPEECH_LLM_BASE_URL 代理外部 llama-server，
             # 或多副本(replicas)横向扩展——不要调大这个值。
             - { name: SPEECH_LLM_CONCURRENCY, value: "1" }
-            - { name: SPEECH_TTS_VOICE_EN, value: "en_US-lessac-medium" }
-            - { name: SPEECH_TTS_VOICE_ZH, value: "zh_CN-huayan-medium" }
+            - { name: SPEECH_REALTIME_ENGINE, value: "s2s" }
+            - { name: SPEECH_S2S_REALTIME_URL, value: "ws://127.0.0.1:8765/v1/realtime" }
+            - { name: SPEECH_S2S_LLM_BASE_URL, value: "http://127.0.0.1:9100/v1" }
+            - { name: SPEECH_TTS_MODEL, value: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" }
+            - { name: SPEECH_TTS_SPEAKER, value: "Aiden" }
+            - { name: SPEECH_TTS_QUANT, value: "Q4_K_M" }
+            - { name: HF_HOME, value: "/models/huggingface" }
             - { name: HF_ENDPOINT, value: "" }        # 受限网络填 https://hf-mirror.com
             - { name: REDIS_URL, value: "redis://realtalk-redis:6379/1" }   # 多活实时上下文
           volumeMounts:
             - { name: models, mountPath: /models }
-          # 首次启动要下载 whisper/gguf/piper 模型 → startupProbe 给足时间
+          # 首次启动要下载 Whisper/GGUF/Qwen3-TTS → startupProbe 给足时间
           startupProbe:
             httpGet: { path: /health, port: 9100 }
             periodSeconds: 15

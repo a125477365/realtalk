@@ -1,4 +1,4 @@
-# RealTalk 本地实时语音模型服务器（ASR faster-whisper + TTS Piper + LLM llama.cpp）
+# RealTalk 单容器语音服务器（REST + speech-to-speech realtime，共用模型配置）
 # CPU 开箱即用；GPU：构建时 --build-arg DEVICE=cuda（llama-cpp 走 cu124 预编译轮子，宿主需 nvidia 运行时）
 FROM python:3.12-slim
 
@@ -6,18 +6,9 @@ ARG DEVICE=cpu
 ARG LLAMA_CPU_PORTABLE=true
 ENV PYTHONUNBUFFERED=1 SPEECH_DEVICE=${DEVICE}
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates libgomp1 libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
-
-# Piper 官方独立二进制（TTS，中英双音色混读）——按目标架构选包（x86_64 / arm64 服务器都能跑）
 ARG TARGETARCH
-RUN case "${TARGETARCH:-amd64}" in \
-      arm64) PIPER_ARCH=aarch64 ;; \
-      *)     PIPER_ARCH=x86_64 ;; \
-    esac \
-    && curl -fsSL -o /tmp/piper.tgz \
-      "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_${PIPER_ARCH}.tar.gz" \
-    && mkdir -p /opt && tar -xzf /tmp/piper.tgz -C /opt && rm /tmp/piper.tgz
 
 WORKDIR /srv
 COPY requirements.txt .
@@ -41,15 +32,31 @@ RUN if [ "$DEVICE" = "cuda" ]; then \
       pip install --no-cache-dir llama-cpp-python \
         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu ; \
     fi \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && if [ "$DEVICE" = "cpu" ]; then \
+         pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+           "torch==2.7.1+cpu" "torchaudio==2.7.1+cpu" \
+         && pip install --no-cache-dir --find-links \
+           https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cpu \
+           "qwentts-cpp-python==0.3.0+cpu" ; \
+       else \
+         pip install --no-cache-dir torch torchaudio \
+         && pip install --no-cache-dir --find-links \
+           https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/tree/main/whl/cu124 \
+           "qwentts-cpp-python==0.3.0+cu124" ; \
+       fi \
+    && pip install --no-cache-dir "speech-to-speech[faster-whisper]==0.2.10" \
+    && python -c "import nltk; nltk.download('punkt_tab'); nltk.download('averaged_perceptron_tagger_eng')"
 
-COPY server.py engine.py realtime.py realtime_s2s.py tts_piper.py ./
+COPY server.py engine.py realtime.py realtime_s2s.py sitecustomize.py ./
+COPY s2s-entrypoint.sh unified-entrypoint.sh ./
+RUN chmod +x /srv/s2s-entrypoint.sh /srv/unified-entrypoint.sh
 
-ENV MODELS_DIR=/models TTS_LOCAL_MODEL_DIR=/models PIPER_BIN=/opt/piper/piper SPEECH_PORT=9100
+ENV MODELS_DIR=/models SPEECH_PORT=9100 HF_HOME=/models/huggingface XDG_CACHE_HOME=/models/cache
 VOLUME /models
 EXPOSE 9100
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=5 \
   CMD curl -fs http://127.0.0.1:9100/health || exit 1
 
-CMD ["python", "server.py"]
+ENTRYPOINT ["/srv/unified-entrypoint.sh"]

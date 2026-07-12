@@ -31,8 +31,8 @@ ask_secret() {
 rand() { LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "${1:-32}"; }
 
 check_local_postgres_auth() {
-  # libpq 的错误会打印 postgres 服务名解析后的容器内网 IP（Docker Desktop 上可能是
-  # 192.168.64.x），这不是 setup.sh 写入的外部数据库地址。这里在 db_init 之前用
+  # libpq 的错误会打印 postgres 服务名解析后的容器内网 IP（旧网络可能是 192.168.64.x，
+  # 当前默认是 172.28.x），这不是 setup.sh 写入的外部数据库地址。这里在 db_init 之前用
   # .env 中的新密码做一次真实认证，避免密码不一致时仍继续启动其余组件。
   if ! grep -qE '^COMPOSE_PROFILES=.*backend-db' .env; then
     return 0
@@ -51,7 +51,7 @@ check_local_postgres_auth() {
   fi
   echo
   say "⚠️  内置 PostgreSQL 密码验证失败，已停止后续初始化。"
-  note "postgres 在容器网络中可能解析为 192.168.64.x；这是内部 IP，不是外部数据库配置。"
+  note "日志显示的是 postgres 服务名解析后的容器内部 IP，不是外部数据库配置。"
   note "最常见原因：数据目录已初始化，修改 POSTGRES_PASSWORD 不会修改库内旧密码。"
   note "请重新运行 setup.sh 并覆盖 .env；检测到旧数据目录时选择 keep 后填写原密码，"
   note "或确认不保留旧数据后选择 reset 重新初始化。"
@@ -109,6 +109,8 @@ $DEPLOY_BACKEND || $DEPLOY_ADMIN || $DEPLOY_WEB || $DEPLOY_SPEECH || $DEPLOY_RED
 
 PROFILES=()
 ENV_LINES=("# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====")
+ENV_LINES+=("COMPOSE_NETWORK_NAME=realtalk" "COMPOSE_SUBNET=172.28.0.0/16")
+note "容器内部网络固定为 172.28.0.0/16；对外服务仍通过宿主机端口映射访问。"
 
 API_UPSTREAM_DEFAULT="http://api:8000"
 
@@ -138,11 +140,10 @@ if $DEPLOY_PG; then
     if [ "$REPLY_VALUE" = "reset" ]; then
       ask "确认清空 $PG_DATA_DIR 中的全部数据库数据？此操作不可恢复 (yes/no)" "no"
       if [ "$REPLY_VALUE" = "yes" ]; then
-        # 先停容器，否则 PostgreSQL 锁文件导致删不掉
-        if docker compose ps --format '{{.Name}}' 2>/dev/null | grep -q postgres; then
-          note "正在停止 PostgreSQL 容器…"
-          docker compose stop postgres 2>/dev/null || true
-          sleep 2
+        # 必须先 down：仅 stop postgres 仍可能有 API 重连、挂载占用或孤儿容器。
+        if command -v docker >/dev/null 2>&1; then
+          note "正在 docker compose down，释放数据库挂载与全部相关容器…"
+          docker compose -f docker-compose.yml -f docker-compose.speech.yml down --remove-orphans
         fi
         rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null
         # 验证是否真正清空
@@ -188,7 +189,7 @@ if $DEPLOY_PG; then
     "POSTGRES_DB=realtalk"
     "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
   )
-  note "同机后端始终连接 postgres:5432；日志可能显示其解析后的 192.168.64.x/172.x 容器内网 IP，这是正常现象。"
+  note "同机后端始终连接 postgres:5432；日志会显示其解析后的 172.28.x 容器内网 IP，这是正常现象。"
 fi
 
 # ============ 第 3 步：Redis（菜单选 5：本机内置 Redis，可独立部署） ============
@@ -306,9 +307,10 @@ if $DEPLOY_BACKEND; then
       ask "B·实时模型名（OpenAI 如 gpt-realtime；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
       case "$CV_BASE" in
         *openai*) ask "B·默认音色" "alloy"; CV_VOICE="$REPLY_VALUE" ;;
-        *) ask "B·默认音色" "en_US-lessac-medium"; CV_VOICE="$REPLY_VALUE"
-           TTS_VOICES_VAL="en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium"
-           TTS_DEFAULT_VOICE_VAL="$CV_VOICE" ;;
+        *) note "本地 Qwen3-TTS 音色由后面的本地模型步骤统一选择，这里无需重复填写。"
+           CV_VOICE=""
+           TTS_VOICES_VAL="Aiden,Vivian,Serena,Uncle_Fu,Dylan,Eric,Ryan,Ono_Anna,Sohee"
+           TTS_DEFAULT_VOICE_VAL="Aiden" ;;
       esac
     fi
     ENV_LINES+=("CONV_VOICE_BASE_URL=$CV_BASE" "CONV_VOICE_API_KEY=$CV_KEY" "CONV_VOICE_MODEL=$CV_MODEL" "CONV_VOICE_VOICE=$CV_VOICE")
@@ -521,10 +523,9 @@ if $DEPLOY_SPEECH; then
   PROFILES+=("speech")
   note "对外 4 个 OpenAI 兼容端点：/audio/transcriptions、/audio/speech、/chat/completions、WS /realtime；"
   note "api 后端在 A/B 配置里填本服务地址即可全量切换到本地模型。"
-  note "REST（字幕/上传生成场景/手动朗读）：faster-whisper(ASR) + 同一 Qwen GGUF(LLM) + Piper(TTS)。"
+  note "REST（字幕/上传生成场景/手动朗读）：faster-whisper(ASR) + 同一 Qwen GGUF(LLM) + Qwen3-TTS。"
   note "实时 WS（沉浸/私教）：speech-to-speech 原生编排 Silero VAD → faster-whisper → 同一 Qwen GGUF → Qwen3-TTS。"
-  note "无需 venv：这些依赖全部装在两个 Docker 容器内。9100 仍是唯一对外地址；实时容器只走内部网络。"
-  note "Piper 不是没安装：它用于 REST /audio/speech，并按下方音色名下载 .onnx 音色；实时的 Qwen3-TTS 另选模型。"
+  note "无需 venv：全部依赖在一个 speech 容器内，9100 是唯一对外端口；S2S 内部端口不对外。"
   ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ENV_LINES+=("SPEECH_LLAMA_CPU_PORTABLE=true")
   note "CPU 模式默认源码构建便携 llama.cpp（关闭 AVX2/FMA），兼容仅支持 AVX 的旧 Xeon；构建会慢一些，但避免首次推理 exit 132。"
@@ -533,24 +534,20 @@ if $DEPLOY_SPEECH; then
   note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
   ask "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
   ask "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
-  ask "REST /audio/speech 英文音色 (Piper)" "en_US-lessac-medium"; ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
-  ask "REST /audio/speech 中文音色 (Piper)" "zh_CN-huayan-medium"; ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
   ask "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
-  if [ "$SPEECH_RT_ENGINE" = "s2s" ]; then
-    PROFILES+=("speech-s2s")
-  fi
   note "CPU 推荐 0.6B Qwen3-TTS：比 1.7B 更省内存、首包更快；需要更细腻音色可改 1.7B（CPU 会更慢）。"
-  ask "S2S /v1/realtime 的 Qwen3-TTS 模型" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_S2S_TTS_MODEL=$REPLY_VALUE")
-  ask "实时 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_S2S_TTS_SPEAKER=$REPLY_VALUE")
-  note "下方目录统一保存 faster-whisper、GGUF、Piper 音色和 Qwen3-TTS/HuggingFace 缓存。"
+  ask "统一 Qwen3-TTS 模型（REST 与 realtime 共用配置）" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_TTS_MODEL=$REPLY_VALUE")
+  ask "统一 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_TTS_SPEAKER=$REPLY_VALUE")
+  ask "Qwen3-TTS GGUF 量化（CPU 推荐 Q4_K_M）" "Q4_K_M"; ENV_LINES+=("SPEECH_TTS_QUANT=$REPLY_VALUE")
+  note "下方目录统一保存 faster-whisper、GGUF LLM、Qwen3-TTS 和 HuggingFace 缓存。"
   ask "全部语音/文字模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
   ask "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
   SPEECH_PORT_VAL="$REPLY_VALUE"
   ask "用 HuggingFace 镜像站下模型？(yes=hf-mirror.com / no=官方直连)" "yes"
   if [ "$REPLY_VALUE" = "yes" ]; then
-    ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com" "PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main")
+    ENV_LINES+=("HF_ENDPOINT=https://hf-mirror.com")
   else
-    ENV_LINES+=("HF_ENDPOINT=" "PIPER_VOICES_BASE=")
+    ENV_LINES+=("HF_ENDPOINT=")
   fi
   # legacy 实现才把短期实时上下文放 Redis；s2s 每次连接由 API 后端从数据库重新播种，
   # 不要求为了语音服务额外部署 Redis（项目的采集分块/后端 Redis 需求仍按前面菜单处理）。
@@ -603,36 +600,22 @@ if [ "$REPLY_VALUE" = "yes" ]; then
       || say "API 尚未就绪（可能仍在下载本地模型）：docker compose logs -f api 查看进度"
   fi
   if $DEPLOY_SPEECH; then
-    say "等待本地语音模型就绪…（首次启动会下载 Whisper/GGUF/Piper 音色）"
-    for _ in $(seq 1 180); do
+    say "等待统一语音模型容器就绪…（首次启动会下载 Whisper/GGUF/Qwen3-TTS）"
+    for _ in $(seq 1 600); do
       curl -fs "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/health" >/dev/null 2>&1 && break
       sleep 2
     done
     if curl -fs "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/health" >/dev/null 2>&1; then
-      say "${GREEN}✔ 本地 REST 语音模型已就绪，正在验证共享 LLM 首次推理…${RESET}"
+      say "${GREEN}✔ 统一 speech 容器及原生 /v1/realtime 已就绪，正在验证共享 LLM 首次推理…${RESET}"
       if curl -fsS --max-time 300 -H 'Content-Type: application/json' \
         -d '{"model":"local","messages":[{"role":"user","content":"Reply OK"}],"max_tokens":8}' \
         "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/v1/chat/completions" >/dev/null; then
-        say "${GREEN}✔ Whisper / Qwen / Piper 服务及 LLM 推理验证通过${RESET}"
+        say "${GREEN}✔ Whisper / Qwen LLM / Qwen3-TTS 服务及 LLM 推理验证通过${RESET}"
       else
         say "本地 LLM 推理验证失败：docker compose -f docker-compose.yml -f docker-compose.speech.yml logs --tail=200 speech"
       fi
     else
       say "本地语音模型尚未就绪：docker compose -f docker-compose.yml -f docker-compose.speech.yml logs -f speech"
-    fi
-    if [ "${SPEECH_RT_ENGINE:-s2s}" = "s2s" ]; then
-      say "等待 speech-to-speech 原生实时服务…（首次启动会下载 Qwen3-TTS，CPU 需更久）"
-      for _ in $(seq 1 300); do
-        docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T speech-s2s \
-          curl -fs http://127.0.0.1:8765/v1/pool >/dev/null 2>&1 && break
-        sleep 2
-      done
-      if docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T speech-s2s \
-        curl -fs http://127.0.0.1:8765/v1/pool >/dev/null 2>&1; then
-        say "${GREEN}✔ speech-to-speech 原生 /v1/realtime 已就绪${RESET}"
-      else
-        say "原生实时服务尚未就绪：docker compose -f docker-compose.yml -f docker-compose.speech.yml logs -f speech-s2s"
-      fi
     fi
   fi
 fi
@@ -655,9 +638,9 @@ if $DEPLOY_SPEECH; then
   note "AI 参数：CPU 普通超时建议 120 秒（GPU 可 30 秒），长任务 1800 秒；max_tokens 可先用 4096/16384；本地运行的输入/输出价格填 0。"
   note "场景生成 Base URL / 模型 / API Key：留空即跟随上方 local；如本地小模型生成场景质量不足，再单独填云端强模型。"
   note "A·场景生成 ASR：Base URL=http://<IP>:${SPEECH_PORT_VAL:-9100}/v1；模型=whisper-1；API Key=local；转写单价=0。"
-  note "B·对话语音模型：Base URL=http://<IP>:${SPEECH_PORT_VAL:-9100}/v1；实时模型名留空；API Key=local；默认音色可填 Piper 音色；合成/实时单价=0。"
+  note "B·对话语音模型：Base URL=http://<IP>:${SPEECH_PORT_VAL:-9100}/v1；实时模型名留空；API Key=local；默认音色填上面选择的 Qwen3 音色；合成/实时单价=0。"
   note "A 是上传音频生成场景所用 ASR，B 是 App 手动/沉浸/私教的语音通道，文字模型是文字推理；职责不同，但本地部署时都指向同一 9100 服务。"
-  note "资源复用：REST 与实时真实共用同一个 llama.cpp GGUF；ASR 共享同一模型目录但各进程各加载一次；REST 用轻量 Piper，实时用 Qwen3-TTS 原生流式，避免 CPU 上为 REST 再复制大 Qwen TTS 实例。"
+  note "资源复用：单个 speech 容器、单个模型卷、同一 GGUF LLM；REST 与实时统一 Qwen3-TTS 模型和音色配置。"
   note "详细文档：speechserver/README.md；首次启动会下载模型（受限网络在 .env 加 HF_ENDPOINT=https://hf-mirror.com）"
 fi
 if $DEPLOY_PG; then

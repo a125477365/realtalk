@@ -1,7 +1,7 @@
 """把 RealTalk 既有实时事件桥接到 HuggingFace speech-to-speech 原生 Realtime 服务。
 
 该模块只做协议适配，不参与 ASR/LLM/TTS 推理：
-  public :9100/v1/realtime -> internal speech-s2s:8765/v1/realtime
+  public :9100/v1/realtime -> same-container native S2S :8765/v1/realtime
 
 保留 9100 作为唯一对外地址，因此 App、Web、管理端仍只填一份 Base URL。LLM 反向调用
 同一容器的 /v1/chat/completions，真正与 REST 对话/场景生成共用同一个 llama.cpp GGUF 实例。
@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 
-S2S_URL = os.getenv("SPEECH_S2S_REALTIME_URL", "ws://speech-s2s:8765/v1/realtime")
+S2S_URL = os.getenv("SPEECH_S2S_REALTIME_URL", "ws://127.0.0.1:8765/v1/realtime")
 COMMIT_SILENCE_MS = max(128, int(os.getenv("SPEECH_S2S_COMMIT_SILENCE_MS", "750")))
 
 

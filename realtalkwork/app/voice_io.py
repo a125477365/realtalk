@@ -1,10 +1,7 @@
 """语音合成（TTS）服务层：把一段文本合成成音频字节。
 
-两种后端，管理台可切（与 ASR 一致的取舍）：
-- cloud：OpenAI 兼容 `/audio/speech`（base_url/api_key/model/voice 可在管理台在线配置）。
-- local：服务器本地命令行（Piper/Coqui 等），命令模板由部署（env）控制。
-
-mode / 本地命令由部署控制（env / setup.sh），管理台只配置云端 base_url/api_key/model 与可选音色。
+云端与本地均通过 OpenAI 兼容 `/audio/speech` 调用；本地 speech 服务使用 Qwen3-TTS。
+管理台配置 base_url/api_key/model 与可选音色。
 """
 from __future__ import annotations
 
@@ -122,7 +119,7 @@ def conv_realtime_url() -> str:
 
 def resolve_tts_config() -> dict[str, Any]:
     """B 类【对话】TTS：由 conv_voice 派生（未配置回退通用 tts_*）。
-    模型/格式自动推断：OpenAI→tts-1/mp3；本地语音服务器→piper/wav，零额外配置。"""
+    模型/格式自动推断：OpenAI→tts-1/mp3；本地语音服务器→qwen3-tts/wav。"""
     from .storage import db
 
     cv = resolve_conv_voice()
@@ -131,7 +128,7 @@ def resolve_tts_config() -> dict[str, Any]:
         return {
             "base_url": cv["base_url"],
             "api_key": cv["api_key"],
-            "model": "tts-1" if cv["is_openai"] else "piper",
+            "model": "tts-1" if cv["is_openai"] else "qwen3-tts",
             "voices": overrides.get("tts_voices") or settings.tts_voices,
             "default_voice": cv["voice"] or overrides.get("tts_default_voice"),
             "format": "mp3" if cv["is_openai"] else "wav",

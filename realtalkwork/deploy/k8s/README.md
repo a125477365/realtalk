@@ -21,7 +21,7 @@ docker push your-registry/realtalk-api:latest
 
 构建后把 4 个 manifest 里的 `your-registry/realtalk-api:latest` 替换成你的镜像地址（API Deployment、db-init Job、以及 initContainer 三处都在 `realtalk-api.yaml` / `db-init.yaml`）。
 
-> **本地开源模型**是独立组件「本地实时语音模型服务器」（ASR faster-whisper + TTS Piper + LLM llama.cpp，
+> **本地开源模型**是独立组件「本地实时语音模型服务器」（ASR faster-whisper + Qwen3-TTS + LLM llama.cpp，
 > OpenAI 兼容四端点），见第 4 节与 `speech-server.yaml`；api 通过管理台 A/B 模型卡指向它，无需重建 api 镜像。
 
 ## 1. 外部依赖
@@ -75,7 +75,7 @@ kubectl apply -f admin-frontend.yaml -f web-frontend.yaml
 
 ## 4. （可选）本地实时语音模型服务器（独立组件）
 
-api 镜像不带任何本地引擎。要用本地开源模型（ASR faster-whisper + TTS Piper + LLM llama.cpp，
+api 镜像不带任何本地引擎。要用本地开源模型（ASR faster-whisper + Qwen3-TTS + LLM llama.cpp，
 OpenAI 兼容四端点：`/v1/audio/transcriptions`、`/v1/audio/speech`、`/v1/chat/completions`、WS `/v1/realtime`），
 部署独立的语音服务器：
 
@@ -87,14 +87,14 @@ docker push your-registry/realtalk-speech:latest
 kubectl apply -f speech-server.yaml
 ```
 
-- **模型持久化**：模型（whisper/GGUF/Piper 音色）预拉到 PVC `speech-models`；多副本共享请用
+- **模型持久化**：模型（Whisper/LLM GGUF/Qwen3-TTS）预拉到 PVC `speech-models`；多副本共享请用
   `ReadWriteMany`（见 `speech-server.yaml` 注释）。受限网络加 `HF_ENDPOINT=https://hf-mirror.com`
-  与 `PIPER_VOICES_BASE=https://hf-mirror.com/rhasspy/piper-voices/resolve/main`。
+  `HF_ENDPOINT=https://hf-mirror.com`。
 - **实时上下文**：存 Redis（`REDIS_URL`，建议 `/1` 库与后端 `/0` 隔离），多副本可互相接管。
 - **切换到本地模型**：管理台「系统设置」把 A（场景转写）/ B（对话语音一张卡）的 Base URL 填
   `http://realtalk-speech:9100/v1`（Key 填 `local`）即可，api 不需要重启或重建。
 
-TTS 音色清单是**入库参数**，放 db-init 的 Secret/ConfigMap 里播种（Piper 音色名）：
+TTS 音色清单是**入库参数**，放 db-init 的 Secret/ConfigMap 里播种（Qwen3 speaker 名）：
 ```bash
 TTS_VOICES=en_US-lessac-medium,en_US-amy-medium,en_GB-alan-medium
 TTS_DEFAULT_VOICE=en_US-lessac-medium

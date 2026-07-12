@@ -1,15 +1,15 @@
 # RealTalk 本地实时语音模型服务器
 
-一个对外聚合容器 + 一个仅内网的原生实时容器：**ASR（faster-whisper）+ LLM（llama.cpp GGUF）+
-REST TTS（Piper）+ 实时 TTS（Qwen3-TTS）**。对外仍只暴露一个 **OpenAI 兼容 API** 地址
+一个 `speech` 容器：**ASR（faster-whisper）+ LLM（llama.cpp GGUF）+ 统一 Qwen3-TTS +
+speech-to-speech Realtime**。对外只暴露一个 **OpenAI 兼容 API** 地址
 `http://<IP>:9100/v1`，RealTalk api 后端与管理台无需分别填写内部容器地址。
 
 一次完整语音对话实际经过三种不同模型：
 
 1. **Whisper / ASR**：把麦克风声音转成文字；模型越大通常识别越准、也越慢。
 2. **Qwen GGUF / LLM**：理解文字并生成 AI 回复。
-3. **TTS**：`/audio/speech` 用轻量 **Piper**；`/realtime` 使用 HuggingFace
-   **speech-to-speech** 的原生 **Qwen3-TTS 流式输出**（CPU 默认 0.6B CustomVoice）。Piper 已随镜像安装；启动时再按音色名下载 `.onnx` 音色包，因此安装脚本问的是“音色”，不是像 Whisper 那样问模型尺寸。
+3. **TTS**：`/audio/speech` 与 `/realtime` 都使用部署时选择的 **Qwen3-TTS** 模型和音色
+   （CPU 默认 0.6B CustomVoice / Q4_K_M）。
 
 ## 实际拓扑与复用边界
 
@@ -17,28 +17,28 @@ REST TTS（Piper）+ 实时 TTS（Qwen3-TTS）**。对外仍只暴露一个 **Op
 flowchart LR
   app["App / Web / API backend"] -->|"唯一 Base URL :9100/v1"| api["speech 聚合器"]
   api -->|"REST ASR"| fw1["faster-whisper"]
-  api -->|"REST TTS"| piper["Piper"]
+  api -->|"REST TTS"| qtts["Qwen3-TTS"]
   api -->|"REST + Realtime LLM"| gguf["一个 llama.cpp / Qwen GGUF"]
-  api -->|"WS 协议桥接"| s2s["speech-to-speech 原生 /v1/realtime"]
+  api -->|"同容器 WS 桥接 :8765"| s2s["speech-to-speech 原生 /v1/realtime"]
   s2s -->|"共享模型文件"| fw2["faster-whisper"]
   s2s -->|"回调 :9100/chat/completions"| gguf
-  s2s --> qtts["Qwen3-TTS 0.6B 流式"]
+  s2s --> qtts
 ```
 
 - **真正进程内共用**：所有 REST 文字请求和 realtime 的 LLM 都走聚合器中的同一个
   llama.cpp / GGUF 实例，不重复加载语言模型。
 - **共享下载目录、分别加载**：REST 与 speech-to-speech 是不同的 Python 运行时，不能安全共用
   一个 faster-whisper 内存对象；但两者都使用 `/models/faster-whisper-<size>`，不会重复下载。
-- **TTS 有意分工**：Piper 负责低资源、一次性 REST 合成；Qwen3-TTS 只为实时通道常驻，以获得
-  原生分块输出。CPU 上把大 Qwen TTS 同时再复制一个 REST 实例反而更慢、更占内存。
-- 两个容器都没有 Python venv：Docker 镜像本身就是隔离环境。`speech-to-speech` 的编排是
+- **统一 TTS 配置**：REST 与 realtime 使用相同 Qwen3-TTS 模型、量化和默认 speaker，声音一致。
+  原生 S2S 是独立进程，模型文件共用；`SPEECH_S2S_PIPELINES=1` 避免额外复制实时管线。
+- 不使用 Python venv：Docker 镜像本身就是隔离环境。`speech-to-speech` 的编排是
   **VAD → STT → LLM → TTS**，不是单一端到端权重。
 
 ## 安装
 
 ```bash
 # setup.sh 里选择「安装本地实时语音模型」即可；或手动（默认原生实时模式）：
-COMPOSE_PROFILES=speech,speech-s2s docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+COMPOSE_PROFILES=speech docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
 ```
 
 参数全部走 `.env`（每节点部署项，不入库、不进管理台）：
@@ -49,12 +49,13 @@ COMPOSE_PROFILES=speech,speech-s2s docker compose -f docker-compose.yml -f docke
 | `SPEECH_LLAMA_CPU_PORTABLE` | `true` | CPU 源码构建便携 llama.cpp，关闭 AVX2/FMA 以兼容旧 Xeon；设 `false` 可用预编译 wheel 加快镜像构建，但 CPU 必须支持其指令集 |
 | `SPEECH_ASR_MODEL` | `small` | whisper 尺寸：tiny/base/small/medium/large-v3 |
 | `SPEECH_LLM_REPO` / `SPEECH_LLM_FILE` | Qwen2.5-1.5B-Instruct Q4 | GGUF 模型仓库/文件（FILE 也可填绝对路径） |
-| `SPEECH_TTS_VOICE_EN` / `_ZH` | lessac / huayan | Piper 英文/中文音色（混合文本自动分段双音色拼接） |
 | `SPEECH_REALTIME_ENGINE` | `s2s` | `s2s`=speech-to-speech 原生实时通道；`legacy`=应急回退旧内建实现 |
-| `SPEECH_S2S_TTS_MODEL` | Qwen3-TTS 0.6B CustomVoice | 实时 Qwen3-TTS；CPU 推荐 0.6B，质量优先可换 1.7B |
-| `SPEECH_S2S_TTS_SPEAKER` | `Aiden` | 实时默认音色；中文可填 `Vivian` / `Serena` / `Uncle_Fu` 等 |
+| `SPEECH_TTS_MODEL` | Qwen3-TTS 0.6B CustomVoice | REST 与实时统一模型；质量优先可换 1.7B |
+| `SPEECH_TTS_SPEAKER` | `Aiden` | REST 与实时统一音色；中文可填 `Vivian` / `Serena` / `Uncle_Fu` 等 |
+| `SPEECH_TTS_QUANT` | `Q4_K_M` | CPU GGUF 量化；降低内存占用 |
+| `SPEECH_TTS_ALLOW_REQUEST_VOICE` | `false` | 默认忽略 REST `voice`，保证与 realtime 音色一致；需要多音色时才开启 |
 | `SPEECH_S2S_PIPELINES` | `1` | 原生实时并发管线数；每条都要加载 ASR/TTS，CPU 请保持 1 |
-| `SPEECH_MODELS_DIR` | `./speech-models` | 统一宿主机模型目录：faster-whisper、GGUF、Piper 音色及 Qwen3-TTS/HuggingFace 缓存均持久化在这里 |
+| `SPEECH_MODELS_DIR` | `./speech-models` | faster-whisper、LLM GGUF、Qwen3-TTS GGUF/HuggingFace 缓存统一持久化目录 |
 | `HF_ENDPOINT` | 空 | 受限网络填 `https://hf-mirror.com` |
 | `SPEECH_ASR_CONCURRENCY` / `SPEECH_TTS_CONCURRENCY` | 3 / 6 | ASR/TTS 并发上限，超出排队 |
 | `SPEECH_LLM_CONCURRENCY` | **1（勿改大）** | llama.cpp 进程内单实例非线程安全，>1 会崩；高并发用 `SPEECH_LLM_BASE_URL` 代理外部 llama-server 或多副本 |
@@ -98,7 +99,7 @@ wscat -c "$BASE/realtime?session=abc&language=en"
 |---|---|---|
 | **文字推理** | 聊天、评分、学习材料、场景生成 | 服务商=`自定义`，Base URL=`http://<IP>:9100/v1`，模型=`local`，Key=`local`；场景生成独立槽位留空即跟随 |
 | **场景 ASR** | 上传语音文件后转写成文字 | Base URL=`http://<IP>:9100/v1`，模型=`whisper-1`，Key=`local` |
-| **对话语音 / Realtime** | App 手动/沉浸/私教语音，自动派生 ASR/TTS/LLM/Realtime 四端点 | Base URL=`http://<IP>:9100/v1`，实时模型名留空，Key=`local`，REST 音色填 Piper 音色名 |
+| **对话语音 / Realtime** | App 手动/沉浸/私教语音，自动派生 ASR/TTS/LLM/Realtime 四端点 | Base URL=`http://<IP>:9100/v1`，实时模型名留空，Key=`local`，音色填部署时选择的 Qwen3 speaker |
 
 管理台会把这三块放在同一个「模型中心」卡中。它们不是重复配置：分别对应不同业务入口；全本地部署时，恰好都可以指向同一台 9100 聚合服务。Base URL 只填到 `/v1`，不要追加 `/chat/completions`。
 

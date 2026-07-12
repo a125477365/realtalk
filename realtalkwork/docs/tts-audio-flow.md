@@ -36,7 +36,7 @@
 `app/voice_io.py`。一次调用内完成"查缓存→（未命中）合成→（可选）写缓存→返回"：
 
 ```
-text/voice 规整 → fmt = TTS_FORMAT（云端 mp3 / 本地 Piper wav）
+text/voice 规整 → fmt = TTS_FORMAT（云端 mp3 / 本地 Qwen3-TTS wav）
             │
             ├─ dev 占位：dev_mode 且云端/本地都未配置 → 返回静音 WAV（不缓存、不限并发）
             │
@@ -48,7 +48,7 @@ text/voice 规整 → fmt = TTS_FORMAT（云端 mp3 / 本地 Piper wav）
             ├─ 取并发令牌（满则抛 TTSOverloaded → 调用方 429）
             │   未命中则真正合成：
             │     · 云端：POST {TTS_BASE_URL}/audio/speech（OpenAI 兼容）
-            │     · 本地：Piper 二进制（app/tts_local.py）
+            │     · 本地：speechserver 的 OpenAI 兼容 Qwen3-TTS
             │
             └─ 若 cache_key 非空且音频 ≤2MB：_cache_set(key, audio, ex=TTS_CACHE_TTL_SECONDS)
                 返回 (audio, content_type)
@@ -117,7 +117,7 @@ App  ── WS /roleplay/stream ──  后端
 | 变量 | 含义 | 默认 |
 |---|---|---|
 | `TTS_CACHE_TTL_SECONDS` | TTS 缓存 TTL（**滑动**：被取用就续期） | `1800`（30 分钟） |
-| `TTS_FORMAT` | 音频格式（云端 mp3 / 本地 Piper 须 wav） | `mp3` |
+| `TTS_FORMAT` | 音频格式（云端 mp3 / 本地 Qwen3-TTS 为 wav） | `mp3` |
 | `TTS_MAX_CONCURRENCY` | 合成并发上限（满则 429） | `8` |
 | `TTS_USER_RATE_PER_MIN` | 每用户每分钟合成上限 | `30` |
 

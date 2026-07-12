@@ -98,7 +98,7 @@ class Settings:
     conv_voice_base_url: str | None = os.getenv("CONV_VOICE_BASE_URL")
     conv_voice_api_key: str | None = os.getenv("CONV_VOICE_API_KEY")
     conv_voice_model: str = os.getenv("CONV_VOICE_MODEL", "")     # 实时/对话主模型名（本地服务器可留空）
-    conv_voice_voice: str = os.getenv("CONV_VOICE_VOICE", "")     # 默认音色（本地=en_US-lessac-medium 等）
+    conv_voice_voice: str = os.getenv("CONV_VOICE_VOICE", "")     # 云端音色；本地留空并使用 speech 部署音色
     # ==== 分端点计费单价（调用一次算一次；实时通道按分钟整体计费，绝不与 ASR/TTS/LLM 重复计）====
     asr_price_per_minute_cents: float = float(os.getenv("ASR_PRICE_PER_MINUTE_CENTS", "0"))        # a 语音→文字
     tts_price_per_1m_chars_cents: float = float(os.getenv("TTS_PRICE_PER_1M_CHARS_CENTS", "0"))    # b 文字→语音

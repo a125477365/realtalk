@@ -517,7 +517,7 @@ def freetalk_instructions(memory: str, scenarios: list[dict[str, str]] | None = 
 
 def translate_instructions() -> str:
     """实时翻译模式（私教界面切换进入）：实时通道用的同传指令——只输出译文。
-    英文说→简体中文、中文说→英文；语音服务器直接把译文念出来（本地 Piper 中英双音色自动分段）。
+    英文说→简体中文、中文说→英文；本地语音服务器用统一 Qwen3-TTS 音色朗读译文。
     不带 ⟦ZH⟧ 标记：译文本身就是要念、要上字幕的唯一产物。"""
     return (
         _SCOPE_POLICY

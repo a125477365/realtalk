@@ -1,4 +1,4 @@
-"""本地实时语音模型引擎：ASR(faster-whisper) + TTS(Piper 中英混读) + LLM(llama.cpp 进程内或代理)。
+"""本地实时语音模型引擎：ASR(faster-whisper) + TTS(Qwen3-TTS) + LLM(llama.cpp 进程内或代理)。
 
 设计目标（高并发/多活）：
 - 三个引擎各自有并发信号量（ASR/LLM 吃 CPU/显存，TTS 较轻），超出排队而不是拖垮节点；
@@ -23,8 +23,10 @@ LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
 LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
 LLM_BASE_URL = os.getenv("SPEECH_LLM_BASE_URL", "")             # 设了则代理外部 OpenAI 兼容 LLM，不在本进程加载
 LLM_CTX = int(os.getenv("SPEECH_LLM_CTX", "8192"))
-TTS_VOICE_EN = os.getenv("SPEECH_TTS_VOICE_EN", "en_US-lessac-medium")
-TTS_VOICE_ZH = os.getenv("SPEECH_TTS_VOICE_ZH", "zh_CN-huayan-medium")
+TTS_MODEL = os.getenv("SPEECH_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
+TTS_SPEAKER = os.getenv("SPEECH_TTS_SPEAKER", "Aiden")
+TTS_QUANT = os.getenv("SPEECH_TTS_QUANT", "Q4_K_M")
+TTS_ALLOW_REQUEST_VOICE = os.getenv("SPEECH_TTS_ALLOW_REQUEST_VOICE", "false").lower() == "true"
 HF_BASE = (os.getenv("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
 
 _ASR_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_ASR_CONCURRENCY", "3")))
@@ -67,11 +69,12 @@ def ensure_llm_model() -> str:
 
 
 class Engines:
-    """惰性单例：whisper / llama 模型各加载一次，进程内共享（线程安全）。"""
+    """惰性单例：REST 的 whisper / llama / Qwen3-TTS 各加载一次。"""
 
     _lock = threading.Lock()
     _whisper = None
     _llama = None
+    _tts = None
 
     @classmethod
     def whisper(cls):
@@ -100,6 +103,21 @@ class Engines:
                         verbose=False,
                     )
         return cls._llama
+
+    @classmethod
+    def tts(cls):
+        if cls._tts is None:
+            with cls._lock:
+                if cls._tts is None:
+                    from qwentts_cpp import QwenTTS
+
+                    cls._tts = QwenTTS.from_pretrained(
+                        TTS_MODEL,
+                        quant=TTS_QUANT,
+                        cache_dir=os.path.join(MODELS_DIR, "huggingface", "hub"),
+                        use_fa=DEVICE == "cuda",
+                    )
+        return cls._tts
 
 
 async def transcribe(audio_bytes: bytes, language: str | None, prompt: str | None = None) -> str:
@@ -190,34 +208,28 @@ async def _chat_proxy(messages, temperature, max_tokens, stream_cb) -> str:
 
 
 async def synthesize(text: str, voice: str | None = None) -> bytes:
-    """TTS：文字→WAV（中英混合自动分段用双音色拼接）。"""
+    """Qwen3-TTS：文字→WAV；REST 与实时通道使用同一模型配置和音色。"""
     async with _TTS_SEM:
         return await asyncio.to_thread(_synthesize_sync, text, voice)
 
 
 def _synthesize_sync(text: str, voice: str | None) -> bytes:
-    import tts_piper
+    import numpy as np
 
-    voice_en = voice or TTS_VOICE_EN
-    segs = tts_piper._segment_by_lang(text)
-    wavs: list[str] = []
-    workdir = tempfile.mkdtemp(prefix="spx-tts-")
-    try:
-        for i, (is_zh, seg) in enumerate(segs):
-            out = os.path.join(workdir, f"seg{i}.wav")
-            rc = tts_piper._synthesize(TTS_VOICE_ZH if is_zh else voice_en, seg, out)
-            if rc == 0 and os.path.exists(out):
-                wavs.append(out)
-        if not wavs:
-            raise RuntimeError("TTS 合成失败：无输出")
-        merged = os.path.join(workdir, "merged.wav")
-        tts_piper._concat_wavs(wavs, merged)
-        with open(merged, "rb") as fh:
-            return fh.read()
-    finally:
-        import shutil
-
-        shutil.rmtree(workdir, ignore_errors=True)
+    # 默认忽略 REST 请求中的 voice，确保普通朗读与 realtime 始终是部署时选定的同一音色。
+    # 确有多音色产品需求时可显式打开 SPEECH_TTS_ALLOW_REQUEST_VOICE。
+    requested = (voice or "").strip()
+    speaker = requested if (TTS_ALLOW_REQUEST_VOICE and requested) else TTS_SPEAKER
+    language = "chinese" if any("\u3400" <= ch <= "\u9fff" for ch in text) else "english"
+    samples, sample_rate = Engines.tts().synthesize(text=text, lang=language, speaker=speaker)
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm)
+    return out.getvalue()
 
 
 def wav_to_pcm16(wav_bytes: bytes) -> tuple[bytes, int]:

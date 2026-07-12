@@ -1139,8 +1139,7 @@ function loadPlanQuotaAsr() {
       var saveBtn = getEl("tts-save-btn");
       if (banner) banner.innerHTML =
         '<div class="hint">可填云端 OpenAI 兼容地址，或本地语音服务器 http://&lt;IP&gt;:9100/v1' +
-        '（Key 随意填如 local）。本地 <code>/audio/speech</code> 使用 Piper，默认音色可填 <code>en_US-lessac-medium</code>；' +
-        '<code>/realtime</code> 使用 speech-to-speech + Qwen3-TTS，实时音色在部署脚本中选择。</div>';
+        '（Key 随意填如 local）。本地 <code>/audio/speech</code> 与 <code>/realtime</code> 均使用部署时选择的 Qwen3-TTS 模型和音色。</div>';
       if (cloud) cloud.style.display = "";
       if (saveBtn) saveBtn.style.display = "";
       if (getEl("tts-base-url")) getEl("tts-base-url").value = d.base_url || "";
@@ -1582,7 +1581,7 @@ function applyLocalModelPreset() {
   if (getEl("tts-base-url")) getEl("tts-base-url").value = baseUrl;
   if (getEl("tts-model")) getEl("tts-model").value = "";
   if (getEl("tts-api-key")) getEl("tts-api-key").value = "local";
-  if (getEl("tts-default-voice")) getEl("tts-default-voice").value = "en_US-lessac-medium";
+  if (getEl("tts-default-voice")) getEl("tts-default-voice").value = "";
   toast("已填入本地 9100 的文字、场景 ASR、对话语音推荐值；请分别保存并测试", "success");
 }
 

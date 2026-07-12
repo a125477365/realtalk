@@ -32,11 +32,22 @@ async def _err(request: Request, exc: Exception) -> JSONResponse:
 
 
 @app.get("/health")
-def health() -> dict:
-    return {"ok": True, "device": engine.DEVICE, "asr": engine.ASR_MODEL,
-            "llm": engine.LLM_BASE_URL or engine.LLM_FILE, "tts": [engine.TTS_VOICE_EN, engine.TTS_VOICE_ZH],
+def health():
+    realtime_ready = True
+    if os.getenv("SPEECH_REALTIME_ENGINE", "s2s").lower() == "s2s":
+        try:
+            import urllib.request
+
+            with urllib.request.urlopen("http://127.0.0.1:8765/v1/pool", timeout=1) as response:  # noqa: S310
+                realtime_ready = response.status == 200
+        except Exception:  # noqa: BLE001
+            realtime_ready = False
+    body = {"ok": realtime_ready, "device": engine.DEVICE, "asr": engine.ASR_MODEL,
+            "llm": engine.LLM_BASE_URL or engine.LLM_FILE,
+            "tts": {"model": engine.TTS_MODEL, "speaker": engine.TTS_SPEAKER},
             "realtime_engine": os.getenv("SPEECH_REALTIME_ENGINE", "s2s"),
             "realtime_backend": os.getenv("SPEECH_S2S_REALTIME_URL", "")}
+    return JSONResponse(body, status_code=200 if realtime_ready else 503)
 
 
 @app.post("/v1/audio/transcriptions")
@@ -155,14 +166,11 @@ async def realtime_ws(websocket: WebSocket) -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    # 启动期预拉模型（whisper/gguf/piper 音色），失败打日志不阻断——首个请求仍会按需下载
+    # 启动期预拉 ASR/LLM 文件。Qwen3-TTS 由 S2S 启动时加载，REST 首次调用复用相同配置。
     try:
         engine.ensure_whisper_model(engine.ASR_MODEL)
         if not engine.LLM_BASE_URL:
             engine.ensure_llm_model()
-        import tts_piper
-        for v in (engine.TTS_VOICE_EN, engine.TTS_VOICE_ZH):
-            tts_piper._ensure_voice(v)
         print("[speech] 模型预拉完成", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[speech] 模型预拉失败(首个请求会重试)：{exc}", flush=True)
