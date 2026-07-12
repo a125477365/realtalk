@@ -43,8 +43,8 @@ _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 @dataclass(frozen=True)
 class Settings:
-    # development（默认）保留本地联调能力；production 严格拒绝危险开发旁路。
-    runtime_env: str = os.getenv("REALTALK_ENV", "development").strip().lower()
+    # 唯一模式来源：setup 的「部署模式 (prod / dev)」。旧 REALTALK_ENV 只为升级兼容。
+    deployment_mode: str = (os.getenv("DEPLOYMENT_MODE") or os.getenv("REALTALK_ENV", "dev")).strip().lower()
     database_url: str | None = os.getenv("DATABASE_URL")
     database_path: Path = Path(os.getenv("REALTALK_DB", "realtalk.sqlite3"))
     deployment_region: str = os.getenv("REALTALK_REGION") or os.getenv("REGION", "local")
@@ -231,4 +231,4 @@ settings = Settings()
 
 
 def is_production() -> bool:
-    return settings.runtime_env in {"production", "prod"}
+    return settings.deployment_mode == "prod" or settings.deployment_mode == "production"

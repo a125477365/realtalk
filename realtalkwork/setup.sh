@@ -69,8 +69,10 @@ if [ -f .env ]; then
     # 保留 .env 也要把完整部署跑完——尤其是【数据库供给(db_init)】这一步，
     # 否则只 docker compose up 起来的 API 会因「库未供给」fail-fast 退出。
     say "已保留现有 .env，按它重新部署…"
-    CURRENT_MODE="$(sed -n 's/^REALTALK_ENV=//p' .env | tail -n 1 | tr -d '[:space:]')"
-    CURRENT_MODE="${CURRENT_MODE:-development}"
+    CURRENT_MODE="$(sed -n 's/^DEPLOYMENT_MODE=//p' .env | tail -n 1 | tr -d '[:space:]')"
+    # 兼容旧版本生成的 .env；新版本只写 DEPLOYMENT_MODE。
+    [ -n "$CURRENT_MODE" ] || CURRENT_MODE="$(sed -n 's/^REALTALK_ENV=//p' .env | tail -n 1 | tr -d '[:space:]')"
+    CURRENT_MODE="${CURRENT_MODE:-dev}"
     note "当前 .env 的部署模式：${CURRENT_MODE}（选择 no 不会重新询问或改写 prod/dev）。"
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
     # 所有服务在主 compose 文件；起哪些服务由 .env 的 COMPOSE_PROFILES 决定。
@@ -265,7 +267,8 @@ if $DEPLOY_BACKEND; then
   note "  dev 联调：任意设备直接登录、支付下单自动到账、内购校验旁路、ASR/TTS 未配置返回占位、"
   note "             邮件不外发、Apple/支付宝走沙箱。便于本地联调，切勿用于线上。"
   ask "部署模式 (prod / dev)" "prod"
-  DEV=false; [ "$REPLY_VALUE" = "dev" ] && DEV=true
+  DEPLOYMENT_MODE="$REPLY_VALUE"
+  DEV=false; [ "$DEPLOYMENT_MODE" = "dev" ] && DEV=true
 
   # 以下「AI 模型 / 实时语音」属于保存在数据库（app_settings）的参数：
   # 仅在新建数据库时询问并写入（首次启动会落库）；连接已有库时库里已有，跳过询问，可在管理台改。
@@ -468,7 +471,7 @@ if $DEPLOY_BACKEND; then
   EMAIL_DEV="false"; [ "$DEV" = true ] && [ -z "$SMTP_HOST" ] && EMAIL_DEV="true"
   ENV_LINES+=(
     "REALTALK_REGION=prod"
-    "REALTALK_ENV=$([ \"$DEV\" = true ] && echo development || echo production)"
+    "DEPLOYMENT_MODE=$DEPLOYMENT_MODE"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"
