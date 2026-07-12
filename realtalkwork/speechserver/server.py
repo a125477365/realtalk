@@ -4,6 +4,7 @@
   POST /v1/audio/transcriptions   语音→文字（multipart file + model/language/prompt），兼容 whisper 接口
   POST /v1/audio/speech           文字→语音 WAV（json: input/voice/response_format），兼容 tts 接口
   POST /v1/chat/completions       文字对话（OpenAI 消息格式），兼容 chat 接口
+  POST /v1/responses              Responses API（供 speech-to-speech 原生实时编排使用）
   WS   /v1/realtime               默认代理 speech-to-speech 原生 Realtime：上传语音流+文字上下文
                                   → 返回用户转写+文本流+语音流（legacy 模式才用 realtime.py + Redis）
   GET  /health                    健康检查（k8s/compose 探针）
@@ -23,6 +24,53 @@ import realtime
 import realtime_s2s
 
 app = FastAPI(title="RealTalk Speech Server", version="1.0")
+
+
+def _responses_messages(payload: dict) -> list[dict[str, str]]:
+    """将 OpenAI Responses API 的 input 子集转换为本地 Chat Completions 消息。"""
+    messages: list[dict[str, str]] = []
+    instructions = payload.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        messages.append({"role": "system", "content": instructions.strip()})
+    raw_input = payload.get("input", [])
+    if isinstance(raw_input, str):
+        raw_input = [{"role": "user", "content": raw_input}]
+    for item in raw_input if isinstance(raw_input, list) else []:
+        if not isinstance(item, dict) or item.get("type", "message") != "message":
+            continue
+        content = item.get("content", "")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "\n".join(
+                str(part.get("text") or part.get("input_text") or "")
+                for part in content if isinstance(part, dict)
+            )
+        else:
+            text = ""
+        if text.strip():
+            role = str(item.get("role") or "user")
+            messages.append({"role": role if role in {"system", "user", "assistant"} else "user", "content": text})
+    return messages or [{"role": "user", "content": "Hello"}]
+
+
+def _response_output(response_id: str, created: int, model: str, content: str) -> dict:
+    """OpenAI SDK 能解析的 Responses API 完成对象（无工具调用的本地子集）。"""
+    return {
+        "id": response_id, "object": "response", "created_at": created, "status": "completed",
+        "model": model, "error": None, "incomplete_details": None, "instructions": None,
+        "max_output_tokens": None, "parallel_tool_calls": True, "previous_response_id": None,
+        "reasoning": {"effort": None, "summary": None}, "store": False, "temperature": 0.6,
+        "tool_choice": "auto", "tools": [], "top_p": 1.0, "truncation": "disabled",
+        "output": [{
+            "id": f"msg_{response_id}", "type": "message", "status": "completed", "role": "assistant",
+            "content": [{"type": "output_text", "text": content, "annotations": []}],
+        }],
+        "usage": {"input_tokens": 0, "input_tokens_details": {"cached_tokens": 0},
+                  "output_tokens": len(content) // 4, "output_tokens_details": {"reasoning_tokens": 0},
+                  "total_tokens": len(content) // 4},
+        "metadata": {},
+    }
 
 
 @app.exception_handler(Exception)
@@ -152,6 +200,74 @@ async def chat_completions(payload: dict):
                   "completion_tokens": len(content) // 4,
                   "total_tokens": 0},
     })
+
+
+@app.post("/v1/responses")
+async def responses(payload: dict):
+    """供 speech-to-speech 使用的 OpenAI Responses API 兼容层。
+
+    s2s 仅需要文本消息和 SSE delta；底层仍调用同一 engine.chat / GGUF 实例，
+    不会额外加载 LLM。
+    """
+    import asyncio
+    import json
+
+    messages = _responses_messages(payload)
+    model = str(payload.get("model") or "local")
+    temperature = float(payload.get("temperature", 0.6))
+    max_tokens = int(payload.get("max_output_tokens") or payload.get("max_tokens") or 1024)
+    created = int(time.time())
+    response_id = f"resp_local_{created}"
+
+    if not payload.get("stream"):
+        content = await engine.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        return JSONResponse(_response_output(response_id, created, model, content))
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    completed = asyncio.Event()
+    failure: list[Exception] = []
+
+    def on_delta(delta: str) -> None:
+        loop.call_soon_threadsafe(queue.put_nowait, delta)
+
+    async def run() -> None:
+        try:
+            await engine.chat(messages, temperature=temperature, max_tokens=max_tokens, stream_cb=on_delta)
+        except Exception as exc:  # noqa: BLE001
+            failure.append(exc)
+        finally:
+            completed.set()
+
+    task = asyncio.create_task(run())
+
+    async def events():
+        text = ""
+        item_id = f"msg_{response_id}"
+        try:
+            yield "data: " + json.dumps({"type": "response.created", "response": _response_output(response_id, created, model, "")}, ensure_ascii=False) + "\n\n"
+            while not completed.is_set() or not queue.empty():
+                try:
+                    delta = await asyncio.wait_for(queue.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    continue
+                text += delta
+                yield "data: " + json.dumps({
+                    "type": "response.output_text.delta", "response_id": response_id,
+                    "item_id": item_id, "output_index": 0, "content_index": 0, "delta": delta,
+                }, ensure_ascii=False) + "\n\n"
+            if failure:
+                raise failure[0]
+            output = _response_output(response_id, created, model, text)["output"][0]
+            yield "data: " + json.dumps({"type": "response.output_item.done", "output_index": 0, "item": output}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"type": "response.completed", "response": _response_output(response_id, created, model, text)}, ensure_ascii=False) + "\n\n"
+            yield "data: [DONE]\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.websocket("/v1/realtime")
