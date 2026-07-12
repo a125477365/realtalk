@@ -109,8 +109,8 @@ class Settings:
     tts_api_key: str | None = os.getenv("TTS_API_KEY")
     tts_model: str = os.getenv("TTS_MODEL", "tts-1")
     # 可选音色列表（逗号分隔，供用户选择）与默认音色
-    tts_voices: str = os.getenv("TTS_VOICES", "alloy,echo,fable,onyx,nova,shimmer")
-    tts_default_voice: str = os.getenv("TTS_DEFAULT_VOICE", "alloy")
+    tts_voices: str = os.getenv("TTS_VOICES", "alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar")
+    tts_default_voice: str = os.getenv("TTS_DEFAULT_VOICE", "marin")
     tts_format: str = os.getenv("TTS_FORMAT", "mp3")  # cloud 返回与本地输出的音频格式
     tts_dev_mode: bool = _bool_env("TTS_DEV_MODE", False)  # 未配置时返回静音占位，便于联调
     # TTS 结果缓存：作为「提前生成下一句」的暂存。滑动过期——每次被取用就续期，

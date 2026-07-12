@@ -875,6 +875,7 @@ def admin_get_tts(admin: dict = Depends(current_admin)) -> dict:
     """B 类【对话语音模型】一张卡：一个 base_url 派生 ASR/TTS/LLM/实时通道四个端点。"""
     cv = voice_io.resolve_conv_voice()
     tts = voice_io.resolve_tts_config()
+    recommended, recommended_default = voice_io.provider_voice_defaults(cv["base_url"])
     return {
         "base_url": cv["base_url"],
         "model": cv["model"],
@@ -884,6 +885,9 @@ def admin_get_tts(admin: dict = Depends(current_admin)) -> dict:
         "format": tts["format"],
         "voices": tts["voices"],
         "default_voice": voice_io.default_voice(),
+        "provider_kind": "openai" if cv["is_openai"] else ("local" if cv["base_url"] else "custom"),
+        "recommended_voices": recommended,
+        "recommended_default_voice": recommended_default,
         "configured": voice_io.tts_configured(),
         "dev_mode": tts["dev_mode"],
         # 兼容旧前端字段
@@ -906,10 +910,14 @@ def admin_set_tts(
         db.set_app_setting("conv_voice_api_key", request.api_key.strip())
     if request.model is not None:
         db.set_app_setting("conv_voice_model", request.model.strip())
+    default_voice = request.default_voice.strip() if request.default_voice is not None else ""
     if request.default_voice is not None:
-        db.set_app_setting("conv_voice_voice", request.default_voice.strip())
+        db.set_app_setting("conv_voice_voice", default_voice)
     if request.voices is not None:
-        db.set_app_setting("tts_voices", request.voices.strip())
+        voices = list(dict.fromkeys(v.strip() for v in request.voices.replace("，", ",").split(",") if v.strip()))
+        if default_voice and default_voice not in voices:
+            voices.append(default_voice)
+        db.set_app_setting("tts_voices", ",".join(voices))
     return admin_get_tts(admin)
 
 
@@ -1336,7 +1344,7 @@ def wechat_web_config(redirect: str = Query(default="", max_length=500)) -> dict
         return {"dev_mode": True, "auth_url": None}
     web_app_id = db.resolve_wechat_login_config()["web_app_id"]   # 单一来源：只读 DB
     if not web_app_id:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="网站微信登录未配置（wechat_web_app_id）")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="微信登录暂时不可用，请稍后再试")
     from urllib.parse import quote
 
     auth_url = (
@@ -1586,7 +1594,7 @@ async def ai_chat(request: AIChatRequest, user: UserOut = Depends(current_user))
         reply = await generate_ai_chat_reply(request.message.strip(), request.messages, scenario, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不做兜底回复
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+                            detail="AI 服务暂时繁忙，请稍后再试") from exc
     if is_political_sensitive(reply):
         # 输出端兜底：模型无视提示词生成了涉政内容 → 不下发，直接中断
         return AIChatResponse(reply="涉及敏感话题，本次对话已结束。", terminated=True)
@@ -1606,7 +1614,7 @@ async def practice_refine(request: RefineRequest, user: UserOut = Depends(curren
         styles = await generate_refinements(text, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+                            detail="AI 服务暂时繁忙，请稍后再试") from exc
     return RefineResponse(items=[RefineItem(**s) for s in styles])
 
 
@@ -1725,7 +1733,8 @@ async def create_recharge(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"微信支付创建失败: {str(e)[:100]}")
+            print(f"[payment] 微信支付创建失败：{str(e)[:160]}", flush=True)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="暂时无法发起微信支付，请稍后再试") from e
     
     if request.method == "alipay" and alipay_official:
         try:
@@ -1760,7 +1769,8 @@ async def create_recharge(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"支付宝创建失败: {str(e)[:100]}")
+            print(f"[payment] 支付宝创建失败：{str(e)[:160]}", flush=True)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="暂时无法发起支付宝支付，请稍后再试") from e
     
     # Fallback: manual payment (fake QR for dev)
     method_settings = payment_method_settings(request.method)
@@ -2133,7 +2143,7 @@ def _require_audio_ready(user: UserOut) -> None:
     if not asr_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="语音转写服务未配置，请联系管理员在管理台「系统设置」中配置 ASR",
+            detail="录音处理暂时不可用，请稍后再试",
         )
 
 
@@ -2156,7 +2166,7 @@ async def _route_or_forward(request: Request, md5: str) -> Response | None:
     if not servers:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="未配置语音文件服务器，请联系管理员在管理台「系统设置」中配置可处理语音的服务器列表",
+            detail="录音上传暂时不可用，请稍后再试",
         )
     if request.headers.get("x-voice-routed") == "1":
         return None  # 已是被转发来的请求 → 本机直接处理，避免二次转发
@@ -2173,9 +2183,10 @@ async def _route_or_forward(request: Request, md5: str) -> Response | None:
                 request.method, url, params=dict(request.query_params), content=body, headers=headers
             )
     except httpx.HTTPError as exc:
+        print(f"[audio-upload] 转发失败 target={target}：{str(exc)[:160]}", flush=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"转发到语音服务器 {target} 失败：{str(exc)[:160]}",
+            detail="录音上传中断，请稍后重试",
         ) from exc
     return Response(content=resp.content, status_code=resp.status_code, media_type=resp.headers.get("content-type"))
 
@@ -2241,10 +2252,10 @@ async def audio_upload_chunk(
         return fwd
     part = voice_pipeline.find_audio(user.id, md5)
     if part is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在，请先 init")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="本次上传已失效，请重新选择文件")
     current = part.stat().st_size
     if offset > current:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"偏移不连续，当前已接收 {current} 字节")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="上传进度已更新，正在继续上传")
     # 用 r+b 定位到 offset 覆盖写（幂等：重发同一段不会损坏文件）
     with part.open("r+b") as fh:
         fh.seek(offset)
@@ -2283,7 +2294,7 @@ async def audio_upload_complete(
     if size_bytes > 0 and part.stat().st_size < size_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"文件不完整（已收 {part.stat().st_size}/{size_bytes} 字节），请继续上传",
+            detail="文件尚未上传完成，请继续上传",
         )
     # 打 .ready 标记：定时任务据此识别「已传完，可转写」
     voice_pipeline.ready_marker(part).touch()
@@ -2391,7 +2402,7 @@ async def learning_generate(
     try:
         return await generate_learning(items, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — #9
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI 服务暂时繁忙，请稍后再试") from exc
 
 
 @app.post("/scenario/generate", response_model=ScenarioResponse)
@@ -2406,7 +2417,7 @@ async def scenario_generate(
     try:
         scenario = await generate_scenario(items, user_id=user.id)
     except Exception as exc:  # noqa: BLE001 — #9
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="AI 服务暂时繁忙，请稍后再试") from exc
     return db.create_scenario(user.id, request.start, request.end, scenario)
 
 
@@ -2664,7 +2675,7 @@ async def roleplay_message(
         )
     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不做兜底评分
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=f"AI模型调用失败：{str(exc)[:160]}") from exc
+                            detail="AI 服务暂时繁忙，请稍后再试") from exc
     score = evaluation.score
     final_guidance = request.guidance_mode == "final"
     # 更宽松、更看重「意思是否表达到位」：模型判定通过(意思对)即通过；
@@ -2764,10 +2775,11 @@ async def roleplay_message_audio(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="录音为空")
     try:
         recognized = (await voice_io.transcribe(audio, suffix=suffix, reference_text=reference, user_id=user.id)).strip()
-    except Exception as exc:  # noqa: BLE001 — ASR 故障(如本地模型未就绪)返回可读 503，不要 500
+    except Exception as exc:  # noqa: BLE001 — 详细原因只写服务端日志
+        print(f"[roleplay] 语音识别失败：{str(exc)[-160:]}", flush=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"语音识别暂时不可用：{str(exc)[-160:]}",
+            detail="没能处理这段录音，请稍后再试",
         ) from exc
     if not recognized:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="没听清，请再说一次")
@@ -2889,7 +2901,7 @@ async def roleplay_stream(
     _rp_rt_url = resolve_conv_realtime_url()
     if _rp_rt_url:
         try:
-            rp_upstream = await ConvRealtimeSession(_rp_rt_url, f"rp-{session_id}").connect()
+            rp_upstream = await ConvRealtimeSession(_rp_rt_url, f"rp-{session_id}", voice=voice).connect()
             rp_upstream_started = _time.monotonic()
         except Exception as exc:  # noqa: BLE001
             print(f"[stream] 实时通道连接失败，回退分步管线：{str(exc)[:120]}", flush=True)
@@ -3110,7 +3122,7 @@ async def freetalk_stream(
                 "Greet in one short sentence, ask which role they want to play, then start improvising the scene.)"
             )
         else:
-            await _sj({"type": "notice", "detail": "场景不存在或已过期"})
+            await _sj({"type": "notice", "detail": "这个场景不在了，我们换个话题吧"})
 
     # 开场（先于实时通道连接：开场词入库后 seed 的历史才完整）：
     # 首次进入=自我介绍+入门了解；老学员=按记忆问候；有未练场景时顺口邀练一个。
@@ -3140,7 +3152,7 @@ async def freetalk_stream(
             result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id,
                                                    scenarios=unpracticed, scene_context=scene_ctx)
         except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
-            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+            await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
             result = None
         if result:
             # 弱模型可能不等用户答应就在开场吐 ⟦SCENE:id⟧：同样走注入剧本→追问角色/严格自由；
@@ -3157,7 +3169,7 @@ async def freetalk_stream(
                     result = await generate_freetalk_reply(nudge, memory, history, user_id=user.id,
                                                            scenarios=unpracticed, scene_context=scene_ctx)
                 except Exception as exc:  # noqa: BLE001
-                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     result = None
         if result:
             opening = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()
@@ -3270,7 +3282,7 @@ async def freetalk_stream(
                     scene_context=scene_ctx,
                 )
         except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
-            await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+            await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
             return True
         # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
         user_display = result.get("user_display", "").strip() or recognized
@@ -3380,13 +3392,13 @@ async def freetalk_stream(
                                 turns_since_memory = 0
                                 asyncio.create_task(update_freetalk_memory(user.id))
                 elif kind == "error":
-                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(ev.get('message') or '')[:120]}"})
+                    await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — 上游断开/超时：告知客户端（可重连），不拖垮主循环
             print(f"[freetalk] live 下行泵结束：{str(exc)[:120]}", flush=True)
             try:
-                await _sj({"type": "notice", "detail": "实时通道中断，请重连"})
+                await _sj({"type": "notice", "detail": "连接中断了，请点击重连"})
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3461,13 +3473,13 @@ async def freetalk_stream(
                     except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
                         print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
                         upstream = None
-                        await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                        await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     continue
                 if translate_mode:
                     try:
                         translated = await generate_translation(typed, user_id=user.id)
                     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
-                        await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                        await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                         continue
                     await _sj({"type": "user_text", "text": typed, "translation": "", "words": [], "wpm": 0})
                     await _sj({"type": "ai_text", "text": translated, "translation": ""})
@@ -3508,7 +3520,7 @@ async def freetalk_stream(
                 except Exception as exc:  # noqa: BLE001 — 通道故障：明确报错（#9），下一句回退分步管线
                     print(f"[freetalk] 实时通道故障，回退分步管线：{str(exc)[:120]}", flush=True)
                     upstream = None
-                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                 continue
             # ---- 分步管线路径（未配实时通道/通道故障时）----
             audio = bytes(utterance)
@@ -3537,7 +3549,7 @@ async def freetalk_stream(
                 try:
                     translated = await generate_translation(recognized, user_id=user.id)
                 except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
-                    await _sj({"type": "notice", "detail": f"AI模型调用失败：{str(exc)[:120]}"})
+                    await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     continue
                 await _sj({"type": "user_text", "text": recognized, "translation": "",
                            "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
@@ -3673,7 +3685,7 @@ def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> No
         if limit > 0 and used_tokens >= limit:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"非会员每日 AI 用量已用完（每天 {limit} tokens），升级会员可解锁更多用量，或明天再来。",
+                detail="今天的 AI 对话额度已用完，升级会员可获得更多用量，或明天再来。",
             )
         return
     budget = monthly_budget_cents(user)
@@ -3877,7 +3889,7 @@ async def resolve_wechat_profile(request: WeChatLoginRequest) -> dict[str, str |
         # 服务器连不上微信（无外网/DNS/被墙）等：返回清晰错误而非 500
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="无法连接微信服务器，请检查服务器外网访问；如未接入正式微信，请将 WECHAT_AUTH_DEV_MODE 设为 true",
+            detail="微信登录暂时不可用，请稍后再试",
         ) from exc
 
     return {

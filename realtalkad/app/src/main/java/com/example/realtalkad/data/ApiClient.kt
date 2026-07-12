@@ -65,7 +65,7 @@ class ApiClient(private val baseUrlProvider: () -> String) {
         }
         if (!successful) {
             val detail = runCatching { json.decodeFromString<ErrorResponse>(body).detail }
-                .getOrDefault("请求失败：HTTP $code")
+                .getOrDefault("请求没有完成，请稍后重试")
             throw ApiException(detail)
         }
         body

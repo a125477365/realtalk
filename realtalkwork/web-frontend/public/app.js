@@ -548,7 +548,7 @@ async function uploadAudio(file) {
             var st = await fetch(API + "/audio/upload/status?upload_id=" + encodeURIComponent(uploadId) + "&size_bytes=" + file.size, { headers: authHeaders() });
             offset = (await st.json()).received_bytes; ok = true; break;
           }
-          throw new Error("HTTP " + put.status);
+          throw new Error("上传没有完成");
         } catch (e) {
           if (attempt >= 5) { throw e; }
           $("up-text").textContent = "网络波动，重试中（" + attempt + "/5）…";
@@ -573,7 +573,7 @@ async function uploadAudio(file) {
     else toast((await done.json().catch(function () { return {}; })).detail || "完成上传失败", "error");
   } catch (e) {
     $("up-progress").style.display = "none";
-    toast("上传失败：" + (e.message || "网络错误") + "（可重新选择同一文件自动续传）", "error");
+    toast("上传没有完成，可重新选择同一文件继续上传", "error");
   }
 }
 

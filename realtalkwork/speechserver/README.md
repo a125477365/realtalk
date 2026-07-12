@@ -53,7 +53,12 @@ COMPOSE_PROFILES=speech docker compose -f docker-compose.yml -f docker-compose.s
 | `SPEECH_TTS_MODEL` | Qwen3-TTS 0.6B CustomVoice | REST 与实时统一模型；质量优先可换 1.7B |
 | `SPEECH_TTS_SPEAKER` | `Aiden` | REST 与实时统一音色；中文可填 `Vivian` / `Serena` / `Uncle_Fu` 等 |
 | `SPEECH_TTS_QUANT` | `Q4_K_M` | CPU GGUF 量化；降低内存占用 |
-| `SPEECH_TTS_ALLOW_REQUEST_VOICE` | `false` | 默认忽略 REST `voice`，保证与 realtime 音色一致；需要多音色时才开启 |
+| `SPEECH_TTS_ALLOW_REQUEST_VOICE` | `true` | 用户选择同时作用于 REST 与 realtime；单音色部署可设为 `false` |
+
+管理端发布的音色目录会下发到 iOS/Android：本地 0.6B CustomVoice 支持
+`Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee`；OpenAI Realtime
+使用 `alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar`。用户换音色后，
+REST 朗读立即生效；实时会话会重连后生效。
 | `SPEECH_S2S_PIPELINES` | `1` | 原生实时并发管线数；每条都要加载 ASR/TTS，CPU 请保持 1 |
 | `SPEECH_MODELS_DIR` | `./speech-models` | faster-whisper、LLM GGUF、Qwen3-TTS GGUF/HuggingFace 缓存统一持久化目录 |
 | `HF_ENDPOINT` | 空 | 受限网络填 `https://hf-mirror.com` |

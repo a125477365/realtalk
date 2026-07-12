@@ -21,6 +21,19 @@ import httpx
 
 from .settings import settings
 
+QWEN3_CUSTOM_VOICES = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"]
+OPENAI_REALTIME_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]
+
+
+def provider_voice_defaults(base_url: str) -> tuple[list[str], str]:
+    """返回当前语音服务的推荐音色目录；自定义服务由管理员自行发布。"""
+    base = (base_url or "").lower()
+    if "openai.com" in base:
+        return OPENAI_REALTIME_VOICES, "marin"
+    if base:
+        return QWEN3_CUSTOM_VOICES, "Aiden"
+    return [], ""
+
 
 class TTSOverloaded(Exception):
     """合成并发已满，过载保护：调用方应返回 429 让客户端稍后重试。"""
@@ -125,12 +138,17 @@ def resolve_tts_config() -> dict[str, Any]:
     cv = resolve_conv_voice()
     overrides = db.get_app_settings_map(["tts_base_url", "tts_api_key", "tts_model", "tts_voices", "tts_default_voice"])
     if cv["base_url"]:
+        recommended, recommended_default = provider_voice_defaults(cv["base_url"])
+        configured_voices = overrides.get("tts_voices") or settings.tts_voices
+        # 旧部署的默认 alloy 列表不适用于本地 Qwen；未由管理员明确维护时用服务推荐目录。
+        if configured_voices == "alloy,echo,fable,onyx,nova,shimmer":
+            configured_voices = ",".join(recommended)
         return {
             "base_url": cv["base_url"],
             "api_key": cv["api_key"],
-            "model": "tts-1" if cv["is_openai"] else "qwen3-tts",
-            "voices": overrides.get("tts_voices") or settings.tts_voices,
-            "default_voice": cv["voice"] or overrides.get("tts_default_voice"),
+            "model": "gpt-4o-mini-tts" if cv["is_openai"] else "qwen3-tts",
+            "voices": configured_voices or ",".join(recommended),
+            "default_voice": cv["voice"] or recommended_default or overrides.get("tts_default_voice"),
             "format": "mp3" if cv["is_openai"] else "wav",
             "dev_mode": settings.tts_dev_mode,
         }
@@ -216,7 +234,7 @@ def default_voice() -> str:
     dv = (config["default_voice"] or "").strip()
     if dv and (not voices or dv in voices):
         return dv
-    return voices[0] if voices else "alloy"
+    return voices[0] if voices else ""
 
 
 def normalize_voice(voice: str | None) -> str:

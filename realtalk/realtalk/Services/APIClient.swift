@@ -623,7 +623,7 @@ final class APIClient {
             if let error = try? decoder.decode(ErrorResponse.self, from: data) {
                 throw APIClientError.server(error.detail)
             }
-            throw APIClientError.server("请求失败：HTTP \(httpResponse.statusCode)")
+            throw APIClientError.server("请求没有完成，请稍后重试")
         }
 
         return try decoder.decode(Response.self, from: data)

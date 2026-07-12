@@ -301,12 +301,12 @@ if $DEPLOY_BACKEND; then
     note "或 OpenAI 填 https://api.openai.com/v1；转写/合成/对话/实时通道自动派生，无需分别配置。"
     ask "B·语音模型 Base URL（留空=之后在管理台配）" ""; CV_BASE="$REPLY_VALUE"
     CV_KEY=""; CV_MODEL=""; CV_VOICE=""
-    TTS_VOICES_VAL="alloy,echo,fable,onyx,nova,shimmer"; TTS_DEFAULT_VOICE_VAL="alloy"
+    TTS_VOICES_VAL="alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar"; TTS_DEFAULT_VOICE_VAL="marin"
     if [ -n "$CV_BASE" ]; then
       ask_secret "B·语音模型 API Key（本地填 local）"; CV_KEY="$REPLY_VALUE"
       ask "B·实时模型名（OpenAI 如 gpt-realtime；本地留空）" ""; CV_MODEL="$REPLY_VALUE"
       case "$CV_BASE" in
-        *openai*) ask "B·默认音色" "alloy"; CV_VOICE="$REPLY_VALUE" ;;
+        *openai*) ask "B·默认音色" "marin"; CV_VOICE="$REPLY_VALUE" ;;
         *) note "本地 Qwen3-TTS 音色由后面的本地模型步骤统一选择，这里无需重复填写。"
            CV_VOICE=""
            TTS_VOICES_VAL="Aiden,Vivian,Serena,Uncle_Fu,Dylan,Eric,Ryan,Ono_Anna,Sohee"
@@ -333,7 +333,7 @@ if $DEPLOY_BACKEND; then
       "ASR_BASE_URL=" "ASR_API_KEY=" "ASR_MODEL=whisper-1" "ASR_DEV_MODE=false"
       "TTS_FORMAT=mp3" "TTS_DEV_MODE=$DEV"
       "TTS_BASE_URL=" "TTS_API_KEY=" "TTS_MODEL=tts-1"
-      "TTS_VOICES=alloy,echo,fable,onyx,nova,shimmer" "TTS_DEFAULT_VOICE=alloy"
+      "TTS_VOICES=alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar" "TTS_DEFAULT_VOICE=marin"
     )
   fi
 

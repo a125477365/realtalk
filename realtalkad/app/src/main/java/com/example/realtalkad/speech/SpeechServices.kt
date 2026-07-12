@@ -203,7 +203,7 @@ class VoicePlayer(private val context: Context) {
     private var player: MediaPlayer? = null
     private var fetchJob: Job? = null
 
-    // 只用后端 TTS（统一音色、中英混读由后端 Piper 处理）；后端不可用则跳过该句（字幕仍在），不再本机合成
+    // 只用后端语音服务，普通朗读与实时对话使用用户选择的同一声音。
     fun speak(text: String, cache: Boolean = true, completion: (() -> Unit)? = null) {
         if (text.isBlank()) { completion?.invoke(); return }
         stopPlayback()

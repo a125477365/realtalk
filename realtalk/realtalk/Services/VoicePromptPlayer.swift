@@ -2,7 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 
-/// 朗读 AI 台词。**只用后端 TTS**（统一音色/口音，且中英混读由后端 Piper 处理）；
+/// 朗读 AI 台词。只用后端语音服务，普通朗读与实时对话使用用户选择的同一声音。
 /// 后端不可用时跳过该句（字幕仍在），不再本机合成——避免机械音与错误发音误导学习。
 /// 公开接口与原先一致（speak/stop/isSpeaking/audioLevel），上层对练编排无需改动。
 @MainActor

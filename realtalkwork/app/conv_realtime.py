@@ -79,12 +79,19 @@ class ConvRealtimeSession:
         turn = {"type": "server_vad"} if self.live else None
         if self.is_openai:
             await self.send({"type": "session.update", "session": {
-                "voice": self.voice or "alloy",
-                "modalities": ["audio", "text"],
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": turn,
+                "type": "realtime",
+                "output_modalities": ["audio"],
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": "whisper-1"},
+                        "turn_detection": turn,
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcm"},
+                        "voice": self.voice or "marin",
+                    },
+                },
             }})
         else:
             await self.send({"type": "session.update", "session": {

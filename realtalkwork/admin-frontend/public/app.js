@@ -1528,16 +1528,18 @@ function renderSettingsPage() {
     "  </div>",
     '  <button class="btn btn-primary" id="asr-save-btn" style="margin-top:10px" onclick="saveAsr()">保存 A·场景 ASR</button>',
     '  <div style="border-top:1px solid var(--border,#e5e7eb);margin:20px 0 14px"></div>',
-    '  <h3 style="margin:0 0 6px">B · 对话语音 / Realtime <span class="subtitle">一个地址自动派生转写、合成、对话与实时 WS；本地 realtime 为 speech-to-speech 原生链路</span></h3>',
+    '  <h3 style="margin:0 0 6px">B · 对话与声音 <span class="subtitle">统一管理语音对话、台词朗读和用户可选声音</span></h3>',
     '  <div id="tts-mode-banner"></div>',
     '  <div id="tts-cloud-fields" class="form-grid">',
     '    <div class="form-group"><label>Base URL</label><input type="text" id="tts-base-url" placeholder="https://api.openai.com/v1" /></div>',
-    '    <div class="form-group"><label>实时模型名 <span class="subtitle">OpenAI 如 gpt-realtime；本地留空</span></label><input type="text" id="tts-model" placeholder="本地留空" /></div>',
+    '    <div class="form-group"><label>对话模型 <span class="subtitle">OpenAI 如 gpt-realtime；本地留空</span></label><input type="text" id="tts-model" placeholder="本地服务无需填写" /></div>',
     '    <div class="form-group"><label>API Key <span class="hint" id="tts-key-status"></span></label><input type="password" id="tts-api-key" placeholder="留空保持不变" autocomplete="new-password" /></div>',
-    '    <div class="form-group"><label>实时通道（自动派生，只读）</label><input type="text" id="tts-rt-url" readonly style="opacity:.7" /></div>',
-    '    <div class="form-group"><label>可选音色（逗号分隔）</label><input type="text" id="tts-voices" placeholder="alloy,echo,fable,onyx,nova,shimmer" /></div>',
-    '    <div class="form-group"><label>默认 REST 音色</label><input type="text" id="tts-default-voice" placeholder="en_US-lessac-medium" /></div>',
+    '    <div class="form-group"><label>连接地址（自动生成）</label><input type="text" id="tts-rt-url" readonly style="opacity:.7" /></div>',
+    '    <div class="form-group" style="grid-column:1/-1"><label>向用户开放的声音</label><input type="text" id="tts-voices" placeholder="多个声音名称用逗号分隔" /><div class="hint" style="margin-top:6px">这里保存的声音会出现在 App 设置中。只添加当前服务真实支持的声音。</div></div>',
+    '    <div class="form-group"><label>默认声音</label><input type="text" id="tts-default-voice" placeholder="必须包含在可选声音中" /></div>',
+    '    <div class="form-group"><label>增加一个声音</label><div style="display:flex;gap:8px"><input type="text" id="tts-new-voice" placeholder="输入服务支持的声音名称" /><button type="button" class="btn btn-secondary" onclick="addVoiceOption()">增加</button></div></div>',
     "  </div>",
+    '  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button type="button" class="btn btn-secondary" onclick="applyVoicePreset(\'qwen\')">使用本地 Qwen 声音</button><button type="button" class="btn btn-secondary" onclick="applyVoicePreset(\'openai\')">使用 GPT‑Live 声音</button></div>',
     '  <button class="btn btn-primary" id="tts-save-btn" style="margin-top:10px" onclick="saveTts()">保存 B·对话语音</button>',
     "</div>",
 
@@ -1581,8 +1583,37 @@ function applyLocalModelPreset() {
   if (getEl("tts-base-url")) getEl("tts-base-url").value = baseUrl;
   if (getEl("tts-model")) getEl("tts-model").value = "";
   if (getEl("tts-api-key")) getEl("tts-api-key").value = "local";
-  if (getEl("tts-default-voice")) getEl("tts-default-voice").value = "";
+  applyVoicePreset("qwen");
   toast("已填入本地 9100 的文字、场景 ASR、对话语音推荐值；请分别保存并测试", "success");
+}
+
+var VOICE_PRESETS = {
+  qwen: {
+    voices: ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"],
+    defaultVoice: "Aiden"
+  },
+  openai: {
+    voices: ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"],
+    defaultVoice: "marin"
+  }
+};
+
+function applyVoicePreset(kind) {
+  var preset = VOICE_PRESETS[kind];
+  if (!preset) return;
+  getEl("tts-voices").value = preset.voices.join(",");
+  getEl("tts-default-voice").value = preset.defaultVoice;
+}
+
+function addVoiceOption() {
+  var input = getEl("tts-new-voice");
+  var value = (input && input.value || "").trim();
+  if (!value) return;
+  var field = getEl("tts-voices");
+  var voices = (field.value || "").replace(/，/g, ",").split(",").map(function(v) { return v.trim(); }).filter(Boolean);
+  if (voices.indexOf(value) < 0) voices.push(value);
+  field.value = voices.join(",");
+  input.value = "";
 }
 
 function loadModelSettings() {

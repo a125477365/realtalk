@@ -26,7 +26,7 @@ LLM_CTX = int(os.getenv("SPEECH_LLM_CTX", "8192"))
 TTS_MODEL = os.getenv("SPEECH_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
 TTS_SPEAKER = os.getenv("SPEECH_TTS_SPEAKER", "Aiden")
 TTS_QUANT = os.getenv("SPEECH_TTS_QUANT", "Q4_K_M")
-TTS_ALLOW_REQUEST_VOICE = os.getenv("SPEECH_TTS_ALLOW_REQUEST_VOICE", "false").lower() == "true"
+TTS_ALLOW_REQUEST_VOICE = os.getenv("SPEECH_TTS_ALLOW_REQUEST_VOICE", "true").lower() == "true"
 HF_BASE = (os.getenv("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
 
 _ASR_SEM = asyncio.Semaphore(int(os.getenv("SPEECH_ASR_CONCURRENCY", "3")))
@@ -216,8 +216,7 @@ async def synthesize(text: str, voice: str | None = None) -> bytes:
 def _synthesize_sync(text: str, voice: str | None) -> bytes:
     import numpy as np
 
-    # 默认忽略 REST 请求中的 voice，确保普通朗读与 realtime 始终是部署时选定的同一音色。
-    # 确有多音色产品需求时可显式打开 SPEECH_TTS_ALLOW_REQUEST_VOICE。
+    # 用户选择的 voice 同时用于 REST 朗读与 realtime；可在单音色部署中显式关闭覆盖。
     requested = (voice or "").strip()
     speaker = requested if (TTS_ALLOW_REQUEST_VOICE and requested) else TTS_SPEAKER
     language = "chinese" if any("\u3400" <= ch <= "\u9fff" for ch in text) else "english"
