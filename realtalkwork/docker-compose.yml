@@ -3,6 +3,7 @@
 #   backend       后端 API（DATABASE_URL 留空时连内置 postgres）
 #   backend-db    内置 PostgreSQL（使用外部数据库时不要启用）
 #   backend-redis 内置 Redis（采集分块暂存；用远程 Redis 时不要启用）
+#   speech        本地语音模型（REST + 原生实时 speech-to-speech）
 #   admin         管理台
 #   web           用户 Web 端
 #
@@ -69,6 +70,47 @@ services:
     # 不用 depends_on：内置库场景 postgres 同时启动，外部库场景 postgres 服务不存在。
     # API 若先于数据库就绪而退出，靠 restart 策略自动重连（postgres 有健康检查）。
     restart: unless-stopped
+
+  # 本地语音模型为可选 profile；仍定义在主文件中，保证普通
+  # `docker compose down` 能识别并停止它，不会遗留网络 active endpoint。
+  speech:
+    profiles: ["speech"]
+    build:
+      context: ./speechserver
+      args:
+        DEVICE: ${SPEECH_DEVICE:-cpu}
+        # true=源码构建兼容旧 CPU（无 AVX2/FMA 也可运行）；新 CPU 可改 false 加快构建。
+        LLAMA_CPU_PORTABLE: ${SPEECH_LLAMA_CPU_PORTABLE:-true}
+    restart: unless-stopped
+    ports:
+      - "${SPEECH_PORT:-9100}:9100"
+    environment:
+      SPEECH_DEVICE: ${SPEECH_DEVICE:-cpu}
+      SPEECH_ASR_MODEL: ${SPEECH_ASR_MODEL:-small}
+      SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
+      SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      SPEECH_LLM_CONCURRENCY: ${SPEECH_LLM_CONCURRENCY:-1}
+      SPEECH_REALTIME_ENGINE: ${SPEECH_REALTIME_ENGINE:-s2s}
+      SPEECH_S2S_REALTIME_URL: ${SPEECH_S2S_REALTIME_URL:-ws://127.0.0.1:8765/v1/realtime}
+      SPEECH_S2S_COMMIT_SILENCE_MS: ${SPEECH_S2S_COMMIT_SILENCE_MS:-750}
+      SPEECH_S2S_PIPELINES: ${SPEECH_S2S_PIPELINES:-1}
+      SPEECH_S2S_ASR_COMPUTE_TYPE: ${SPEECH_S2S_ASR_COMPUTE_TYPE:-int8}
+      SPEECH_S2S_ASR_LANGUAGE: ${SPEECH_S2S_ASR_LANGUAGE:-auto}
+      SPEECH_S2S_LLM_BASE_URL: ${SPEECH_S2S_LLM_BASE_URL:-http://127.0.0.1:9100/v1}
+      SPEECH_S2S_LLM_MODEL: ${SPEECH_S2S_LLM_MODEL:-local}
+      SPEECH_S2S_LLM_API_KEY: ${SPEECH_S2S_LLM_API_KEY:-local}
+      SPEECH_TTS_MODEL: ${SPEECH_TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice}
+      SPEECH_TTS_SPEAKER: ${SPEECH_TTS_SPEAKER:-Aiden}
+      SPEECH_TTS_QUANT: ${SPEECH_TTS_QUANT:-Q4_K_M}
+      SPEECH_S2S_TTS_DTYPE: ${SPEECH_S2S_TTS_DTYPE:-float32}
+      SPEECH_S2S_TTS_LANGUAGE: ${SPEECH_S2S_TTS_LANGUAGE:-auto}
+      SPEECH_S2S_MIN_SILENCE_MS: ${SPEECH_S2S_MIN_SILENCE_MS:-500}
+      HF_ENDPOINT: ${HF_ENDPOINT:-}
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
+      REDIS_URL: ${SPEECH_REDIS_URL:-redis://redis:6379/1}
+    volumes:
+      - ${SPEECH_MODELS_DIR:-./speech-models}:/models
 
   admin-frontend:
     profiles: ["admin"]

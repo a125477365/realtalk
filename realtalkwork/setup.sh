@@ -39,11 +39,11 @@ check_local_postgres_auth() {
   fi
   say "校验内置 PostgreSQL 连接与密码…"
   for _ in $(seq 1 60); do
-    docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T postgres \
+    docker compose exec -T postgres \
       pg_isready -U "${POSTGRES_USER:-realtalk}" >/dev/null 2>&1 && break
     sleep 1
   done
-  if docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T postgres \
+  if docker compose exec -T postgres \
     sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT 1"' \
     2>/dev/null | grep -qx '1'; then
     say "${GREEN}✔ 内置 PostgreSQL 密码验证通过${RESET}"
@@ -70,15 +70,15 @@ if [ -f .env ]; then
     # 否则只 docker compose up 起来的 API 会因「库未供给」fail-fast 退出。
     say "已保留现有 .env，按它重新部署…"
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
-    # 两个 compose 文件恒定引入，起哪些服务由 .env 里的 COMPOSE_PROFILES 决定
-    docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build --remove-orphans
+    # 所有服务在主 compose 文件；起哪些服务由 .env 的 COMPOSE_PROFILES 决定。
+    docker compose up -d --build --remove-orphans
     check_local_postgres_auth || exit 1
     if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
       say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
-      if docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init; then
+      if docker compose run --rm api python -m app.db_init; then
         say "${GREEN}✔ 数据库已供给${RESET}"
       else
-        say "数据库供给失败，请重试：docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init"
+        say "数据库供给失败，请重试：docker compose run --rm api python -m app.db_init"
       fi
     fi
     say "完成。常用命令：docker compose ps / logs -f api / down"
@@ -143,7 +143,7 @@ if $DEPLOY_PG; then
         # 必须先 down：仅 stop postgres 仍可能有 API 重连、挂载占用或孤儿容器。
         if command -v docker >/dev/null 2>&1; then
           note "正在 docker compose down，释放数据库挂载与全部相关容器…"
-          docker compose -f docker-compose.yml -f docker-compose.speech.yml down --remove-orphans
+          docker compose down --remove-orphans
         fi
         rm -rf "${PG_DATA_DIR:?}/"* "${PG_DATA_DIR:?}/".* 2>/dev/null
         # 验证是否真正清空
@@ -579,17 +579,17 @@ echo
 ask "是否立即构建并启动？(yes/no)" "yes"
 if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
-  # 两个 compose 文件恒定引入，起哪些服务由 COMPOSE_PROFILES 决定（speech 服务带 profile）
-  docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build --remove-orphans
+  # 所有服务在主 compose 文件，起哪些服务由 COMPOSE_PROFILES 决定（speech 服务带 profile）。
+  docker compose up -d --build --remove-orphans
   check_local_postgres_auth || exit 1
   if $DEPLOY_BACKEND; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
     # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。
     say "初始化数据库（建表 + 系统参数入库，仅一次）…"
-    if docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init; then
+    if docker compose run --rm api python -m app.db_init; then
       say "${GREEN}✔ 数据库已初始化${RESET}"
     else
-      say "数据库初始化失败，请检查后重试：docker compose -f docker-compose.yml -f docker-compose.speech.yml run --rm api python -m app.db_init"
+      say "数据库初始化失败，请检查后重试：docker compose run --rm api python -m app.db_init"
     fi
     say "等待 API 就绪…（选了本地 ASR/TTS 时，首次启动会预拉模型，可能需要几分钟）"
     for _ in $(seq 1 90); do   # 最长约 3 分钟，给首次预拉本地模型留时间
@@ -613,10 +613,10 @@ if [ "$REPLY_VALUE" = "yes" ]; then
         "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/v1/chat/completions" >/dev/null; then
         say "${GREEN}✔ Whisper / Qwen LLM / Qwen3-TTS 服务及 LLM 推理验证通过${RESET}"
       else
-        say "本地 LLM 推理验证失败：docker compose -f docker-compose.yml -f docker-compose.speech.yml logs --tail=200 speech"
+        say "本地 LLM 推理验证失败：docker compose logs --tail=200 speech"
       fi
     else
-      say "本地语音模型尚未就绪：docker compose -f docker-compose.yml -f docker-compose.speech.yml logs -f speech"
+      say "本地语音模型尚未就绪：docker compose logs -f speech"
     fi
   fi
 fi
