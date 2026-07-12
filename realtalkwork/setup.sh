@@ -30,6 +30,34 @@ ask_secret() {
 
 rand() { LC_ALL=C tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c "${1:-32}"; }
 
+check_local_postgres_auth() {
+  # libpq 的错误会打印 postgres 服务名解析后的容器内网 IP（Docker Desktop 上可能是
+  # 192.168.64.x），这不是 setup.sh 写入的外部数据库地址。这里在 db_init 之前用
+  # .env 中的新密码做一次真实认证，避免密码不一致时仍继续启动其余组件。
+  if ! grep -qE '^COMPOSE_PROFILES=.*backend-db' .env; then
+    return 0
+  fi
+  say "校验内置 PostgreSQL 连接与密码…"
+  for _ in $(seq 1 60); do
+    docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T postgres \
+      pg_isready -U "${POSTGRES_USER:-realtalk}" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  if docker compose -f docker-compose.yml -f docker-compose.speech.yml exec -T postgres \
+    sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT 1"' \
+    2>/dev/null | grep -qx '1'; then
+    say "${GREEN}✔ 内置 PostgreSQL 密码验证通过${RESET}"
+    return 0
+  fi
+  echo
+  say "⚠️  内置 PostgreSQL 密码验证失败，已停止后续初始化。"
+  note "postgres 在容器网络中可能解析为 192.168.64.x；这是内部 IP，不是外部数据库配置。"
+  note "最常见原因：数据目录已初始化，修改 POSTGRES_PASSWORD 不会修改库内旧密码。"
+  note "请重新运行 setup.sh 并覆盖 .env；检测到旧数据目录时选择 keep 后填写原密码，"
+  note "或确认不保留旧数据后选择 reset 重新初始化。"
+  return 1
+}
+
 say "=============================================="
 say " RealTalk 部署引导（可分布式拆机部署）"
 say "=============================================="
@@ -44,6 +72,7 @@ if [ -f .env ]; then
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
     # 两个 compose 文件恒定引入，起哪些服务由 .env 里的 COMPOSE_PROFILES 决定
     docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+    check_local_postgres_auth || exit 1
     if grep -qE '^COMPOSE_PROFILES=.*backend' .env; then
       say "供给数据库（建表 + 系统参数入库；幂等，可重复跑）…"
       if docker compose run --rm api python -m app.db_init; then
@@ -159,6 +188,7 @@ if $DEPLOY_PG; then
     "POSTGRES_DB=realtalk"
     "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
   )
+  note "同机后端始终连接 postgres:5432；日志可能显示其解析后的 192.168.64.x/172.x 容器内网 IP，这是正常现象。"
 fi
 
 # ============ 第 3 步：Redis（菜单选 5：本机内置 Redis，可独立部署） ============
@@ -491,28 +521,29 @@ if $DEPLOY_SPEECH; then
   PROFILES+=("speech")
   note "对外 4 个 OpenAI 兼容端点：/audio/transcriptions、/audio/speech、/chat/completions、WS /realtime；"
   note "api 后端在 A/B 配置里填本服务地址即可全量切换到本地模型。"
-  note "REST 链路：音频文件 → faster-whisper(ASR) → Qwen GGUF(文字推理) → Piper(TTS)。"
-  note "实时 WS 默认用 HuggingFace speech-to-speech 原生链路：Silero VAD → faster-whisper → 同一份 Qwen GGUF → Qwen3-TTS 流式音频。"
+  note "REST（字幕/上传生成场景/手动朗读）：faster-whisper(ASR) + 同一 Qwen GGUF(LLM) + Piper(TTS)。"
+  note "实时 WS（沉浸/私教）：speech-to-speech 原生编排 Silero VAD → faster-whisper → 同一 Qwen GGUF → Qwen3-TTS。"
   note "无需 venv：这些依赖全部装在两个 Docker 容器内。9100 仍是唯一对外地址；实时容器只走内部网络。"
   note "Piper 不是没安装：它用于 REST /audio/speech，并按下方音色名下载 .onnx 音色；实时的 Qwen3-TTS 另选模型。"
   ask "计算设备 (cpu/cuda)" "cpu";                      ENV_LINES+=("SPEECH_DEVICE=$REPLY_VALUE")
   ENV_LINES+=("SPEECH_LLAMA_CPU_PORTABLE=true")
   note "CPU 模式默认源码构建便携 llama.cpp（关闭 AVX2/FMA），兼容仅支持 AVX 的旧 Xeon；构建会慢一些，但避免首次推理 exit 132。"
-  ask "whisper 模型大小 (tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
+  ask "共享 faster-whisper ASR 模型大小（REST 与 S2S 使用同一份模型文件）(tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
   note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
   note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
-  ask "LLM GGUF 仓库" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
-  ask "LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
-  ask "英文音色 (Piper)" "en_US-lessac-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
-  ask "中文音色 (Piper)" "zh_CN-huayan-medium";          ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
+  ask "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+  ask "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  ask "REST /audio/speech 英文音色 (Piper)" "en_US-lessac-medium"; ENV_LINES+=("SPEECH_TTS_VOICE_EN=$REPLY_VALUE")
+  ask "REST /audio/speech 中文音色 (Piper)" "zh_CN-huayan-medium"; ENV_LINES+=("SPEECH_TTS_VOICE_ZH=$REPLY_VALUE")
   ask "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
   if [ "$SPEECH_RT_ENGINE" = "s2s" ]; then
     PROFILES+=("speech-s2s")
   fi
   note "CPU 推荐 0.6B Qwen3-TTS：比 1.7B 更省内存、首包更快；需要更细腻音色可改 1.7B（CPU 会更慢）。"
-  ask "实时 Qwen3-TTS 模型" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_S2S_TTS_MODEL=$REPLY_VALUE")
+  ask "S2S /v1/realtime 的 Qwen3-TTS 模型" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_S2S_TTS_MODEL=$REPLY_VALUE")
   ask "实时 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_S2S_TTS_SPEAKER=$REPLY_VALUE")
-  ask "模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
+  note "下方目录统一保存 faster-whisper、GGUF、Piper 音色和 Qwen3-TTS/HuggingFace 缓存。"
+  ask "全部语音/文字模型保存目录（宿主机，建议大盘）" "./speech-models"; ENV_LINES+=("SPEECH_MODELS_DIR=$REPLY_VALUE")
   ask "对外端口" "9100";                                  ENV_LINES+=("SPEECH_PORT=$REPLY_VALUE")
   SPEECH_PORT_VAL="$REPLY_VALUE"
   ask "用 HuggingFace 镜像站下模型？(yes=hf-mirror.com / no=官方直连)" "yes"
@@ -552,6 +583,7 @@ if [ "$REPLY_VALUE" = "yes" ]; then
   command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
   # 两个 compose 文件恒定引入，起哪些服务由 COMPOSE_PROFILES 决定（speech 服务带 profile）
   docker compose -f docker-compose.yml -f docker-compose.speech.yml up -d --build
+  check_local_postgres_auth || exit 1
   if $DEPLOY_BACKEND; then
     # 数据库「供给」一次：建表 + 把系统参数入库（API 启动只读已供给的库，不自己建表/播种，多后端安全）。
     # 系统参数初始值取自本次 .env，入库后即以 DB 为唯一来源；之后可从 .env 删除这些 DB 参数行（运行期不再读）。

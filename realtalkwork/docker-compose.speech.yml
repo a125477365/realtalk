@@ -31,6 +31,8 @@ services:
       SPEECH_TTS_VOICE_EN: ${SPEECH_TTS_VOICE_EN:-en_US-lessac-medium}
       SPEECH_TTS_VOICE_ZH: ${SPEECH_TTS_VOICE_ZH:-zh_CN-huayan-medium}
       HF_ENDPOINT: ${HF_ENDPOINT:-}
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
       PIPER_VOICES_BASE: ${PIPER_VOICES_BASE:-}
       # legacy 模式实时上下文 Redis；s2s 模式不会读取它。
       REDIS_URL: ${SPEECH_REDIS_URL:-redis://redis:6379/1}
@@ -73,5 +75,8 @@ services:
       SPEECH_S2S_TTS_LANGUAGE: ${SPEECH_S2S_TTS_LANGUAGE:-auto}
       SPEECH_S2S_MIN_SILENCE_MS: ${SPEECH_S2S_MIN_SILENCE_MS:-500}
       HF_ENDPOINT: ${HF_ENDPOINT:-}
+      # Qwen3-TTS 也写入与 Whisper/GGUF/Piper 相同的宿主机模型卷，重建容器无需重下。
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
     volumes:
       - ${SPEECH_MODELS_DIR:-./speech-models}:/models

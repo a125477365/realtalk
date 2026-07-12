@@ -54,7 +54,7 @@ COMPOSE_PROFILES=speech,speech-s2s docker compose -f docker-compose.yml -f docke
 | `SPEECH_S2S_TTS_MODEL` | Qwen3-TTS 0.6B CustomVoice | 实时 Qwen3-TTS；CPU 推荐 0.6B，质量优先可换 1.7B |
 | `SPEECH_S2S_TTS_SPEAKER` | `Aiden` | 实时默认音色；中文可填 `Vivian` / `Serena` / `Uncle_Fu` 等 |
 | `SPEECH_S2S_PIPELINES` | `1` | 原生实时并发管线数；每条都要加载 ASR/TTS，CPU 请保持 1 |
-| `SPEECH_MODELS_DIR` | `./speech-models` | 宿主机模型目录（启动预拉，多副本可共享只读） |
+| `SPEECH_MODELS_DIR` | `./speech-models` | 统一宿主机模型目录：faster-whisper、GGUF、Piper 音色及 Qwen3-TTS/HuggingFace 缓存均持久化在这里 |
 | `HF_ENDPOINT` | 空 | 受限网络填 `https://hf-mirror.com` |
 | `SPEECH_ASR_CONCURRENCY` / `SPEECH_TTS_CONCURRENCY` | 3 / 6 | ASR/TTS 并发上限，超出排队 |
 | `SPEECH_LLM_CONCURRENCY` | **1（勿改大）** | llama.cpp 进程内单实例非线程安全，>1 会崩；高并发用 `SPEECH_LLM_BASE_URL` 代理外部 llama-server 或多副本 |
