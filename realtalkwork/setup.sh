@@ -69,6 +69,9 @@ if [ -f .env ]; then
     # 保留 .env 也要把完整部署跑完——尤其是【数据库供给(db_init)】这一步，
     # 否则只 docker compose up 起来的 API 会因「库未供给」fail-fast 退出。
     say "已保留现有 .env，按它重新部署…"
+    CURRENT_MODE="$(sed -n 's/^REALTALK_ENV=//p' .env | tail -n 1 | tr -d '[:space:]')"
+    CURRENT_MODE="${CURRENT_MODE:-development}"
+    note "当前 .env 的部署模式：${CURRENT_MODE}（选择 no 不会重新询问或改写 prod/dev）。"
     command -v docker >/dev/null 2>&1 || { say "未检测到 docker，请安装后执行：docker compose up -d --build"; exit 1; }
     # 所有服务在主 compose 文件；起哪些服务由 .env 的 COMPOSE_PROFILES 决定。
     docker compose up -d --build --remove-orphans
@@ -466,8 +469,6 @@ if $DEPLOY_BACKEND; then
   ENV_LINES+=(
     "REALTALK_REGION=prod"
     "REALTALK_ENV=$([ \"$DEV\" = true ] && echo development || echo production)"
-    # 新建正式生产配置严格阻断支付/认证旁路；保留旧 .env 时默认只告警，避免影响联调。
-    "STRICT_PRODUCTION_SECURITY=$([ \"$DEV\" = true ] && echo false || echo true)"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"
