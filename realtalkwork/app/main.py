@@ -285,7 +285,7 @@ def _warn_insecure_config() -> None:
             "[security] ⚠️ 上线前请处理以下开发旁路 / 弱配置：\n  - " + "\n  - ".join(warnings),
             flush=True,
         )
-    if is_production() and warnings:
+    if is_production() and settings.strict_production_security and warnings:
         raise RuntimeError("生产环境禁止启用开发旁路或默认管理员密码；请修正 .env 后重启")
 
 

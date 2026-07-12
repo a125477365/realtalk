@@ -466,6 +466,8 @@ if $DEPLOY_BACKEND; then
   ENV_LINES+=(
     "REALTALK_REGION=prod"
     "REALTALK_ENV=$([ \"$DEV\" = true ] && echo development || echo production)"
+    # 新建正式生产配置严格阻断支付/认证旁路；保留旧 .env 时默认只告警，避免影响联调。
+    "STRICT_PRODUCTION_SECURITY=$([ \"$DEV\" = true ] && echo false || echo true)"
     "AUDIO_MAX_BYTES=314572800"
     "AUDIO_MAX_SECONDS=21600"
     "# —— 每节点开关（按部署自标识 dev/prod；运行期只读 .env，不入库）——"

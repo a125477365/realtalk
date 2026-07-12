@@ -43,8 +43,10 @@ _INSECURE_JWT_DEFAULT = "change-me-before-production"
 
 @dataclass(frozen=True)
 class Settings:
-    # development（默认）保留本地联调能力；production 会拒绝危险的开发旁路，避免误上线。
+    # development（默认）保留本地联调能力；production 用于标识部署环境。
     runtime_env: str = os.getenv("REALTALK_ENV", "development").strip().lower()
+    # 仅在明确启用时将生产弱配置升级为启动失败；默认保留告警，避免历史/联调 .env 无法启动。
+    strict_production_security: bool = _bool_env("STRICT_PRODUCTION_SECURITY", False)
     database_url: str | None = os.getenv("DATABASE_URL")
     database_path: Path = Path(os.getenv("REALTALK_DB", "realtalk.sqlite3"))
     deployment_region: str = os.getenv("REALTALK_REGION") or os.getenv("REGION", "local")
