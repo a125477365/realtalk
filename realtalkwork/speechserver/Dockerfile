@@ -49,7 +49,7 @@ RUN if [ "$DEVICE" = "cuda" ]; then \
               && export QWENTTS_CPP_CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF" \
               && python scripts/build_native.py --source /tmp/qwentts.cpp --backend cpu --clean --jobs 2 \
               && pip install --no-cache-dir --force-reinstall --no-deps . \
-              && rm -rf /tmp/qwentts-python /tmp/qwentts.cpp \
+              && cd /srv && rm -rf /tmp/qwentts-python /tmp/qwentts.cpp \
               && apt-get purge -y --auto-remove build-essential cmake git patchelf \
               && rm -rf /var/lib/apt/lists/* ; \
             else \
