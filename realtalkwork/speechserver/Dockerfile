@@ -4,6 +4,7 @@ FROM python:3.12-slim
 
 ARG DEVICE=cpu
 ARG LLAMA_CPU_PORTABLE=true
+ARG QWENTTS_CPU_PORTABLE=true
 ENV PYTHONUNBUFFERED=1 SPEECH_DEVICE=${DEVICE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates libgomp1 libsndfile1 \
@@ -14,6 +15,7 @@ WORKDIR /srv
 COPY requirements.txt .
 # CUDA 使用预编译轮子。CPU 默认从源码构建最保守版本：关闭 AVX/F16C/AVX2/FMA 等 SIMD，
 # 兼容无 AVX 的 NAS/iStoreOS 小主机；否则预编译 CPU wheel 会在首次 LLM 推理时 exit 132。
+# Qwen3-TTS 的 qwentts.cpp 亦采用同一策略，避免其公开 CPU wheel 在旧 Xeon 上触发非法指令。
 RUN if [ "$DEVICE" = "cuda" ]; then \
       pip install --no-cache-dir llama-cpp-python \
         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 ; \
@@ -36,9 +38,25 @@ RUN if [ "$DEVICE" = "cuda" ]; then \
     && if [ "$DEVICE" = "cpu" ]; then \
          pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
            "torch==2.7.1+cpu" "torchaudio==2.7.1+cpu" \
-         && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then WHEEL_ARCH=aarch64; else WHEEL_ARCH=x86_64; fi \
-         && pip install --no-cache-dir \
-           "https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cpu/qwentts_cpp_python-0.3.0%2Bcpu-py3-none-manylinux_2_34_${WHEEL_ARCH}.manylinux_2_35_${WHEEL_ARCH}.whl" ; \
+         && if [ "$QWENTTS_CPU_PORTABLE" = "true" ]; then \
+              apt-get update && apt-get install -y --no-install-recommends build-essential cmake git patchelf \
+              && git clone --depth 1 https://github.com/andimarafioti/qwentts-cpp-python.git /tmp/qwentts-python \
+              && git clone --recursive https://github.com/ServeurpersoCom/qwentts.cpp.git /tmp/qwentts.cpp \
+              && git -C /tmp/qwentts.cpp checkout 9dbe7ea26a01b30fccb117ae5e86807c1dc23d42 \
+              && git -C /tmp/qwentts.cpp submodule update --init --recursive \
+              && cd /tmp/qwentts-python \
+              && export QWENTTS_CPP_BUILD_JOBS=2 \
+              && export QWENTTS_CPP_CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF" \
+              && python scripts/build_native.py --source /tmp/qwentts.cpp --backend cpu --clean --jobs 2 \
+              && pip install --no-cache-dir --force-reinstall --no-deps . \
+              && rm -rf /tmp/qwentts-python /tmp/qwentts.cpp \
+              && apt-get purge -y --auto-remove build-essential cmake git patchelf \
+              && rm -rf /var/lib/apt/lists/* ; \
+            else \
+              if [ "${TARGETARCH:-amd64}" = "arm64" ]; then WHEEL_ARCH=aarch64; else WHEEL_ARCH=x86_64; fi \
+              && pip install --no-cache-dir \
+                "https://huggingface.co/datasets/andito/qwentts-cpp-python-wheels/resolve/main/whl/cpu/qwentts_cpp_python-0.3.0%2Bcpu-py3-none-manylinux_2_34_${WHEEL_ARCH}.manylinux_2_35_${WHEEL_ARCH}.whl"; \
+            fi ; \
        else \
          pip install --no-cache-dir torch torchaudio \
          && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then WHEEL_ARCH=aarch64; else WHEEL_ARCH=x86_64; fi \

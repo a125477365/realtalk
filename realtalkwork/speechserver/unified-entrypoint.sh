@@ -34,10 +34,18 @@ if [ "${SPEECH_REALTIME_ENGINE:-s2s}" = "s2s" ]; then
   s2s_pid=$!
 fi
 
-# 任一核心进程退出都让容器退出，由 Compose/Kubernetes 统一重启，避免半健康状态。
+# REST 是其余三个 OpenAI 兼容端点的核心服务。原生实时进程失败时，不能为了 WS
+# 把 REST 一起杀掉并触发 Docker 重建循环；保留 REST、延时重试 s2s，health 会在
+# 实时服务重新可用后自动转为 healthy。
 while kill -0 "$api_pid" 2>/dev/null; do
   if [ -n "$s2s_pid" ] && ! kill -0 "$s2s_pid" 2>/dev/null; then
-    wait "$s2s_pid" || exit $?
+    wait "$s2s_pid" || s2s_code=$?
+    echo "[speech] 原生实时服务已退出（${s2s_code:-0}），15 秒后重试；REST 服务继续可用" >&2
+    s2s_pid=""
+    sleep 15
+    kill -0 "$api_pid" 2>/dev/null || break
+    /srv/s2s-entrypoint.sh &
+    s2s_pid=$!
   fi
   sleep 2
 done
