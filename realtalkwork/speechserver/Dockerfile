@@ -12,7 +12,7 @@ ARG TARGETARCH
 
 WORKDIR /srv
 COPY requirements.txt .
-# CUDA 使用预编译轮子。CPU 默认从源码构建最保守版本：关闭 AVX/AVX2/FMA 等 SIMD，
+# CUDA 使用预编译轮子。CPU 默认从源码构建最保守版本：关闭 AVX/F16C/AVX2/FMA 等 SIMD，
 # 兼容无 AVX 的 NAS/iStoreOS 小主机；否则预编译 CPU wheel 会在首次 LLM 推理时 exit 132。
 RUN if [ "$DEVICE" = "cuda" ]; then \
       pip install --no-cache-dir llama-cpp-python \
@@ -22,7 +22,7 @@ RUN if [ "$DEVICE" = "cuda" ]; then \
       && if [ "${TARGETARCH:-amd64}" = "arm64" ]; then \
            export CMAKE_ARGS="-DGGML_NATIVE=OFF"; \
          else \
-           export CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF"; \
+           export CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX_VNNI=OFF -DGGML_AVX2=OFF -DGGML_BMI2=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF"; \
          fi \
       && export FORCE_CMAKE=1 \
       && pip install --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python \
