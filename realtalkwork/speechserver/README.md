@@ -98,19 +98,46 @@ wscat -c "$BASE/realtime?session=abc&language=en"
 < {"type":"response.text.delta","delta":"..."} ... {"type":"response.audio.delta","delta":"<b64 pcm16>","sample_rate":22050}
 ```
 
-## 在 RealTalk 中启用（管理台 → 系统设置）
+## 在 RealTalk 中启用（管理台 → 系统设置 → 模型中心）
 
-| 卡片 | 职责 | 本地填写 |
-|---|---|---|
-| **文字推理** | 聊天、评分、学习材料、场景生成 | 服务商=`自定义`，Base URL=`http://<IP>:9100/v1`，模型=`local`，Key=`local`；场景生成独立槽位留空即跟随 |
-| **场景 ASR** | 上传语音文件后转写成文字 | Base URL=`http://<IP>:9100/v1`，模型=`whisper-1`，Key=`local` |
-| **对话语音 / Realtime** | App 手动/沉浸/私教语音，自动派生 ASR/TTS/LLM/Realtime 四端点 | Base URL=`http://<IP>:9100/v1`，实时模型名留空，Key=`local`，音色填部署时选择的 Qwen3 speaker |
+管理台将模型分成三块：**C·文字推理**、**A·场景 ASR**、**B·对话与声音**。它们按业务分工，
+不是重复字段；全本地时三块恰好都可指向同一个 `speech` 服务。所有 Base URL 都只填到
+`/v1`，**不要**追加具体端点，例如不要填 `/chat/completions`。
 
-管理台会把这三块放在同一个「模型中心」卡中。它们不是重复配置：分别对应不同业务入口；全本地部署时，恰好都可以指向同一台 9100 聚合服务。Base URL 只填到 `/v1`，不要追加 `/chat/completions`。
+### 填写本地 speech 服务
 
-> **B 类只填一个地址**：手动触发式用 `/audio/transcriptions`+`/audio/speech`+`/chat/completions`，
-> 沉浸式/私教用 `WS /realtime`（原生流式：边说边传，一条连接内完成 VAD+转写+对话+Qwen3-TTS）。
-> 换成 OpenAI 只需把地址填 `https://api.openai.com/v1`、Key 填 OpenAI key——四个端点仍自动派生。
+假设宿主机 IP 为 `192.168.6.3`、端口为 `9100`，管理端应填写：
+
+| 管理端区域 | Base URL | 模型名称 | API Key | 后端实际请求的地址 / 用途 |
+|---|---|---|---|---|
+| **C·文字推理** | `http://192.168.6.3:9100/v1` | `local` | `local` | `POST /v1/chat/completions`：聊天、评分、学习材料、场景生成；场景生成独立槽位留空即跟随 C |
+| **A·场景 ASR** | `http://192.168.6.3:9100/v1` | `whisper-1` | `local` | `POST /v1/audio/transcriptions`：高级会员上传录音 → 转写 → 生成场景 |
+| **B·对话与声音** | `http://192.168.6.3:9100/v1` | 留空 | `local` | 自动派生下方四个端点；默认音色填 `Aiden`（英文）或 `Vivian`（中文） |
+
+| B·对话与声音自动派生的本地端点 | 实际能力 |
+|---|---|
+| `POST http://192.168.6.3:9100/v1/audio/transcriptions` | 练习时用户语音转文字（Whisper） |
+| `POST http://192.168.6.3:9100/v1/audio/speech` | AI 台词朗读（Qwen3-TTS） |
+| `POST http://192.168.6.3:9100/v1/chat/completions` | 分步语音对话的文字回复（本地 GGUF） |
+| `ws://192.168.6.3:9100/v1/realtime` | 沉浸式/私教原生流式：VAD → ASR → LLM → Qwen3-TTS |
+
+### 改用 OpenAI
+
+可以不重启服务，直接保存管理端配置。OpenAI 的 Base URL 固定为
+`https://api.openai.com/v1`，API Key 填 OpenAI API Key；不要把浏览器里的 ChatGPT 订阅当作 API Key。
+
+| 管理端区域 | Base URL | 模型名称应填 | 后端实际请求的地址 / 说明 |
+|---|---|---|---|
+| **C·文字推理** | `https://api.openai.com/v1` | 选择可用文字模型，例如 `gpt-4.1-mini` | `POST /v1/chat/completions`。可为场景生成独立填写更强文字模型。 |
+| **A·场景 ASR** | `https://api.openai.com/v1` | `gpt-4o-mini-transcribe`（也可按账号可用模型填写 `whisper-1`） | `POST /v1/audio/transcriptions`。 |
+| **B·对话与声音** | `https://api.openai.com/v1` | `gpt-realtime` | 实时连接自动转换为 `wss://api.openai.com/v1/realtime?model=gpt-realtime`；用户可选声音填写 OpenAI Realtime 支持的声音，例如 `marin, cedar, alloy, ash, ballad, coral, echo, sage, shimmer, verse`。 |
+
+当 B 指向 OpenAI 时，应用会自动使用：`/audio/transcriptions`（模型固定为
+`whisper-1`）、`/audio/speech`（模型自动为 `gpt-4o-mini-tts`）和上述 Realtime WebSocket。
+因此 B 的“对话模型”字段仅用于实时通道，应填 `gpt-realtime`，不是 TTS 或 ASR 模型名。
+
+> B·对话与声音只需要保存一个 Base URL 和 Key：手动对话会调用 ASR/TTS/文本端点；
+> 沉浸式/私教优先使用 `/v1/realtime`。若实时连接失败，后端会回退为分步 ASR → LLM → TTS。
 
 ## 多活 / 高并发 / k8s
 

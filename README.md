@@ -14,6 +14,7 @@ RealTalk 是一个基于真实对话的英语口语练习系统。它把日常�
 - **服务端部署**：见 [`DEPLOYMENT.md`](./DEPLOYMENT.md)
 - **接口列表**：见 [`realtalkwork/README.md`](./realtalkwork/README.md)
 - **后端安装**：见 [`realtalkwork/INSTALL.md`](./realtalkwork/INSTALL.md)
+- **本地 speech / OpenAI 模型地址填写**：见 [`realtalkwork/speechserver/README.md`](./realtalkwork/speechserver/README.md#在-realtalk-中启用管理台--系统设置--模型中心)
 
 ## 特性
 
@@ -40,4 +41,3 @@ RealTalk 是一个基于真实对话的英语口语练习系统。它把日常�
 
 **部署**
 - `bash realtalkwork/setup.sh` 交互式引导生成配置并一键启动（API + PostgreSQL + 管理台）
-
