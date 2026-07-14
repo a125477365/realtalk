@@ -140,15 +140,27 @@ def resolve_tts_config() -> dict[str, Any]:
     if cv["base_url"]:
         recommended, recommended_default = provider_voice_defaults(cv["base_url"])
         configured_voices = overrides.get("tts_voices") or settings.tts_voices
-        # 旧部署的默认 alloy 列表不适用于本地 Qwen；未由管理员明确维护时用服务推荐目录。
-        if configured_voices == "alloy,echo,fable,onyx,nova,shimmer":
-            configured_voices = ",".join(recommended)
+        # 换过语音服务后残留的另一家音色目录不适用（本地 Qwen 没有 alloy/marin 这些音色，
+        # 反之亦然）；未由管理员明确维护成自定义列表时，直接用当前服务的推荐目录。
+        stale_lists = {
+            "alloy,echo,fable,onyx,nova,shimmer",                            # 旧部署默认（OpenAI tts-1）
+            ",".join(OPENAI_REALTIME_VOICES),                                 # OpenAI Realtime 目录
+            ",".join(QWEN3_CUSTOM_VOICES),                                    # 本地 Qwen 目录
+        }
+        own_list = ",".join(recommended)
+        if configured_voices in stale_lists and configured_voices != own_list:
+            configured_voices = own_list
+        # 默认音色跨服务残留（如本地 Qwen 配着 marin）：回落当前服务推荐默认
+        effective = [v.strip() for v in (configured_voices or own_list).split(",") if v.strip()]
+        default = cv["voice"] or overrides.get("tts_default_voice") or recommended_default
+        if default and effective and default not in effective:
+            default = recommended_default if recommended_default in effective else effective[0]
         return {
             "base_url": cv["base_url"],
             "api_key": cv["api_key"],
             "model": "gpt-4o-mini-tts" if cv["is_openai"] else "qwen3-tts",
-            "voices": configured_voices or ",".join(recommended),
-            "default_voice": cv["voice"] or recommended_default or overrides.get("tts_default_voice"),
+            "voices": configured_voices or own_list,
+            "default_voice": default,
             "format": "mp3" if cv["is_openai"] else "wav",
             "dev_mode": settings.tts_dev_mode,
         }
@@ -298,7 +310,10 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
                 headers={"Authorization": f"Bearer {config['api_key']}"},
                 json={"model": config["model"], "input": text, "voice": voice, "response_format": fmt},
             )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # 带上游错误正文抛出：日志与 /tts/speak 的 502 detail 都能看到真实原因
+            snippet = (resp.text or "")[:200]
+            raise RuntimeError(f"TTS 上游 {resp.status_code}：{snippet}")
         # content_type 以响应头为准（本地语音服务器返回 wav），头缺失回落配置推断
         audio, ct = resp.content, (resp.headers.get("content-type") or content_type_for(fmt)).split(";")[0]
     finally:

@@ -53,6 +53,37 @@ def ensure_whisper_model(size: str) -> str:
     return dest
 
 
+_TTS_STEMS = {
+    "Qwen/Qwen3-TTS-12Hz-0.6B-Base": "qwen-talker-0.6b-base",
+    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice": "qwen-talker-0.6b-customvoice",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-Base": "qwen-talker-1.7b-base",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice": "qwen-talker-1.7b-customvoice",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign": "qwen-talker-1.7b-voicedesign",
+}
+
+
+def ensure_tts_ggufs() -> tuple[str, str]:
+    """直下 Qwen3-TTS 的 talker/codec GGUF 到 MODELS_DIR/qwen3-tts-gguf（与 S2S 进程共享同一份文件）。
+    走 HF_ENDPOINT 镜像的 resolve 直链，绕开 huggingface_hub 的 metadata API。"""
+    stem = _TTS_STEMS.get(TTS_MODEL)
+    if not stem:
+        raise ValueError(f"不支持的 Qwen3-TTS 模型：{TTS_MODEL}")
+    quant = TTS_QUANT.upper()
+    quant = {"Q4": "Q4_K_M", "Q8": "Q8_0", "FP32": "F32"}.get(quant, quant)
+    dest = os.path.join(MODELS_DIR, "qwen3-tts-gguf")
+    os.makedirs(dest, exist_ok=True)
+    paths: list[str] = []
+    for fn in (f"{stem}-{quant}.gguf", f"qwen-tokenizer-12hz-{quant}.gguf"):
+        target = os.path.join(dest, fn)
+        if not (os.path.exists(target) and os.path.getsize(target) > 0):
+            url = f"{HF_BASE}/Serveurperso/Qwen3-TTS-GGUF/resolve/main/{fn}"
+            tmp = target + ".part"
+            urllib.request.urlretrieve(url, tmp)  # noqa: S310 — 固定可信仓库/镜像
+            os.replace(tmp, target)
+        paths.append(target)
+    return paths[0], paths[1]
+
+
 def ensure_llm_model() -> str:
     """直下 GGUF 到 MODELS_DIR（HF_ENDPOINT 镜像可用）。SPEECH_LLM_FILE 可为绝对路径直接使用。"""
     if os.path.isabs(LLM_FILE) and os.path.exists(LLM_FILE):
@@ -111,12 +142,12 @@ class Engines:
                 if cls._tts is None:
                     from qwentts_cpp import QwenTTS
 
-                    cls._tts = QwenTTS.from_pretrained(
-                        TTS_MODEL,
-                        quant=TTS_QUANT,
-                        cache_dir=os.path.join(MODELS_DIR, "huggingface", "hub"),
-                        use_fa=DEVICE == "cuda",
-                    )
+                    # 不用 from_pretrained：其内部 hf_hub_download 对该第三方 GGUF 仓库
+                    # 在 hf-mirror.com 等镜像上 metadata 不兼容，受限网络下运行时报
+                    # LocalEntryNotFoundError（表现为 /audio/speech 500、App 有字幕没声音）。
+                    # 与 sitecustomize.py 的 S2S 修复同策略：resolve 直下 + 显式本地路径。
+                    talker, codec = ensure_tts_ggufs()
+                    cls._tts = QwenTTS(talker, codec, use_fa=DEVICE == "cuda")
         return cls._tts
 
 

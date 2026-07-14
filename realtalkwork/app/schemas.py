@@ -91,6 +91,14 @@ class RefineResponse(BaseModel):
     items: list[RefineItem]
 
 
+class TranslateRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class TranslateResponse(BaseModel):
+    text: str
+
+
 class TranscriptUploadRequest(BaseModel):
     # 固定上限阻止单次 JSON 无限膨胀；更大的历史导入请走分块采集接口。
     items: list[TranscriptItem] = Field(max_length=5000)

@@ -71,6 +71,8 @@ from .schemas import (
     RefineRequest,
     RefineItem,
     RefineResponse,
+    TranslateRequest,
+    TranslateResponse,
     BillingAccountResponse,
     BillingResponse,
     CaptureQuotaResponse,
@@ -1022,6 +1024,9 @@ async def tts_speak(
         audio, content_type = await voice_io.synthesize(text, voice, use_cache=cache, user_id=user.id)
     except voice_io.TTSOverloaded as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — 上游合成失败：日志留痕 + 502 带原因（此前裸 500 无从排查）
+        print(f"[tts] /tts/speak 合成失败：{str(exc)[:300]}", flush=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"语音合成失败：{str(exc)[:160]}") from exc
     return Response(content=audio, media_type=content_type)
 
 
@@ -1037,6 +1042,9 @@ async def tts_preview(
         audio, content_type = await voice_io.synthesize(text[:200], voice or None)
     except voice_io.TTSOverloaded as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tts] /tts/preview 合成失败：{str(exc)[:300]}", flush=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"语音合成失败：{str(exc)[:160]}") from exc
     return Response(content=audio, media_type=content_type)
 
 
@@ -1672,6 +1680,25 @@ async def practice_refine(request: RefineRequest, user: UserOut = Depends(curren
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail="AI 服务暂时繁忙，请稍后再试") from exc
     return RefineResponse(items=[RefineItem(**s) for s in styles])
+
+
+@app.post("/practice/translate", response_model=TranslateResponse)
+async def practice_translate(request: TranslateRequest, user: UserOut = Depends(current_user)) -> TranslateResponse:
+    """字幕卡内「译」按钮的按需翻译：历史回放/实时通道等场景下 translation 为空时客户端调用一次。
+    英→简中 / 中→英 自动判向，结果由客户端缓存在该条字幕上。"""
+    require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.text or "")))
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="text 不能为空")
+    if is_political_sensitive(text):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="涉及敏感话题，无法翻译")
+    try:
+        translated = await generate_translation(text, user_id=user.id)
+    except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错
+        print(f"[translate] 按需翻译失败：{str(exc)[:300]}", flush=True)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="AI 服务暂时繁忙，请稍后再试") from exc
+    return TranslateResponse(text=translated)
 
 
 @app.get("/billing/account", response_model=BillingAccountResponse)
@@ -2955,6 +2982,7 @@ async def roleplay_stream(
             # 场景台词先查 Redis（多半已被「提前生成」预热过）→ 命中秒回；指导内容动态唯一传 use_cache=False。
             audio, ct = await voice_io.synthesize(text, voice, use_cache=use_cache, user_id=user.id)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：客户端仍能看文字
+            print(f"[roleplay] TTS 合成失败：{str(exc)[:300]}", flush=True)
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
         await _sj({"type": "ai_audio_begin", "content_type": ct})
@@ -3178,6 +3206,7 @@ async def freetalk_stream(
             # 自由对话回复每句唯一且动态 → 不入 Redis(与指导内容同策略)，实时合成推流
             audio, ct = await voice_io.synthesize(text, voice, use_cache=False, user_id=user.id)
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：字幕仍在
+            print(f"[freetalk] TTS 合成失败：{str(exc)[:300]}", flush=True)
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
             return
         await _sj({"type": "ai_audio_begin", "content_type": ct})
@@ -3241,6 +3270,7 @@ async def freetalk_stream(
             result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id,
                                                    scenarios=unpracticed, scene_context=scene_ctx)
         except Exception as exc:  # noqa: BLE001 — #9：开场失败明确报错但保持连接（用户开口后逐轮仍会明确报错）
+            print(f"[freetalk] 开场 LLM 调用失败：{str(exc)[:300]}", flush=True)
             await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
             result = None
         if result:
@@ -3258,6 +3288,7 @@ async def freetalk_stream(
                     result = await generate_freetalk_reply(nudge, memory, history, user_id=user.id,
                                                            scenarios=unpracticed, scene_context=scene_ctx)
                 except Exception as exc:  # noqa: BLE001
+                    print(f"[freetalk] 开场场景注入 LLM 调用失败：{str(exc)[:300]}", flush=True)
                     await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     result = None
         if result:
@@ -3371,6 +3402,7 @@ async def freetalk_stream(
                     scene_context=scene_ctx,
                 )
         except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+            print(f"[freetalk] 分步管线 LLM 调用失败：{str(exc)[:300]}", flush=True)
             await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
             return True
         # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
@@ -3481,6 +3513,7 @@ async def freetalk_stream(
                                 turns_since_memory = 0
                                 asyncio.create_task(update_freetalk_memory(user.id))
                 elif kind == "error":
+                    print(f"[freetalk] live 通道上游 error 事件：{str(ev)[:300]}", flush=True)
                     await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
         except asyncio.CancelledError:
             raise
@@ -3568,6 +3601,7 @@ async def freetalk_stream(
                     try:
                         translated = await generate_translation(typed, user_id=user.id)
                     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+                        print(f"[freetalk] 翻译(键盘) LLM 调用失败：{str(exc)[:300]}", flush=True)
                         await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                         continue
                     await _sj({"type": "user_text", "text": typed, "translation": "", "words": [], "wpm": 0})
@@ -3638,6 +3672,7 @@ async def freetalk_stream(
                 try:
                     translated = await generate_translation(recognized, user_id=user.id)
                 except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错，不回兜底句
+                    print(f"[freetalk] 翻译(语音) LLM 调用失败：{str(exc)[:300]}", flush=True)
                     await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     continue
                 await _sj({"type": "user_text", "text": recognized, "translation": "",
