@@ -236,8 +236,25 @@ final class APIClient {
     }
 
     /// 语境润色（详细指导浮层）：一句话 → 地道美式/商务正式/地道英式 三风格。
+    /// 本地 CPU 大模型生成慢，超时给足（后端普通档可配到 120s）。
     func refine(text: String, token: String) async throws -> RefineResponse {
-        try await post("/practice/refine", body: RefineRequest(text: text), token: token)
+        var request = URLRequest(url: url(for: "/practice/refine"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        addDefaultHeaders(to: &request, token: token)
+        request.httpBody = try encoder.encode(RefineRequest(text: text))
+        return try await send(request)
+    }
+
+    /// 字幕卡内「译」按钮的按需翻译：该条消息没带翻译时调用一次，结果缓存在字幕条上。
+    func translate(text: String, token: String) async throws -> String {
+        var request = URLRequest(url: url(for: "/practice/translate"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 180
+        addDefaultHeaders(to: &request, token: token)
+        request.httpBody = try encoder.encode(TranslateRequest(text: text))
+        let response: TranslateResponse = try await send(request)
+        return response.text
     }
 
     func submitRoleplayMessage(

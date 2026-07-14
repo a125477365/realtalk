@@ -17,8 +17,13 @@ struct GuidanceDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    wordAnalysis
-                    scoreSection
+                    // 词级数据来自本地语音服务器 whisper；云端 ASR/实时通道没有词级时只展示句子与润色
+                    if item.words.isEmpty == false {
+                        wordAnalysis
+                        scoreSection
+                    } else {
+                        sentenceSection
+                    }
                     refineSection
                     Text("内容由 AI 生成")
                         .font(.system(size: 11))
@@ -28,7 +33,7 @@ struct GuidanceDetailSheet: View {
                 .padding(16)
             }
             .background(RTTheme.background)
-            .navigationTitle("发音逐词分析")
+            .navigationTitle("发音与语境指导")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -37,6 +42,30 @@ struct GuidanceDetailSheet: View {
             }
             .task { await loadRefinements() }
         }
+    }
+
+    /// 没有词级数据时的句子卡：原句 + 朗读/复制。
+    private var sentenceSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(item.text)
+                .font(.system(size: 17 * model.fontScale, weight: .medium))
+                .foregroundStyle(RTTheme.textPrimary)
+            Text("本句没有词级发音数据（云端识别不提供），可听 AI 朗读对照，或看下方语境润色。")
+                .font(.system(size: 12 * model.fontScale))
+                .foregroundStyle(RTTheme.textSecondary)
+            HStack(spacing: 18) {
+                Button { model.speakText(item.text) } label: {
+                    Label("AI 朗读", systemImage: "speaker.wave.2").font(.system(size: 13, weight: .medium))
+                }
+                Button { UIPasteboard.general.string = item.text } label: {
+                    Label("复制", systemImage: "doc.on.doc").font(.system(size: 13, weight: .medium))
+                }
+                Spacer()
+            }
+            .foregroundStyle(RTTheme.accent)
+        }
+        .padding(14)
+        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: 发音逐词分析（标色）

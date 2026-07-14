@@ -150,8 +150,9 @@ final class AppModel: ObservableObject {
         var translation: String = ""
         var words: [RoleplayStreamManager.WordScore] = []
         var wpm: Int = 0
-        var masked: Bool = false      // 严格场景：AI 说话中先打码，说完再显示
+        var masked: Bool = false      // AI 台词默认打码（先听后看），点击文字才显示
         var showTranslation: Bool = false   // 卡内「译」按钮切换
+        var translating: Bool = false       // 按需翻译请求进行中
     }
 
     @Published var homeItems: [HomeChatItem] = []
@@ -160,10 +161,40 @@ final class AppModel: ObservableObject {
     @Published var homeConnected = false
     @Published var homeSceneName: String? = nil // 场景条（名字+退出）
     @Published var homeSceneStrict = false
-    @Published var showTutor = false            // 私教模式（与常规模式共用字幕界面）
+    /// 自由场景对话的场景 id：断线重连时必须原样带上，否则重连后丢失剧本上下文。
+    private(set) var homeSceneId: String? = nil
+    @Published var showTutor = false            // 私教模式（全屏私教通话界面）
     @Published var showScenePicker = false      // 场景选择二级页
     @Published var tutorImmersive = true        // 私教：沉浸式(自动) / 常规式(点击说话)
     @Published var tutorMode = "chat"           // 私教：chat / translate
+    /// 顶栏喇叭：是否自动播放 AI 语音（关＝只看字幕，卡内波形按钮仍可单句重听）。
+    @Published var autoPlayAI = true {
+        didSet {
+            defaults.set(autoPlayAI, forKey: DefaultsKey.autoPlayAI)
+            freeStream.autoPlayAI = autoPlayAI
+            stream.autoPlayAI = autoPlayAI
+            if autoPlayAI == false {
+                freeStream.stopAIPlayback()
+                stream.stopAIPlayback()
+                voice.stop()
+            }
+        }
+    }
+    /// homeWorking 看门狗：后端迟迟不回也不能让说话按钮永远转圈（此前 WS 静默重连会卡死转圈）。
+    private var homeWorkWatchdog: Task<Void, Never>?
+
+    private func setHomeWorking(_ on: Bool) {
+        homeWorking = on
+        homeWorkWatchdog?.cancel()
+        homeWorkWatchdog = nil
+        guard on else { return }
+        homeWorkWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150 * 1_000_000_000)
+            guard Task.isCancelled == false, let self, self.homeWorking else { return }
+            self.homeWorking = false
+            self.homeStatus = "老师一直没回应，请再说一次"
+        }
+    }
 
     /// 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；nil=自由闲聊；
     /// liveTurn=true → GPT-Live 式全双工，仅私教沉浸式/实时翻译用）。
@@ -175,31 +206,35 @@ final class AppModel: ObservableObject {
         }
         homeItems = []
         homeStatus = "连接中…"
-        homeWorking = false
+        setHomeWorking(false)
         homeSceneName = sceneName
+        homeSceneId = sceneId
         homeSceneStrict = false
+        freeStream.autoPlayAI = autoPlayAI
         freeStream.liveMode = liveTurn
         freeStream.manualCommit = liveTurn == false && (showTutor == false || tutorImmersive == false)
         freeStream.onFreeTalkHistory = { [weak self] items in
             self?.homeConnected = true
+            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
             self?.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text) }
             self?.homeStatus = ""
+            self?.setHomeWorking(false)
         }
-        freeStream.onCommitted = { [weak self] in self?.homeWorking = true }
+        freeStream.onCommitted = { [weak self] in self?.setHomeWorking(true) }
         freeStream.onUserText = { [weak self] t, tr, words, wpm in
             self?.homeItems.append(HomeChatItem(kind: .user, text: t, translation: tr, words: words, wpm: wpm))
         }
         freeStream.onAIText = { [weak self] t, tr in
             guard let self else { return }
-            self.homeWorking = false
-            // 严格场景：AI 说话中先打码（说完由 revealMasked() 揭示）；其余模式直接明文
-            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: self.homeSceneStrict))
+            self.setHomeWorking(false)
+            // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
+            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: true))
         }
-        freeStream.onError = { [weak self] msg in self?.homeWorking = false; self?.homeStatus = msg; self?.homeConnected = false }
-        freeStream.onResultMessage = { [weak self] msg in self?.homeWorking = false; self?.homeStatus = msg }
+        freeStream.onError = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg; self?.homeConnected = false }
+        freeStream.onResultMessage = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg }
         freeStream.onStatus = { [weak self] msg in self?.homeStatus = msg }
         freeStream.onTerminated = { [weak self] reason in
-            self?.homeWorking = false
+            self?.setHomeWorking(false)
             self?.homeConnected = false
             self?.homeStatus = "对话已结束，点击说话重新开始"
             self?.presentFailure(reason, title: "对话已结束")
@@ -210,20 +245,46 @@ final class AppModel: ObservableObject {
     func stopHomeChat() {
         freeStream.stop()
         homeConnected = false
-        homeWorking = false
+        setHomeWorking(false)
     }
 
-    /// 严格场景：AI 音频播完 → 揭示打码的台词。
-    func revealMasked() {
-        for i in homeItems.indices where homeItems[i].masked {
-            homeItems[i].masked = false
-        }
+    /// 点击打码的 AI 台词：显示/再次隐藏文字（先听后看，手动揭示）。
+    func toggleItemMasked(_ id: UUID) {
+        guard let i = homeItems.firstIndex(where: { $0.id == id }) else { return }
+        homeItems[i].masked.toggle()
     }
 
-    /// 卡内「译」按钮：切换该条消息的中文翻译显示。
+    /// 卡内「译」按钮：切换该条消息的中文翻译显示；没带翻译时按需调后端翻一次并缓存在该条上。
     func toggleItemTranslation(_ id: UUID) {
         guard let i = homeItems.firstIndex(where: { $0.id == id }) else { return }
         homeItems[i].showTranslation.toggle()
+        if homeItems[i].showTranslation, homeItems[i].translation.isEmpty {
+            requestItemTranslation(id)
+        }
+    }
+
+    /// 按需翻译：历史回放/实时通道的消息没带翻译，点「译」时调 /practice/translate 补一次。
+    private func requestItemTranslation(_ id: UUID) {
+        guard let i = homeItems.firstIndex(where: { $0.id == id }),
+              homeItems[i].translating == false,
+              let token = auth.token else { return }
+        homeItems[i].translating = true
+        let text = homeItems[i].text
+        Task { @MainActor in
+            do {
+                let translated = try await api.translate(text: text, token: token)
+                if let j = homeItems.firstIndex(where: { $0.id == id }) {
+                    homeItems[j].translation = translated
+                    homeItems[j].translating = false
+                }
+            } catch {
+                if let j = homeItems.firstIndex(where: { $0.id == id }) {
+                    homeItems[j].translating = false
+                    homeItems[j].showTranslation = false
+                }
+                homeStatus = "翻译失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     /// 卡内「朗读」按钮：单句重听（走后端 TTS，带缓存）。
@@ -251,7 +312,7 @@ final class AppModel: ObservableObject {
     /// 进入私教：按当前形态（沉浸=live / 常规=turn-based）建立/重建连接。
     func startTutor() {
         freeStream.stop()
-        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
         Task { await loadTtsVoices() }   // 音色菜单数据
     }
 
@@ -260,13 +321,13 @@ final class AppModel: ObservableObject {
         if freeStream.manualRecording { freeStream.endManualUtterance() }
         tutorImmersive.toggle()
         freeStream.stop()
-        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
     }
 
     /// 断线重连（私教「重连」按钮）。
     func reconnectTutor() {
         freeStream.stop()
-        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
     }
 
     /// 换音色：入库（后端 TTS/实时通道都按用户音色下发）后按当前形态重连即刻生效。
@@ -282,7 +343,7 @@ final class AppModel: ObservableObject {
         showTutor = false
         tutorMode = "chat"
         freeStream.stop()
-        startHomeChat(sceneId: nil, sceneName: homeSceneName, liveTurn: false)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: false)
     }
 
     /// 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。
@@ -314,22 +375,44 @@ final class AppModel: ObservableObject {
         if homeSceneStrict {
             sendStrictTyped(trimmed)
         } else {
-            if homeConnected == false { startHomeChat(sceneId: nil, sceneName: homeSceneName) }
+            if homeConnected == false || freeStream.isConnected == false {
+                startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName)
+            }
             freeStream.sendText(trimmed)
         }
     }
 
-    /// 常规「点击说话」：未连接则先重连；再按手动模式开始/结束录音。严格场景走 roleplay 流的手动提交。
+    /// 常规「点击说话」：未连接/已掉线则先整体重连（此前掉线后点按无反应，只能重启 App）；
+    /// 再按手动模式开始/结束录音。严格场景走 roleplay 流的手动提交。
     func toggleHomeTalk() {
         if homeSceneStrict {
+            if stream.isConnected == false {
+                homeStatus = "正在重新连接…"
+                reconnectStrictStream()
+                return
+            }
             if stream.manualRecording { stream.endManualUtterance() } else { stream.beginManualUtterance() }
             return
         }
-        if homeConnected == false {
-            startHomeChat(sceneId: nil, sceneName: homeSceneName)
+        if homeConnected == false || freeStream.isConnected == false {
+            startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName)
             return
         }
         if freeStream.manualRecording { freeStream.endManualUtterance() } else { freeStream.beginManualUtterance() }
+    }
+
+    /// 回到前台/掉线后兜底重连：连接还在就什么都不做（幂等，可放心在 scenePhase 变化时调用）。
+    func reconnectIfNeeded() {
+        guard auth.token != nil else { return }
+        if showTutor {
+            if freeStream.isConnected == false { startTutor() }
+            return
+        }
+        if homeSceneStrict {
+            if stream.isConnected == false, roleplay != nil { reconnectStrictStream() }
+            return
+        }
+        if freeStream.isConnected == false { startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName) }
     }
 
     /// 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。
@@ -348,35 +431,35 @@ final class AppModel: ObservableObject {
     /// 严格场景的键盘输入：走 roleplay REST，一样返回整轮状态。
     private func sendStrictTyped(_ text: String) {
         guard let token = auth.token, let rp = roleplay else { return }
-        homeWorking = true
+        setHomeWorking(true)
         Task { @MainActor in
             do {
                 let state = try await api.submitRoleplayMessage(
                     sessionId: rp.sessionId, message: text, guidanceMode: guidanceMode.rawValue, token: token)
-                homeWorking = false
+                setHomeWorking(false)
                 applyStrictState(state)
                 roleplay = state
             } catch {
-                homeWorking = false
+                setHomeWorking(false)
                 homeStatus = error.localizedDescription
             }
         }
     }
 
     /// 把 roleplay 整轮状态映射进主界面聊天流：
-    /// 台词气泡（AI 最新一条在朗读结束前打码）→ 指导卡（评语/纠正）→ 中文提示（下一句该说什么）。
+    /// 台词气泡（AI 台词默认打码，点击文字才显示；用户点开过的保持显示）→
+    /// 指导卡（评语/纠正）→ 中文提示（下一句该说什么）。
     func applyStrictState(_ state: RoleplayStateResponse) {
+        // 每轮整体重建列表：把用户已手动揭示的 AI 台词记下来，重建后保持揭示状态
+        let revealed = Set(homeItems.filter { $0.kind == .ai && $0.masked == false }.map(\.text))
         var items: [HomeChatItem] = []
         for msg in state.messages {
             items.append(HomeChatItem(
                 kind: msg.speaker == "user" ? .user : .ai,
                 text: msg.content,
-                translation: msg.translation ?? ""
+                translation: msg.translation ?? "",
+                masked: msg.speaker == "ai" && revealed.contains(msg.content) == false
             ))
-        }
-        // AI 最新台词打码：正在朗读时不让用户"看答案"，说完由 revealMasked() 揭示
-        if let lastAI = items.lastIndex(where: { $0.kind == .ai }), stream.isAISpeaking || homeWorking {
-            items[lastAI].masked = true
         }
         // 指导卡：本句没通过 → 评语 + 发音未命中词
         if state.latestAccepted == false, let fb = state.latestFeedback, fb.isEmpty == false {
@@ -618,6 +701,7 @@ final class AppModel: ObservableObject {
         static let reminderMode = "realtalk.reminderMode"
         static let reminderWindows = "realtalk.reminderWindows"
         static let reminderTimes = "realtalk.reminderTimes"
+        static let autoPlayAI = "realtalk.autoPlayAI"
     }
 
     init() {
@@ -651,6 +735,12 @@ final class AppModel: ObservableObject {
            let pref = ConversationPreference(rawValue: raw) {
             conversationPreference = pref
         }
+        if defaults.object(forKey: DefaultsKey.autoPlayAI) != nil {
+            autoPlayAI = defaults.bool(forKey: DefaultsKey.autoPlayAI)
+        }
+        // init 阶段属性观察器不触发，手动同步一次到两条流
+        freeStream.autoPlayAI = autoPlayAI
+        stream.autoPlayAI = autoPlayAI
 
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
@@ -667,7 +757,10 @@ final class AppModel: ObservableObject {
         }
         // 沉浸式后端语音流（WS）：整段对话由流驱动，结果回来直接刷新对练状态
         stream.onCommitted = { [weak self] in
-            Task { @MainActor in self?.isWorking = true }   // 已发送 → 「已发送，正在识别评分…」
+            Task { @MainActor in
+                self?.isWorking = true   // 已发送 → 「已发送，正在识别评分…」
+                if self?.homeSceneStrict == true { self?.setHomeWorking(true) }   // 主界面说话按钮转圈+看门狗
+            }
         }
         stream.onResultState = { [weak self] data in
             Task { @MainActor in
@@ -679,6 +772,10 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.isWorking = false
                 self?.statusMessage = msg
+                if self?.homeSceneStrict == true {
+                    self?.setHomeWorking(false)
+                    self?.homeStatus = msg
+                }
             }
         }
         stream.onStatus = { [weak self] msg in
@@ -692,6 +789,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.isWorking = false
                 self.isVoiceConversationActive = false
+                if self.homeSceneStrict { self.setHomeWorking(false); self.homeStatus = msg }
                 self.stream.stop()
                 self.presentFailure(msg, title: "对话中断")
             }
@@ -1504,7 +1602,14 @@ final class AppModel: ObservableObject {
     private func startImmersiveStream() {
         guard let token = auth.token, let sessionId = roleplay?.sessionId,
               let url = api.roleplayStreamURL(sessionId: sessionId, token: token) else { return }
+        stream.autoPlayAI = autoPlayAI
         stream.start(streamURL: url, guidanceMode: guidanceMode.rawValue)
+    }
+
+    /// 严格场景掉线后的整体重连（点说话按钮/回前台时触发）。
+    func reconnectStrictStream() {
+        stream.stop()
+        startImmersiveStream()
     }
 
     /// WebSocket 推来的整轮状态：直接刷新对练状态（字幕来自 roleplay.messages）。
@@ -1514,7 +1619,7 @@ final class AppModel: ObservableObject {
         scenario = state.scenario
         selectedRoleID = state.selectedRole
         if homeSceneStrict {
-            homeWorking = false
+            setHomeWorking(false)
             applyStrictState(state)   // 严格场景：状态同步进主界面聊天流
         }
         // 每来一轮新状态先清掉上一轮的发音提示；只有【本句没通过、还停在这一句】时才提示，

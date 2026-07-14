@@ -12,10 +12,13 @@ struct ChatHomeView: View {
     @ObservedObject var freeStream: RoleplayStreamManager
     @ObservedObject var rpStream: RoleplayStreamManager
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingAccount = false
     @State private var keyboardMode = false
     @State private var draft = ""
     @State private var guidanceItem: AppModel.HomeChatItem?
+    @State private var showingAttach = false        // 底部「+」附加功能面板
+    @State private var showingUpload = false        // 上传语音文件生成场景
     @FocusState private var draftFocused: Bool
 
     var body: some View {
@@ -43,6 +46,19 @@ struct ChatHomeView: View {
                 AccountPanelView()
                     .presentationDetents([.large])
             }
+            // 底部「+」：上拉附加功能（采集/上传/选场景/自由聊/实时翻译）
+            .sheet(isPresented: $showingAttach) {
+                AttachmentSheet(showingUpload: $showingUpload)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showingUpload) {
+                UploadRecordingView()
+            }
+            // 私教通话（全屏，Claude 语音式界面）
+            .fullScreenCover(isPresented: $model.showTutor) {
+                TutorCallView(stream: freeStream)
+            }
             // 学习提醒「私教来电」
             .fullScreenCover(isPresented: Binding(
                 get: { model.incomingReminder != nil },
@@ -56,16 +72,9 @@ struct ChatHomeView: View {
             .onChange(of: model.reminderPracticeScene) { _, scene in
                 if scene != nil { model.showScenePicker = true }
             }
-            // 严格场景：AI 朗读结束 → 揭示打码台词
-            .onChange(of: rpStream.isAISpeaking) { _, speaking in
-                if speaking == false { model.revealMasked() }
-            }
-            .onChange(of: freeStream.isAISpeaking) { _, speaking in
-                if speaking == false { model.revealMasked() }
-            }
-            .onChange(of: model.showTutor) { _, enabled in
-                // 私教与常规模式共用这一套字幕界面，只切换底层实时通道。
-                if enabled { model.startTutor() }
+            // 回到前台：连接掉了就兜底重连（此前只能重启 App 恢复）
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { model.reconnectIfNeeded() }
             }
             .task {
                 await model.reloadAll()
@@ -76,43 +85,10 @@ struct ChatHomeView: View {
         }
     }
 
-    // MARK: 顶栏
+    // MARK: 顶栏（左：账户；右：AI 语音开关 + 私教电话）
 
     private var topBar: some View {
         HStack(spacing: 8) {
-            Button { replayLatestAI() } label: {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(latestAIText == nil ? RTTheme.textSecondary : RTTheme.accent)
-                    .frame(width: 42, height: 42)
-                    .background(RTTheme.surface, in: Circle())
-                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .disabled(latestAIText == nil)
-            .accessibilityLabel("重听老师上一句")
-
-            Menu {
-                Button {
-                    model.showScenePicker = true
-                } label: {
-                    Label("选择练习场景", systemImage: "film")
-                }
-                Button {
-                    model.tutorMode = "translate"
-                    model.showTutor = true
-                } label: {
-                    Label("实时翻译", systemImage: "globe")
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(RTTheme.textPrimary)
-                    .frame(width: 42, height: 42)
-                    .background(RTTheme.surface, in: Circle())
-                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
-            }
-            Spacer()
             Button { showingAccount = true } label: {
                 HStack(spacing: 8) {
                     userAvatar
@@ -121,14 +97,43 @@ struct ChatHomeView: View {
                         .foregroundStyle(RTTheme.textPrimary)
                         .lineLimit(1)
                 }
-                .padding(.trailing, 10)
                 .padding(.leading, 4)
+                .padding(.trailing, 10)
                 .frame(height: 42)
                 .background(RTTheme.surface, in: Capsule())
                 .overlay(Capsule().stroke(RTTheme.hairline, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("账户与会员设置")
+
+            Spacer()
+
+            // AI 语音自动播放开关：开＝彩色喇叭，关＝灰色斜杠喇叭（按下立即可见状态变化）
+            Button { model.autoPlayAI.toggle() } label: {
+                Image(systemName: model.autoPlayAI ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(model.autoPlayAI ? RTTheme.accent : RTTheme.textSecondary)
+                    .frame(width: 42, height: 42)
+                    .background(RTTheme.surface, in: Circle())
+                    .overlay(Circle().stroke(model.autoPlayAI ? RTTheme.accent.opacity(0.45) : RTTheme.hairline, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.autoPlayAI ? "关闭 AI 语音自动播放" : "开启 AI 语音自动播放")
+
+            // 私教电话：进入全屏私教通话
+            Button {
+                model.tutorMode = "chat"
+                model.showTutor = true
+            } label: {
+                Image(systemName: "phone.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(RTTheme.success)
+                    .frame(width: 42, height: 42)
+                    .background(RTTheme.surface, in: Circle())
+                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("私教通话")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -165,14 +170,6 @@ struct ChatHomeView: View {
     private var displayName: String {
         let value = auth.user?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? "微信用户" : value
-    }
-
-    private var latestAIText: String? {
-        model.homeItems.last(where: { $0.kind == .ai })?.text
-    }
-
-    private func replayLatestAI() {
-        if let text = latestAIText { model.speakText(text) }
     }
 
     @ViewBuilder
@@ -242,7 +239,7 @@ struct ChatHomeView: View {
         }
     }
 
-    /// AI 大卡片：文本(打码时模糊) + 朗读/译 小按钮 + 中文翻译(卡内切换)。
+    /// AI 大卡片：文本默认打码（点击文字显示）+ 波形重播/译 小按钮 + 中文翻译(卡内切换，缺失时按需翻译)。
     private func aiCard(_ item: AppModel.HomeChatItem) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.text)
@@ -250,17 +247,21 @@ struct ChatHomeView: View {
                 .foregroundStyle(RTTheme.textPrimary)
                 .blur(radius: item.masked ? 7 : 0)
                 .animation(.easeOut(duration: 0.25), value: item.masked)
+                .contentShape(Rectangle())
+                .onTapGesture { model.toggleItemMasked(item.id) }
             if item.masked {
-                Text("先听老师说完，再看文字 🎧")
+                Text("🎧 先听后看 · 点击文字显示")
                     .font(.system(size: 11 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
             }
             HStack(spacing: 16) {
+                // 波形＝重新播放这一句（与顶栏喇叭「自动播放开关」含义区分开）
                 Button { model.speakText(item.text) } label: {
-                    Image(systemName: "speaker.wave.2")
-                        .font(.system(size: 15))
+                    Image(systemName: "waveform")
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(RTTheme.accent)
                 }
+                .accessibilityLabel("重新播放这一句")
                 Button { model.toggleItemTranslation(item.id) } label: {
                     Text("译")
                         .font(.system(size: 13, weight: .semibold))
@@ -271,16 +272,26 @@ struct ChatHomeView: View {
                 }
                 Spacer()
             }
-            if item.showTranslation, item.translation.isEmpty == false, item.masked == false {
-                Divider()
-                Text(item.translation)
-                    .font(.system(size: 14 * model.fontScale))
-                    .foregroundStyle(RTTheme.textSecondary)
+            if item.showTranslation, item.masked == false {
+                if item.translating {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在翻译…")
+                            .font(.system(size: 12 * model.fontScale))
+                            .foregroundStyle(RTTheme.textSecondary)
+                    }
+                } else if item.translation.isEmpty == false {
+                    Divider()
+                    Text(item.translation)
+                        .font(.system(size: 14 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary)
+                }
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline, lineWidth: 1))
     }
 
     /// 用户气泡 + 发音/语速指导行（点开详细指导浮层）。
@@ -293,22 +304,25 @@ struct ChatHomeView: View {
                     .foregroundStyle(RTTheme.textPrimary)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(RTTheme.userBubble, in: RoundedRectangle(cornerRadius: 16))
-                if item.words.isEmpty == false {
-                    Button { guidanceItem = item } label: {
-                        HStack(spacing: 6) {
+                // 发音指导入口常驻：没有词级数据（云端 ASR/实时通道）也能进「语境润色」
+                Button { guidanceItem = item } label: {
+                    HStack(spacing: 6) {
+                        if item.words.isEmpty == false {
                             let score = pronunciationScore(item.words)
                             Text("发音 \(score)")
                                 .foregroundStyle(score >= 80 ? RTTheme.success : (score >= 60 ? Color.orange : Color.red))
-                            if item.wpm > 0 {
-                                Text("语速 \(item.wpm)词/分").foregroundStyle(RTTheme.textSecondary)
-                            }
-                            Text("详情").foregroundStyle(RTTheme.accent)
-                            Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(RTTheme.accent)
+                        } else {
+                            Text("发音指导").foregroundStyle(RTTheme.textSecondary)
                         }
-                        .font(.system(size: 12 * model.fontScale, weight: .medium))
+                        if item.wpm > 0 {
+                            Text("语速 \(item.wpm)词/分").foregroundStyle(RTTheme.textSecondary)
+                        }
+                        Text("详情").foregroundStyle(RTTheme.accent)
+                        Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(RTTheme.accent)
                     }
-                    .buttonStyle(.plain)
+                    .font(.system(size: 12 * model.fontScale, weight: .medium))
                 }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -404,52 +418,39 @@ struct ChatHomeView: View {
                         .frame(width: 40, height: 44)
                 }
             } else {
-                HStack {
-                    Button {
+                // 左：+（附加功能上拉面板）；采集中变成红色停止按钮，一眼可见正在采集
+                Button {
+                    if speech.isRecording {
                         Task { await model.toggleRecording() }
-                    } label: {
-                        Image(systemName: speech.isRecording ? "stop.fill" : "waveform.badge.plus")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(speech.isRecording ? .white : RTTheme.accent)
-                            .frame(width: 48, height: 48)
-                            .background(speech.isRecording ? Color.red : RTTheme.surface, in: Circle())
-                            .overlay(Circle().stroke(speech.isRecording ? Color.clear : RTTheme.hairline, lineWidth: 1))
+                    } else {
+                        showingAttach = true
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(speech.isRecording ? "停止采集并生成场景" : "采集用户说话录音")
-                    Spacer(minLength: 0)
+                } label: {
+                    Image(systemName: speech.isRecording ? "stop.fill" : "plus")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(speech.isRecording ? .white : RTTheme.textPrimary)
+                        .frame(width: 48, height: 48)
+                        .background(speech.isRecording ? Color.red : RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(speech.isRecording ? Color.clear : RTTheme.hairline, lineWidth: 1))
                 }
-                .frame(width: 92)
+                .buttonStyle(.plain)
+                .accessibilityLabel(speech.isRecording ? "停止采集并生成场景" : "更多功能")
 
                 talkButton
 
-                HStack(spacing: 8) {
-                    Button {
-                        keyboardMode = true
-                        draftFocused = true
-                    } label: {
-                        Image(systemName: "keyboard")
-                            .font(.system(size: 18))
-                            .foregroundStyle(RTTheme.textPrimary)
-                            .frame(width: 42, height: 48)
-                            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-                    }
-                    Button {
-                        if model.showTutor {
-                            model.closeTutor()
-                        } else {
-                            model.tutorMode = "chat"
-                            model.showTutor = true
-                        }
-                    } label: {
-                        Image(systemName: model.showTutor ? "phone.down.fill" : "phone.fill")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 42, height: 48)
-                            .background(model.showTutor ? Color.red : RTTheme.success, in: Circle())
-                    }
+                Button {
+                    keyboardMode = true
+                    draftFocused = true
+                } label: {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 18))
+                        .foregroundStyle(RTTheme.textPrimary)
+                        .frame(width: 48, height: 48)
+                        .background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
                 }
-                .frame(width: 92, alignment: .trailing)
+                .buttonStyle(.plain)
+                .accessibilityLabel("键盘输入")
             }
         }
         .padding(.horizontal, 14)
@@ -461,41 +462,154 @@ struct ChatHomeView: View {
         model.homeSceneStrict ? rpStream.manualRecording : freeStream.manualRecording
     }
 
+    /// 说话按钮：描边样式（与主界面背景区分即可，不再用品牌渐变大色块）；录音中红色实心。
     private var talkButton: some View {
         Button {
-            if model.showTutor && model.tutorImmersive {
-                model.toggleTutorImmersive()
-            } else {
-                model.toggleHomeTalk()
-            }
+            model.toggleHomeTalk()
         } label: {
             HStack(spacing: 10) {
                 if model.homeWorking {
-                    ProgressView().tint(.white)
-                    Text("请稍候…")
-                } else if model.showTutor && model.tutorImmersive {
-                    Image(systemName: "waveform")
-                    Text("沉浸聆听中")
+                    ProgressView().tint(RTTheme.textSecondary)
+                    Text("请稍候…").foregroundStyle(RTTheme.textSecondary)
                 } else {
                     Image(systemName: recordingNow ? "stop.fill" : "mic.fill")
+                        .foregroundStyle(recordingNow ? .white : RTTheme.accent)
                     Text(recordingNow ? "说完了，发送" : "点击说话")
+                        .foregroundStyle(recordingNow ? .white : RTTheme.textPrimary)
                 }
             }
             .font(.system(size: 16 * model.fontScale, weight: .semibold))
-            .foregroundStyle(.white)
             .frame(maxWidth: .infinity, minHeight: 50)
             .frame(height: 50)
-            .background(recordingNow ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.brandGradient),
-                        in: RoundedRectangle(cornerRadius: 16))
+            .background(recordingNow ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.surface),
+                        in: RoundedRectangle(cornerRadius: 25))
+            .overlay(
+                RoundedRectangle(cornerRadius: 25)
+                    .stroke(recordingNow ? Color.clear : RTTheme.hairline, lineWidth: 1.5)
+            )
         }
         .buttonStyle(.plain)
         .disabled(model.homeWorking)
-        .accessibilityHint(model.showTutor && model.tutorImmersive ? "切换为点击说话模式" : "开始或结束本轮录音")
+        .accessibilityHint("开始或结束本轮录音")
     }
 
     private func sendDraft() {
         let text = draft
         draft = ""
         model.sendHomeText(text)
+    }
+}
+
+/// 底部「+」上拉附加功能面板（参考 Claude App「Add to Chat」样式）：
+/// 实时录音生成场景 / 上传语音文件 / 选择场景练习（严格或自由）/ 自由聊天 / 实时翻译。
+struct AttachmentSheet: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var speech: SpeechCaptureManager
+    @Environment(\.dismiss) private var dismiss
+    @Binding var showingUpload: Bool
+
+    var body: some View {
+        ZStack {
+            RTTheme.background.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 14) {
+                Text("添加到对话")
+                    .font(.headline)
+                    .foregroundStyle(RTTheme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 18)
+
+                VStack(spacing: 0) {
+                    attachRow(
+                        icon: speech.isRecording ? "stop.circle.fill" : "waveform.badge.mic",
+                        tint: speech.isRecording ? .red : RTTheme.accent,
+                        title: speech.isRecording ? "停止采集并生成场景" : "实时录音生成场景",
+                        subtitle: "采集你身边的真实对话，自动还原成英语练习场景"
+                    ) {
+                        dismiss()
+                        Task { await model.toggleRecording() }
+                    }
+                    divider
+                    attachRow(
+                        icon: "square.and.arrow.up.on.square",
+                        tint: RTTheme.accent,
+                        title: "上传语音文件生成场景",
+                        subtitle: "上传手机或录音笔里的录音（高级会员）"
+                    ) {
+                        dismiss()
+                        showingUpload = true
+                    }
+                    divider
+                    attachRow(
+                        icon: "film",
+                        tint: RTTheme.accent,
+                        title: "选择场景练习",
+                        subtitle: "选好场景后可选：严格按剧本对话 / 围绕场景自由发挥"
+                    ) {
+                        dismiss()
+                        model.showScenePicker = true
+                    }
+                    divider
+                    attachRow(
+                        icon: "bubble.left.and.bubble.right",
+                        tint: RTTheme.success,
+                        title: "自由对话",
+                        subtitle: model.homeSceneName == nil ? "不带场景，和老师随便聊" : "退出当前场景，回到自由闲聊"
+                    ) {
+                        dismiss()
+                        if model.homeSceneName != nil {
+                            model.exitHomeScene()
+                        } else if model.homeConnected == false {
+                            model.startHomeChat()
+                        }
+                    }
+                    divider
+                    attachRow(
+                        icon: "globe",
+                        tint: RTTheme.accent,
+                        title: "实时翻译",
+                        subtitle: "说中文出英文、说英文出中文，逐句同传"
+                    ) {
+                        dismiss()
+                        model.tutorMode = "translate"
+                        model.showTutor = true
+                    }
+                }
+                .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline, lineWidth: 1))
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var divider: some View {
+        Divider().overlay(RTTheme.hairline).padding(.leading, 56)
+    }
+
+    private func attachRow(icon: String, tint: Color, title: String, subtitle: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(tint)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 16 * model.fontScale, weight: .medium))
+                        .foregroundStyle(RTTheme.textPrimary)
+                    Text(subtitle)
+                        .font(.system(size: 12 * model.fontScale))
+                        .foregroundStyle(RTTheme.textSecondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -318,6 +318,15 @@ struct RefineResponse: Codable, Equatable {
     let items: [RefineItem]
 }
 
+/// 字幕卡内「译」按钮的按需翻译（历史回放/实时通道消息没带翻译时用）
+struct TranslateRequest: Codable {
+    let text: String
+}
+
+struct TranslateResponse: Codable, Equatable {
+    let text: String
+}
+
 struct TranscriptUploadItem: Codable {
     let id: UUID
     let timestamp: Date

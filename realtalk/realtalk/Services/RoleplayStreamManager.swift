@@ -36,6 +36,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// 手动触发模式（常规「点击说话」）：VAD 只做电平显示，录音的开始/发送都由用户点按驱动。
     @Published private(set) var manualRecording = false
     var manualCommit = false
+    /// 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。
+    var autoPlayAI = true
 
     /// live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端；
     /// 本地不做静音提交、不做语音抢话。由连接参数请求、后端 live_mode 事件最终确认。
@@ -75,7 +77,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var active = false
     // 断线重连：网络抖动时不直接报错停掉，自动重连；重连后后端回完整状态并补念当前待回应那句
     private var streamURL: URL?
-    private var connected = false
+    /// WS 已连上且收到 state（对外可见：点说话按钮时若已掉线由上层整体重连）
+    @Published private(set) var isConnected = false
     private var reconnectAttempts = 0
     private let maxReconnect = 5
     private var reconnectTask: Task<Void, Never>?
@@ -137,7 +140,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     func stop() {
         active = false
-        connected = false
+        isConnected = false
         isPaused = false
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
@@ -213,7 +216,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private func processChunk(_ data: Data, level: Double) {
         guard active else { return }
         audioLevel = level
-        guard connected, isPaused == false else { return }
+        guard isConnected, isPaused == false else { return }
 
         if liveMode {
             // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
@@ -299,7 +302,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     /// 点按开始说话：AI 正在朗读则先打断；随后帧流式上传直到 endManualUtterance。
     func beginManualUtterance() {
-        guard manualCommit, connected else { return }
+        guard manualCommit, isConnected else { return }
         if isAISpeaking {
             sendJSON(["type": "interrupt"])
             suppressAiAudio = true
@@ -359,7 +362,16 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
     // MARK: 收 AI 音频并顺序播放
 
+    /// 立即停止 AI 语音播放并清空队列（顶栏喇叭关闭时调用）。
+    func stopAIPlayback() {
+        aiPlayer?.stop(); aiPlayer = nil
+        aiQueue.removeAll()
+        isAISpeaking = false
+        aiAudioLevel = 0
+    }
+
     private func enqueueAI(_ data: Data) {
+        guard autoPlayAI else { return }   // 用户关掉了自动播放：只留字幕
         guard isPaused == false, suppressAiAudio == false else { return }   // 暂停/被打断流程的迟到音频直接丢弃
         aiQueue.append(data)
         if aiPlayer == nil { playNextAI() }
@@ -372,7 +384,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             aiAudioLevel = 0
             // 关键：AI 刚说完 → 立刻重开一段干净录音。否则录音文件里带着 AI 从扬声器放出的整段声音，
             // 转写会把 AI 的话混进用户的话（字幕里用户气泡出现 AI 台词）。
-            if wasSpeaking, active, connected { startRecording() }
+            if wasSpeaking, active, isConnected { startRecording() }
             return
         }
         let data = aiQueue.removeFirst()
@@ -398,7 +410,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                 guard let self, self.active else { return }
                 switch result {
                 case .failure:
-                    self.connected = false
+                    self.isConnected = false
                     self.scheduleReconnect()   // 网络抖动自动重连，不直接报错停掉
                 case .success(let message):
                     switch message {
@@ -422,7 +434,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         switch type {
         case "state":
             // 首连/重连：标记已连、复位重试计数，按后端回的完整状态恢复字幕/进度，丢弃断线残留音频，干净重录
-            connected = true
+            isConnected = true
             if reconnectAttempts > 0 { onStatus?("已重连") }
             reconnectAttempts = 0
             aiPlayer?.stop(); aiPlayer = nil
@@ -465,6 +477,9 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
         case "ai_line":
             break   // 字幕由 result 的完整状态驱动（roleplay.messages）
+        case "ai_audio_error":
+            // 后端合成失败：字幕仍在，明确提示而不是无声无息（配合后端日志排查）
+            onStatus?("老师的语音没能合成，本句只显示文字")
         case "ai_audio_begin":
             receivingAudio = true
             incomingAudio.removeAll()

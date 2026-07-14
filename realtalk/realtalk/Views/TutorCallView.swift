@@ -1,39 +1,41 @@
 import Combine
 import SwiftUI
 
-/// 私教模式（电话按钮进入）：老师面对面——头像随说话动嘴、字幕/翻译开关、
-/// 右上角切换 沉浸式(自动发送)/常规式(点击说话)，断线显示「重连」。
+/// 私教通话（顶栏电话按钮进入，全屏）：Claude 语音式界面——
+/// 深色底 + 底部光晕随说话音量呼吸、老师头像动嘴、随声音变化的麦克风、
+/// 底部一排：音色胶囊（中）+ 退出 X（右）。注重自由对话，不放多余选项。
 /// 与主界面共享同一条对话流与消息（进出私教不断线、上下文连续）；实时翻译也在本界面（mode=translate）。
 struct TutorCallView: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject var stream: RoleplayStreamManager
 
     @State private var elapsed = 0
-    @State private var showSubtitles = true
-    @State private var showTranslation = true
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    /// 当前活跃声音电平：用户说话取麦克风电平，老师说话取播放电平。
+    private var liveLevel: Double {
+        stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel
+    }
 
     var body: some View {
         ZStack {
-            // 上浅下深的通话式背景
-            LinearGradient(colors: [Color(red: 0.93, green: 0.93, blue: 0.95),
-                                    Color(red: 0.13, green: 0.12, blue: 0.16)],
-                           startPoint: .top, endPoint: .init(x: 0.5, y: 0.62))
-                .ignoresSafeArea()
-
+            Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
+            bottomGlow
             VStack(spacing: 0) {
-                topBar
+                header
+                Spacer(minLength: 12)
                 avatar
-                    .padding(.top, 6)
-                subtitleControls
-                if showSubtitles { subtitles }
-                Spacer()
                 statusLine
-                bottomControls
+                    .padding(.top, 14)
+                subtitles
+                Spacer(minLength: 12)
+                micIndicator
+                    .padding(.bottom, 22)
+                bottomBar
                 Text("内容由 AI 生成")
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.35))
+                    .padding(.top, 10)
                     .padding(.bottom, 8)
             }
         }
@@ -41,65 +43,47 @@ struct TutorCallView: View {
         .onReceive(timer) { _ in if model.homeConnected { elapsed += 1 } }
     }
 
-    // MARK: 顶栏：退出 + 沉浸/常规切换
+    // MARK: 底部光晕：从底部升到屏幕中部，亮度/范围随说话频率呼吸（参考 Claude 语音界面）
 
-    private var topBar: some View {
+    private var bottomGlow: some View {
+        RadialGradient(
+            colors: [
+                Color(red: 0.25, green: 0.47, blue: 0.85).opacity(0.28 + 0.5 * liveLevel),
+                Color(red: 0.16, green: 0.30, blue: 0.62).opacity(0.10 + 0.25 * liveLevel),
+                .clear,
+            ],
+            center: UnitPoint(x: 0.5, y: 1.12),
+            startRadius: 10,
+            endRadius: 330 + 260 * liveLevel
+        )
+        .ignoresSafeArea()
+        .animation(.easeOut(duration: 0.12), value: liveLevel)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: 顶部：计时 +（翻译模式标记）
+
+    private var header: some View {
         HStack {
-            Button {
-                model.closeTutor()
-                dismiss()
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.35, green: 0.35, blue: 0.4))
-                    .frame(width: 46, height: 46)
-                    .background(.white.opacity(0.75), in: Circle())
+            HStack(spacing: 5) {
+                Circle().fill(model.homeConnected ? RTTheme.success : .red).frame(width: 7, height: 7)
+                Text(timeString)
+                    .font(.system(size: 13, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
             }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(.white.opacity(0.10), in: Capsule())
             Spacer()
             if model.tutorMode == "translate" {
                 Text("实时翻译")
                     .font(.system(size: 13 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(RTTheme.accent)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.white.opacity(0.75), in: Capsule())
-            }
-            // 音色选择：不同声音（性别/口音）随选随换，选择后按当前形态重连即刻生效
-            if model.ttsVoices.isEmpty == false {
-                Menu {
-                    ForEach(model.ttsVoices, id: \.self) { v in
-                        Button {
-                            model.changeTutorVoice(v)
-                        } label: {
-                            if v == model.ttsCurrentVoice {
-                                Label(v, systemImage: "checkmark")
-                            } else {
-                                Text(v)
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "waveform.and.person.filled")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(RTTheme.accent)
-                        .frame(width: 42, height: 42)
-                        .background(.white.opacity(0.75), in: Circle())
-                }
-                .padding(.trailing, 8)
-            }
-            Button { model.toggleTutorImmersive() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: model.tutorImmersive ? "eye" : "waveform")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(model.tutorImmersive ? "切为常规" : "切为沉浸")
-                        .font(.system(size: 14 * model.fontScale, weight: .semibold))
-                }
-                .foregroundStyle(RTTheme.success)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(.white.opacity(0.75), in: Capsule())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.white.opacity(0.10), in: Capsule())
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
     }
 
     // MARK: 老师头像（说话动嘴 + 聆听时轻微呼吸）
@@ -107,46 +91,26 @@ struct TutorCallView: View {
     private var avatar: some View {
         TutorAvatarFace(mouthOpen: stream.isAISpeaking ? stream.aiAudioLevel : 0,
                         listening: stream.isAISpeaking == false && model.homeConnected)
-            .frame(width: 230, height: 230)
+            .frame(width: 210, height: 210)
             .accessibilityLabel("AI 老师头像")
     }
 
-    // MARK: 字幕区（计时 + 字幕/翻译开关 + 最近字幕）
-
-    private var subtitleControls: some View {
-        HStack {
-            HStack(spacing: 5) {
-                Circle().fill(model.homeConnected ? RTTheme.success : .red).frame(width: 7, height: 7)
-                Text(timeString)
-                    .font(.system(size: 13, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(.black.opacity(0.35), in: Capsule())
-            Spacer()
-            controlToggle(icon: "captions.bubble", active: showSubtitles) { showSubtitles.toggle() }
-            controlToggle(icon: "character.book.closed.zh", active: showTranslation) { showTranslation.toggle() }
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 4)
+    private var statusLine: some View {
+        Text(statusText)
+            .font(.system(size: 15 * model.fontScale, weight: .medium))
+            .foregroundStyle(.white.opacity(0.7))
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    private func controlToggle(icon: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(active ? .white : .white.opacity(0.4))
-                .frame(width: 44, height: 44)
-                .background(.black.opacity(0.35), in: Circle())
-                .overlay(alignment: .bottomTrailing) {
-                    if active == false {
-                        Image(systemName: "line.diagonal")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
-                }
-        }
+    private var statusText: String {
+        if model.homeConnected == false { return "连接断开了，点下方按钮重连" }
+        if model.homeWorking { return model.tutorMode == "translate" ? "正在翻译…" : "老师正在思考…" }
+        if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
+        if stream.manualRecording { return "正在录音，说完点麦克风发送" }
+        return "倾听中，直接开口说英语"
     }
+
+    // MARK: 字幕（最近两条 + 中文翻译）
 
     private var subtitles: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -161,7 +125,7 @@ struct TutorCallView: View {
                             .font(.system(size: 17 * model.fontScale, weight: .medium))
                             .foregroundStyle(.white)
                     }
-                    if showTranslation, item.translation.isEmpty == false {
+                    if model.showChineseHint, item.translation.isEmpty == false {
                         Text(item.translation)
                             .font(.system(size: 14 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.65))
@@ -171,8 +135,8 @@ struct TutorCallView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
+        .padding(.horizontal, 26)
+        .padding(.top, 14)
         .animation(.easeOut(duration: 0.2), value: model.homeItems.count)
     }
 
@@ -185,34 +149,11 @@ struct TutorCallView: View {
         String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
     }
 
-    // MARK: 状态 + 底部控制
-
-    private var statusLine: some View {
-        HStack(spacing: 6) {
-            ForEach(0..<3) { i in
-                Circle().fill(RTTheme.success.opacity(1 - Double(i) * 0.3)).frame(width: 7, height: 7)
-            }
-            Text(statusText)
-                .font(.system(size: 14 * model.fontScale))
-                .foregroundStyle(.white.opacity(0.6))
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-        .padding(.bottom, 10)
-    }
-
-    private var statusText: String {
-        if model.homeConnected == false { return "已断开" }
-        if model.homeWorking { return model.tutorMode == "translate" ? "正在翻译…" : "老师正在思考…" }
-        if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
-        if stream.manualRecording { return "正在录音，说完点发送" }
-        return model.tutorImmersive ? "倾听中" : "点击下方按钮说话"
-    }
+    // MARK: 中央麦克风：随「用户/老师说话」的音量呼吸；断线时变成重连按钮
 
     @ViewBuilder
-    private var bottomControls: some View {
+    private var micIndicator: some View {
         if model.homeConnected == false {
-            // 断线：点击重连（与参考交互一致）
             Button { model.reconnectTutor() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.clockwise")
@@ -220,46 +161,92 @@ struct TutorCallView: View {
                 }
                 .font(.system(size: 17 * model.fontScale, weight: .semibold))
                 .foregroundStyle(.red)
-                .padding(.horizontal, 44).padding(.vertical, 14)
+                .padding(.horizontal, 40).padding(.vertical, 15)
                 .background(.white, in: Capsule())
             }
-            .padding(.bottom, 18)
-        } else if model.tutorImmersive {
-            // 沉浸式：自动 VAD——展示音量波形，无需操作
-            HStack(spacing: 3) {
-                ForEach(0..<9) { i in
-                    Capsule()
-                        .fill(RTTheme.success)
-                        .frame(width: 4, height: 8 + CGFloat(((i * 7) % 9)) * 2.4 * (0.35 + 1.3 * stream.audioLevel))
-                }
-                Text(String(format: " %02d:%02d", elapsed / 60, elapsed % 60))
-                    .font(.system(size: 13).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .frame(height: 46)
-            .padding(.horizontal, 34)
-            .background(.white.opacity(0.12), in: Capsule())
-            .animation(.easeOut(duration: 0.12), value: stream.audioLevel)
-            .padding(.bottom, 18)
         } else {
-            // 常规式：点击说话 / 说完发送
             Button {
-                if stream.manualRecording { stream.endManualUtterance() } else { stream.beginManualUtterance() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: stream.manualRecording ? "stop.fill" : "wave.3.right")
-                    Text(stream.manualRecording ? "说完了，发送" : "点击说话")
+                // 手动形态点按开始/发送；沉浸形态点按＝暂停/恢复聆听
+                if stream.manualRecording {
+                    stream.endManualUtterance()
+                } else if stream.manualCommit {
+                    stream.beginManualUtterance()
+                } else {
+                    stream.togglePause()
                 }
-                .font(.system(size: 18 * model.fontScale, weight: .semibold))
-                .foregroundStyle(stream.manualRecording ? .white : Color(red: 0.2, green: 0.25, blue: 0.1))
-                .frame(maxWidth: .infinity)
-                .frame(height: 56)
-                .background(stream.manualRecording ? AnyShapeStyle(Color.red) : AnyShapeStyle(Color(red: 0.85, green: 0.95, blue: 0.55)), in: Capsule())
+            } label: {
+                ZStack {
+                    // 外圈随音量扩散
+                    Circle()
+                        .stroke((stream.isAISpeaking ? RTTheme.success : RTTheme.accent).opacity(0.35 + 0.4 * liveLevel),
+                                lineWidth: 2)
+                        .frame(width: 96 + 34 * liveLevel, height: 96 + 34 * liveLevel)
+                    Circle()
+                        .fill(.white.opacity(0.10))
+                        .frame(width: 84, height: 84)
+                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                    Image(systemName: micSymbol)
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundStyle(.white)
+                        .scaleEffect(1 + 0.18 * liveLevel)
+                }
+                .animation(.easeOut(duration: 0.1), value: liveLevel)
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 40)
-            .padding(.bottom, 18)
+            .accessibilityLabel(stream.isPaused ? "恢复聆听" : "麦克风")
         }
+    }
+
+    private var micSymbol: String {
+        if stream.isPaused { return "mic.slash.fill" }
+        if stream.manualRecording { return "arrow.up.circle.fill" }
+        return "mic.fill"
+    }
+
+    // MARK: 底部一排：音色胶囊（中）+ 退出 X（右）
+
+    private var bottomBar: some View {
+        ZStack {
+            // 音色选择：随选随换（入库后按当前形态重连即刻生效）
+            Menu {
+                ForEach(model.ttsVoices, id: \.self) { v in
+                    Button {
+                        model.changeTutorVoice(v)
+                    } label: {
+                        if v == model.ttsCurrentVoice {
+                            Label(v, systemImage: "checkmark")
+                        } else {
+                            Text(v)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(model.ttsCurrentVoice.isEmpty ? "音色" : model.ttsCurrentVoice)
+                        .font(.system(size: 16 * model.fontScale, weight: .medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.white.opacity(0.9))
+                .padding(.horizontal, 22).padding(.vertical, 13)
+                .background(.white.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.15), lineWidth: 1))
+            }
+            .disabled(model.ttsVoices.isEmpty)
+
+            HStack {
+                Spacer()
+                Button { model.closeTutor() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.15, green: 0.16, blue: 0.19))
+                        .frame(width: 56, height: 56)
+                        .background(.white, in: Circle())
+                }
+                .accessibilityLabel("结束私教通话")
+            }
+        }
+        .padding(.horizontal, 24)
     }
 }
 
