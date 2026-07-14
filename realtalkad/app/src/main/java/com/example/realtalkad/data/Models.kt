@@ -267,6 +267,13 @@ data class RefineItem(val style: String, val text: String)
 @Serializable
 data class RefineResponse(val items: List<RefineItem>)
 
+/** 字幕卡内「译」按钮的按需翻译 */
+@Serializable
+data class TranslateRequest(val text: String)
+
+@Serializable
+data class TranslateResponse(val text: String)
+
 @Serializable
 data class TokenUsageInfo(
     @SerialName("today_tokens") val todayTokens: Int,

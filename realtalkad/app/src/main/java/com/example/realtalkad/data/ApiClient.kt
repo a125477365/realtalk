@@ -164,6 +164,10 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun refine(text: String, token: String): RefineResponse =
         post("/practice/refine", RefineRequest(text), token)
 
+    /** 字幕卡内「译」按钮的按需翻译：该条消息没带翻译时调用一次，结果缓存在字幕条上。 */
+    suspend fun translate(text: String, token: String): String =
+        post<TranslateRequest, TranslateResponse>("/practice/translate", TranslateRequest(text), token).text
+
     /** 方式1/2 后端语音：上传一句录音，后端识别+评分+发音纠正，返回对练状态。 */
     suspend fun sendRoleplayAudio(sessionId: String, guidanceMode: String, file: File, token: String): RoleplayState {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)

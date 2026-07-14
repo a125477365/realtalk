@@ -49,6 +49,11 @@ class AuthStore(context: Context) {
         get() = prefs.getString("conversation_pref", "ask") ?: "ask"
         set(value) = prefs.edit().putString("conversation_pref", value).apply()
 
+    // 顶栏喇叭：是否自动播放 AI 语音
+    var autoPlayAI: Boolean
+        get() = prefs.getBoolean("auto_play_ai", true)
+        set(value) = prefs.edit().putBoolean("auto_play_ai", value).apply()
+
     var fontScale: Float
         get() = prefs.getFloat("font_scale", 1f).coerceIn(0.85f, 1.35f)
         set(value) = prefs.edit().putFloat("font_scale", value.coerceIn(0.85f, 1.35f)).apply()

@@ -94,8 +94,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val translation: String = "",
         val words: List<RoleplayStreamClient.WordScore> = emptyList(),
         val wpm: Int = 0,
-        val masked: Boolean = false,          // 严格场景：AI 说话中先打码，说完再显示
+        val masked: Boolean = false,          // AI 台词默认打码（先听后看），点击文字才显示
         val showTranslation: Boolean = false, // 卡内「译」按钮切换
+        val translating: Boolean = false,     // 按需翻译请求进行中
     )
 
     val homeItems = MutableStateFlow<List<HomeChatItem>>(emptyList())
@@ -112,6 +113,40 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val homeUserLevel = MutableStateFlow(0f)
     val homeAiLevel = MutableStateFlow(0f)
     val homeManualRecording = MutableStateFlow(false)
+    /** 顶栏喇叭：是否自动播放 AI 语音（关＝只看字幕，卡内波形按钮仍可单句重听）。 */
+    val autoPlayAI = MutableStateFlow(auth.autoPlayAI)
+    /** 自由场景对话的场景 id：断线重连时必须原样带上，否则重连后丢失剧本上下文。 */
+    private var homeSceneId: String? = null
+    /** homeWorking 看门狗：后端迟迟不回也不能让说话按钮永远转圈（静默重连会卡死转圈）。 */
+    private var homeWorkWatchdog: kotlinx.coroutines.Job? = null
+
+    private fun setHomeWorking(on: Boolean) {
+        homeWorking.value = on
+        homeWorkWatchdog?.cancel()
+        homeWorkWatchdog = null
+        if (!on) return
+        homeWorkWatchdog = viewModelScope.launch {
+            kotlinx.coroutines.delay(150_000)
+            if (homeWorking.value) {
+                homeWorking.value = false
+                homeStatus.value = "老师一直没回应，请再说一次"
+            }
+        }
+    }
+
+    /** 顶栏喇叭开关：关闭时立刻停播并丢弃后续推流音频（字幕不受影响）。 */
+    fun toggleAutoPlayAI() {
+        val next = !autoPlayAI.value
+        autoPlayAI.value = next
+        auth.autoPlayAI = next
+        freeStream.autoPlayAI = next
+        stream.autoPlayAI = next
+        if (!next) {
+            freeStream.stopAiPlayback()
+            stream.stopAiPlayback()
+            voice.stop()
+        }
+    }
 
     /** 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；null=自由闲聊；
      *  liveTurn=true → GPT-Live 式全双工，仅私教沉浸式/实时翻译用）。 */
@@ -119,33 +154,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val token = auth.token ?: run { presentFailure("请先登录", title = "无法开始对话"); return }
         homeItems.value = emptyList()
         homeStatus.value = "连接中…"
-        homeWorking.value = false
+        setHomeWorking(false)
         homeSceneName.value = sceneName
+        homeSceneId = sceneId
         homeSceneStrict.value = false
+        freeStream.autoPlayAI = autoPlayAI.value
         freeStream.liveMode = liveTurn
         freeStream.manualCommit = !liveTurn && (!showTutor.value || !tutorImmersive.value)
         freeStream.onFreeTalkHistory = { items ->
             homeConnected.value = true
+            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
             homeItems.value = items.map { HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second) }
             homeStatus.value = ""
+            setHomeWorking(false)
         }
-        freeStream.onCommitted = { homeWorking.value = true; homeManualRecording.value = false }
+        freeStream.onCommitted = { setHomeWorking(true); homeManualRecording.value = false }
         freeStream.onUserText = { t, tr, words, wpm ->
             homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
         }
         freeStream.onAIText = { t, tr ->
-            homeWorking.value = false
-            // 严格场景走 roleplay 流；这里 masked 恒为 false（自由聊天/自由场景直接明文）
-            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr)
+            setHomeWorking(false)
+            // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
+            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr, masked = true)
         }
-        freeStream.onError = { msg -> homeWorking.value = false; homeStatus.value = msg; homeConnected.value = false }
-        freeStream.onResultMessage = { msg -> homeWorking.value = false; homeStatus.value = msg }
+        freeStream.onError = { msg -> setHomeWorking(false); homeStatus.value = msg; homeConnected.value = false }
+        freeStream.onResultMessage = { msg -> setHomeWorking(false); homeStatus.value = msg }
         freeStream.onStatus = { msg -> homeStatus.value = msg }
-        freeStream.onAiSpeaking = { s -> homeAiSpeaking.value = s; if (!s) revealMasked() }
+        freeStream.onAiSpeaking = { s -> homeAiSpeaking.value = s }
         freeStream.onUserLevel = { l -> homeUserLevel.value = l }
         freeStream.onAiLevel = { l -> homeAiLevel.value = l }
         freeStream.onTerminated = { reason ->
-            homeWorking.value = false
+            setHomeWorking(false)
             homeConnected.value = false
             homeStatus.value = "对话已结束，点击说话重新开始"
             presentFailure(reason, title = "对话已结束")
@@ -156,20 +195,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopHomeChat() {
         freeStream.stop()
         homeConnected.value = false
-        homeWorking.value = false
+        setHomeWorking(false)
         homeManualRecording.value = false
     }
 
-    /** 严格场景：AI 音频播完 → 揭示打码的台词。 */
-    fun revealMasked() {
-        if (homeItems.value.any { it.masked }) {
-            homeItems.value = homeItems.value.map { if (it.masked) it.copy(masked = false) else it }
+    /** 点击打码的 AI 台词：显示/再次隐藏文字（先听后看，手动揭示）。 */
+    fun toggleItemMasked(id: Long) {
+        homeItems.value = homeItems.value.map { if (it.id == id) it.copy(masked = !it.masked) else it }
+    }
+
+    /** 卡内「译」按钮：切换翻译显示；没带翻译时按需调后端翻一次并缓存在该条上。 */
+    fun toggleItemTranslation(id: Long) {
+        homeItems.value = homeItems.value.map { if (it.id == id) it.copy(showTranslation = !it.showTranslation) else it }
+        val item = homeItems.value.firstOrNull { it.id == id } ?: return
+        if (item.showTranslation && item.translation.isBlank() && !item.translating) {
+            requestItemTranslation(id)
         }
     }
 
-    /** 卡内「译」按钮：切换该条消息的中文翻译显示。 */
-    fun toggleItemTranslation(id: Long) {
-        homeItems.value = homeItems.value.map { if (it.id == id) it.copy(showTranslation = !it.showTranslation) else it }
+    /** 按需翻译：历史回放/实时通道的消息没带翻译，点「译」时调 /practice/translate 补一次。 */
+    private fun requestItemTranslation(id: Long) {
+        val token = auth.token ?: return
+        val text = homeItems.value.firstOrNull { it.id == id }?.text ?: return
+        homeItems.value = homeItems.value.map { if (it.id == id) it.copy(translating = true) else it }
+        viewModelScope.launch {
+            runCatching { api.translate(text, token) }
+                .onSuccess { tr ->
+                    homeItems.value = homeItems.value.map {
+                        if (it.id == id) it.copy(translation = tr, translating = false) else it
+                    }
+                }
+                .onFailure { e ->
+                    homeItems.value = homeItems.value.map {
+                        if (it.id == id) it.copy(translating = false, showTranslation = false) else it
+                    }
+                    homeStatus.value = "翻译失败：${e.message ?: ""}"
+                }
+        }
     }
 
     /** 卡内或顶栏重听老师上一句，统一走后端 TTS。 */
@@ -206,21 +268,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (homeSceneStrict.value) {
             sendStrictTyped(trimmed)
         } else {
-            if (!homeConnected.value) startHomeChat(null, homeSceneName.value)
+            if (!homeConnected.value || !freeStream.isConnected) startHomeChat(homeSceneId, homeSceneName.value)
             freeStream.sendText(trimmed)
         }
     }
 
-    /** 常规「点击说话」：未连接则先重连；再按手动模式开始/结束录音。严格场景走 roleplay 流。 */
+    /** 常规「点击说话」：未连接/已掉线则先整体重连（此前掉线后点按无反应，只能重启 App）；
+     *  再按手动模式开始/结束录音。严格场景走 roleplay 流。 */
     fun toggleHomeTalk() {
         if (homeSceneStrict.value) {
+            if (!stream.isConnected) {
+                homeStatus.value = "正在重新连接…"
+                reconnectStrictStream()
+                return
+            }
             if (stream.manualRecording) { stream.endManualUtterance(); homeManualRecording.value = false }
             else { stream.beginManualUtterance(); homeManualRecording.value = stream.manualRecording }
             return
         }
-        if (!homeConnected.value) { startHomeChat(null, homeSceneName.value); return }
+        if (!homeConnected.value || !freeStream.isConnected) { startHomeChat(homeSceneId, homeSceneName.value); return }
         if (freeStream.manualRecording) { freeStream.endManualUtterance(); homeManualRecording.value = false }
         else { freeStream.beginManualUtterance(); homeManualRecording.value = freeStream.manualRecording }
+    }
+
+    /** 回到前台/掉线后兜底重连：连接还在就什么都不做（幂等，onResume 可放心调用）。 */
+    fun reconnectIfNeeded() {
+        if (auth.token == null) return
+        if (showTutor.value) {
+            if (!freeStream.isConnected) startTutor()
+            return
+        }
+        if (homeSceneStrict.value) {
+            if (!stream.isConnected && roleplay != null) reconnectStrictStream()
+            return
+        }
+        if (!freeStream.isConnected) startHomeChat(homeSceneId, homeSceneName.value)
     }
 
     /** 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。 */
@@ -258,16 +340,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun sendStrictTyped(text: String) {
         val token = auth.token ?: return
         val rp = roleplay ?: return
-        homeWorking.value = true
+        setHomeWorking(true)
         viewModelScope.launch {
             try {
                 val state = api.sendRoleplayMessage(rp.sessionId, text, guidanceMode.value, token)
-                homeWorking.value = false
+                setHomeWorking(false)
                 roleplay = state
                 roleplayState.value = state
                 applyStrictState(state)
             } catch (e: Exception) {
-                homeWorking.value = false
+                setHomeWorking(false)
                 homeStatus.value = e.message ?: "发送失败"
             }
         }
@@ -275,17 +357,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 把 roleplay 整轮状态映射进主界面聊天流：台词气泡（AI 最新一条打码到朗读结束）→ 指导卡 → 中文提示。 */
     fun applyStrictState(state: RoleplayState) {
+        // 每轮整体重建列表：把用户已手动揭示的 AI 台词记下来，重建后保持揭示状态
+        val revealed = homeItems.value.filter { it.kind == HomeKind.AI && !it.masked }.map { it.text }.toSet()
         val items = mutableListOf<HomeChatItem>()
         for (msg in state.messages) {
             items.add(HomeChatItem(
                 kind = if (msg.speaker == "user") HomeKind.USER else HomeKind.AI,
                 text = msg.content,
                 translation = msg.translation ?: "",
+                masked = msg.speaker != "user" && msg.content !in revealed,
             ))
-        }
-        val lastAi = items.indexOfLast { it.kind == HomeKind.AI }
-        if (lastAi >= 0 && (homeAiSpeaking.value || homeWorking.value)) {
-            items[lastAi] = items[lastAi].copy(masked = true)
         }
         if (state.latestAccepted == false && !state.latestFeedback.isNullOrBlank()) {
             var text = state.latestFeedback
@@ -312,7 +393,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 进入私教：按当前形态（沉浸=live / 常规=turn-based）建立/重建连接。 */
     fun startTutor() {
         freeStream.stop()
-        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
+        startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
         loadTtsVoices()   // 音色菜单数据
     }
 
@@ -321,13 +402,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (freeStream.manualRecording) freeStream.endManualUtterance()
         tutorImmersive.value = !tutorImmersive.value
         freeStream.stop()
-        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
+        startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
     }
 
     /** 断线重连（私教「重连」按钮）。 */
     fun reconnectTutor() {
         freeStream.stop()
-        startHomeChat(null, homeSceneName.value, liveTurn = tutorImmersive.value)
+        startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
     }
 
     /** 换音色：入库后按当前形态重连即刻生效。 */
@@ -343,7 +424,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         showTutor.value = false
         tutorMode.value = "chat"
         freeStream.stop()
-        startHomeChat(null, homeSceneName.value, liveTurn = false)
+        startHomeChat(homeSceneId, homeSceneName.value, liveTurn = false)
     }
 
     /** 语境润色（详细指导浮层）。 */
@@ -520,14 +601,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         stream.onUserLevel = { practiceAudioLevel.value = it }
         stream.onAiLevel = { aiAudioLevel.value = it }
         stream.onAiSpeaking = { isSpeaking.value = it }
-        stream.onCommitted = { isWorking.value = true }   // 已发送 → 「已发送，正在识别评分…」
+        stream.onCommitted = {   // 已发送 → 「已发送，正在识别评分…」
+            isWorking.value = true
+            if (homeSceneStrict.value) setHomeWorking(true)   // 主界面说话按钮转圈+看门狗
+        }
         stream.onResultState = { jsonStr -> isWorking.value = false; applyStreamState(jsonStr) }
-        stream.onResultMessage = { msg -> isWorking.value = false; statusMessage.value = msg }
+        stream.onResultMessage = { msg ->
+            isWorking.value = false
+            statusMessage.value = msg
+            if (homeSceneStrict.value) { setHomeWorking(false); homeStatus.value = msg }
+        }
         stream.onStatus = { msg -> statusMessage.value = msg }
         stream.onCompleted = { isVoiceActive.value = false }
         stream.onError = { msg ->
             isWorking.value = false
             isVoiceActive.value = false
+            if (homeSceneStrict.value) { setHomeWorking(false); homeStatus.value = msg }
             stream.stop()
             presentFailure(msg, title = "对话中断")
         }
@@ -1139,7 +1228,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val token = auth.token ?: return
         val sid = roleplay?.sessionId ?: return
         isVoiceActive.value = true
+        stream.autoPlayAI = autoPlayAI.value
         stream.start(api.roleplayStreamUrl(sid, token), guidanceMode.value)
+    }
+
+    /** 严格场景掉线后的整体重连（点说话按钮/回前台时触发）。 */
+    fun reconnectStrictStream() {
+        stream.stop()
+        startImmersiveStream()
+        stream.manualCommit = true   // 常规界面 = 点击说话手动提交
     }
 
     /** 开始对练后：沉浸式由 WS 流驱动，其余走原 HTTP 流程。 */
@@ -1166,7 +1263,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         state.latestFeedback?.takeIf { it.isNotBlank() }?.let { appendChat(ChatMessage.Sender.ASSISTANT, it) }
         handleRoleplayState(state, drivenByStream = true)
         if (homeSceneStrict.value) {
-            homeWorking.value = false
+            setHomeWorking(false)
             applyStrictState(state)   // 严格场景：状态同步进主界面聊天流
         }
     }

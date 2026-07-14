@@ -54,6 +54,12 @@ class RoleplayStreamClient(private val context: Context) {
     /** live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端。 */
     var liveMode = false
 
+    /** 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。 */
+    var autoPlayAI = true
+
+    /** WS 已连上且收到 state（对外可见：点说话按钮时若已掉线由上层整体重连）。 */
+    val isConnected: Boolean get() = connected
+
     private val wsClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -340,7 +346,16 @@ class RoleplayStreamClient(private val context: Context) {
 
     // ---- 收 AI 音频并顺序播放 ----
 
+    /** 立即停止 AI 语音播放并清空队列（顶栏喇叭关闭时调用）。 */
+    fun stopAiPlayback() {
+        runCatching { player?.stop() }; runCatching { player?.release() }; player = null
+        aiQueue.clear()
+        aiSpeaking = false
+        scope.launch { onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f) }
+    }
+
     private fun enqueueAi(data: ByteArray) {
+        if (!autoPlayAI) return   // 用户关掉了自动播放：只留字幕
         if (paused || suppressAiAudio) return   // 暂停/被打断流程的迟到音频直接丢弃
         aiQueue.addLast(data)
         if (player == null) playNextAi()
@@ -439,6 +454,7 @@ class RoleplayStreamClient(private val context: Context) {
             }
             "listening" -> Unit   // 服务端 VAD 状态（电平动画已足够）
             "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
+            "ai_audio_error" -> onStatus?.invoke("老师的语音没能合成，本句只显示文字")
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {
                 receivingAudio = false
