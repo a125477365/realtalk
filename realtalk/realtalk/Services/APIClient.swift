@@ -304,11 +304,12 @@ final class APIClient {
         guard let u = comps?.url else { throw APIClientError.invalidResponse }
         var request = URLRequest(url: u)
         request.httpMethod = "GET"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 300   // 本地 CPU 合成一句 60~110s，60s 会掐死所有重播/朗读
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw APIClientError.server("语音合成失败")
+            let detail = (try? JSONDecoder().decode([String: String].self, from: data))?["detail"]
+            throw APIClientError.server(detail ?? "语音合成失败")
         }
         return data
     }

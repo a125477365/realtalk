@@ -29,7 +29,7 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     private val jsonMedia = "application/json".toMediaType()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(300, TimeUnit.SECONDS)   // 本地 CPU 合成/推理一句 60~110s，120s 偏紧
         .writeTimeout(1800, TimeUnit.SECONDS)
         .build()
 

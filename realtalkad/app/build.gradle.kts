@@ -53,6 +53,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.androidx.work.runtime)
     implementation(libs.wechat.sdk.android)
+    implementation("io.coil-kt:coil-compose:2.7.0")   // 微信头像等网络图片
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

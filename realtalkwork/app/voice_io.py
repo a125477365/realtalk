@@ -304,7 +304,8 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
     try:
         if not is_cloud_ready:
             raise RuntimeError("B·对话语音合成未配置，请在管理台「系统设置 → B·对话语音模型」中配置")
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15)) as client:
+        # 本地 CPU 跑 Qwen3-TTS 一句话实测 60~110s，60s 上限会把本地合成全部掐死（重播/朗读永远无声）
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=15)) as client:
             resp = await client.post(
                 config["base_url"].rstrip("/") + "/audio/speech",
                 headers={"Authorization": f"Bearer {config['api_key']}"},

@@ -203,11 +203,24 @@ def _is_zhipu_config(config: AIRuntimeConfig) -> bool:
     return config.provider == "zhipu" or "api.z.ai" in config.base_url or "bigmodel.cn" in config.base_url
 
 
+def _is_local_base(base_url: str) -> bool:
+    """base_url 指向内网/本机（本地 CPU 推理服务器）：无 SIMD 的 llama.cpp 上
+    一句简单翻译实测就要 70s+，云端档位的 30s 普通超时必然全线「AI 服务繁忙」。"""
+    host = re.sub(r"^https?://", "", (base_url or "").lower()).split("/")[0].split(":")[0]
+    if host in ("localhost", "127.0.0.1", "speech"):
+        return True
+    return bool(re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", host))
+
+
 def timeout_seconds_for_kind(config: AIRuntimeConfig, kind: str) -> float:
     """按业务分两档取超时：长任务(场景生成/学习材料)用 timeout_long_seconds，其余(对话/评分/连接测试)用 timeout_seconds。
-    两档均由管理台配置、存 DB、每次调用现读生效。"""
+    两档均由管理台配置、存 DB、每次调用现读生效。
+    本地推理端点强制普通档下限 180s（管理台配的云端档 30s 会把本地 CPU 请求全部掐死）。"""
     base = config.timeout_long_seconds if _is_long_kind(kind) else config.timeout_seconds
-    return base if isfinite(base) and base > 0 else (1800.0 if _is_long_kind(kind) else 120.0)
+    value = base if isfinite(base) and base > 0 else (1800.0 if _is_long_kind(kind) else 120.0)
+    if not _is_long_kind(kind) and _is_local_base(config.base_url):
+        value = max(value, 180.0)
+    return value
 
 
 def ai_timeout_policy(config: AIRuntimeConfig | None = None) -> dict[str, float]:

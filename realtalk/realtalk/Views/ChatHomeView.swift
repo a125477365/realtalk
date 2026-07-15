@@ -272,7 +272,8 @@ struct ChatHomeView: View {
                 }
                 Spacer()
             }
-            if item.showTranslation, item.masked == false {
+            // 翻译不受打码限制：打码练的是「先听英文」，中文提示不算看答案
+            if item.showTranslation {
                 if item.translating {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)

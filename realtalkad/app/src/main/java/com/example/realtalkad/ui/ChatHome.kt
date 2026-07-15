@@ -59,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -116,8 +117,19 @@ fun ChatHomeScreen(model: AppViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Box(Modifier.size(34.dp).background(RT.BrandBrush, CircleShape), contentAlignment = Alignment.Center) {
-                        Text(displayName.take(1), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    val avatarUrl = user?.avatarUrl
+                    if (!avatarUrl.isNullOrBlank()) {
+                        // 微信授权登录带回的头像（headimgurl）
+                        coil.compose.AsyncImage(
+                            model = avatarUrl,
+                            contentDescription = "用户头像",
+                            modifier = Modifier.size(34.dp).clip(CircleShape),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                    } else {
+                        Box(Modifier.size(34.dp).background(RT.BrandBrush, CircleShape), contentAlignment = Alignment.Center) {
+                            Text(displayName.take(1), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                     Text(displayName, fontSize = (14 * fontScale).sp, fontWeight = FontWeight.SemiBold,
                         color = RT.TextPrimary, maxLines = 1)
@@ -366,7 +378,8 @@ private fun AiCard(model: AppViewModel, item: AppViewModel.HomeChatItem, fontSca
                     .padding(horizontal = 7.dp, vertical = 2.dp),
             )
         }
-        if (item.showTranslation && !item.masked) {
+        // 翻译不受打码限制：打码练的是「先听英文」，中文提示不算看答案
+        if (item.showTranslation) {
             if (item.translating) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -546,6 +559,7 @@ fun TutorCallScreen(model: AppViewModel) {
     val voices by model.ttsVoices.collectAsState()
     val currentVoice by model.ttsCurrentVoice.collectAsState()
     val showChinese by model.showChineseHint.collectAsState()
+    val homeStatus by model.homeStatus.collectAsState()
 
     var elapsed by remember { mutableStateOf(0) }
     var showVoiceMenu by remember { mutableStateOf(false) }
@@ -609,6 +623,8 @@ fun TutorCallScreen(model: AppViewModel) {
                     working -> if (mode == "translate") "正在翻译…" else "老师正在思考…"
                     aiSpeaking -> "老师正在说话，开口即可打断"
                     manualRecording -> "正在录音，说完点麦克风发送"
+                    // 后端的忙碌/重连/合成失败等提示必须让用户看到（此前永远显示「倾听中」，出错像没反应）
+                    homeStatus.isNotBlank() -> homeStatus
                     else -> "倾听中，直接开口说英语"
                 },
                 color = Color.White.copy(alpha = 0.7f), fontWeight = FontWeight.Medium,

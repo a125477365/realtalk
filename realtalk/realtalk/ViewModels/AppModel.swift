@@ -288,7 +288,9 @@ final class AppModel: ObservableObject {
     }
 
     /// 卡内「朗读」按钮：单句重听（走后端 TTS，带缓存）。
+    /// 本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，合成完成/失败都会更新。
     func speakText(_ text: String) {
+        homeStatus = "正在合成语音，请稍候…"
         voice.speak(text)
     }
 
@@ -1591,9 +1593,18 @@ final class AppModel: ObservableObject {
     }
 
     /// 供 VoicePromptPlayer 拉取后端 TTS 音频（主线程隔离，避免 actor 问题）。
+    /// 失败必须让用户看到原因（此前静默跳过——点了重播没声音也不知道为什么）。
     func fetchTTSAudio(_ text: String, cache: Bool = true) async -> Data? {
         guard let token = auth.token else { return nil }
-        return try? await api.ttsSpeak(text: text, cache: cache, token: token)
+        do {
+            let data = try await api.ttsSpeak(text: text, cache: cache, token: token)
+            if homeStatus.hasPrefix("正在合成语音") { homeStatus = "" }
+            return data
+        } catch {
+            homeStatus = "语音合成失败：\(error.localizedDescription)"
+            statusMessage = homeStatus
+            return nil
+        }
     }
 
     /// 沉浸式是否走后端语音流（WebSocket：流式 + 抢话打断）。

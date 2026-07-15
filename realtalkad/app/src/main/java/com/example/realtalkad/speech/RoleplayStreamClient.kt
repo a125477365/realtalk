@@ -452,7 +452,14 @@ class RoleplayStreamClient(private val context: Context) {
                 aiQueue.clear(); receivingAudio = false; incoming = java.io.ByteArrayOutputStream()
                 aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
             }
-            "listening" -> Unit   // 服务端 VAD 状态（电平动画已足够）
+            "listening" -> {
+                // live 全双工：轮次判定在服务端，没有本地 commit——用服务端 VAD 事件驱动 UI 反馈：
+                // 停止说话 = 这句已提交（触发「老师正在思考…」+ 看门狗），否则用户说完毫无动静
+                if (obj.has("speaking")) {
+                    if (obj.optBoolean("speaking")) onStatus?.invoke("听到了，请继续说…")
+                    else { onStatus?.invoke(""); onCommitted?.invoke() }
+                }
+            }
             "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
             "ai_audio_error" -> onStatus?.invoke("老师的语音没能合成，本句只显示文字")
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }

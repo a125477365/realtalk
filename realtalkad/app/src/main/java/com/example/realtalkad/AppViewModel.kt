@@ -234,8 +234,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 卡内或顶栏重听老师上一句，统一走后端 TTS。 */
+    /** 卡内「朗读」按钮：单句重听（走后端 TTS，带缓存）。
+     *  本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，合成完成/失败都会更新。 */
     fun speakText(text: String) {
+        homeStatus.value = "正在合成语音，请稍候…"
         voice.speak(text)
     }
 
@@ -596,7 +598,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         voice.onLevel = { aiAudioLevel.value = it }
         // AI 台词改用后端 TTS（可选音色）；后端不可用 VoicePlayer 自动回退本机 TTS
         voice.scope = viewModelScope
-        voice.audioProvider = { text, cache -> auth.token?.let { t -> runCatching { api.ttsSpeak(text, t, cache) }.getOrNull() } }
+        // 失败必须让用户看到原因（此前静默跳过——点了重播没声音也不知道为什么）
+        voice.audioProvider = { text, cache ->
+            auth.token?.let { t ->
+                runCatching { api.ttsSpeak(text, t, cache) }
+                    .onSuccess { if (homeStatus.value.startsWith("正在合成语音")) homeStatus.value = "" }
+                    .onFailure { e ->
+                        homeStatus.value = "语音合成失败：${e.message ?: "请稍后再试"}"
+                        statusMessage.value = homeStatus.value
+                    }
+                    .getOrNull()
+            }
+        }
         // 沉浸式后端语音流（WS）：复用现有音圈电平绑定，结果回来直接刷新对练状态
         stream.onUserLevel = { practiceAudioLevel.value = it }
         stream.onAiLevel = { aiAudioLevel.value = it }

@@ -107,6 +107,8 @@ struct TutorCallView: View {
         if model.homeWorking { return model.tutorMode == "translate" ? "正在翻译…" : "老师正在思考…" }
         if stream.isAISpeaking { return "老师正在说话，开口即可打断" }
         if stream.manualRecording { return "正在录音，说完点麦克风发送" }
+        // 后端的忙碌/重连/合成失败等提示必须让用户看到（此前永远显示「倾听中」，出错像没反应）
+        if model.homeStatus.isEmpty == false { return model.homeStatus }
         return "倾听中，直接开口说英语"
     }
 

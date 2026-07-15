@@ -472,7 +472,16 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             isAISpeaking = false
             aiAudioLevel = 0
         case "listening":
-            break   // 服务端 VAD 状态（可用于 UI 提示，当前电平动画已足够）
+            // live 全双工：轮次判定在服务端，没有本地 commit——用服务端 VAD 事件驱动 UI 反馈：
+            // 停止说话 = 这句已提交（触发「老师正在思考…」+ 看门狗），否则用户说完毫无动静
+            if let speaking = obj["speaking"] as? Bool {
+                if speaking {
+                    onStatus?("听到了，请继续说…")
+                } else {
+                    onStatus?("")
+                    onCommitted?()
+                }
+            }
         case "ai_text":
             if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
         case "ai_line":
