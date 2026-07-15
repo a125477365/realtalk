@@ -609,11 +609,14 @@ fun TutorCallScreen(model: AppViewModel) {
                 }
             }
 
-            Spacer(Modifier.weight(0.5f))
-
-            // 老师头像（动嘴）
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                TutorAvatarFace(mouthOpen = if (aiSpeaking) aiLevel else 0f, listening = !aiSpeaking && connected)
+            // 老师头像：固定在顶部（不随字幕滚动）；有 3D 人物素材则按音色性别显示写实人像
+            Box(Modifier.fillMaxWidth().padding(top = 6.dp), contentAlignment = Alignment.Center) {
+                TutorAvatarView(
+                    isFemale = isFemaleVoice(currentVoice),
+                    speaking = aiSpeaking,
+                    level = aiLevel,
+                    listening = !aiSpeaking && connected,
+                )
             }
 
             // 状态行
@@ -654,7 +657,7 @@ fun TutorCallScreen(model: AppViewModel) {
                     }
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.weight(1f))   // 唯一弹性空档：头像+字幕固定在上，麦克风/底栏推到下
 
             // 中央麦克风：随「用户/老师说话」的音量呼吸；断线时变成重连按钮
             Box(Modifier.fillMaxWidth().padding(bottom = 22.dp), contentAlignment = Alignment.Center) {
@@ -732,6 +735,60 @@ fun TutorCallScreen(model: AppViewModel) {
             Text("内容由 AI 生成", color = Color.White.copy(alpha = 0.35f), fontSize = 11.sp,
                 modifier = Modifier.padding(top = 10.dp, bottom = 8.dp).fillMaxWidth(),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
+    }
+}
+
+/** 女声音色集合（Qwen 本地 + OpenAI）；不在其中默认男声。 */
+private val FEMALE_VOICES = setOf(
+    "vivian", "serena", "ono_anna", "sohee",   // Qwen 本地
+    "coral", "shimmer", "sage", "marin",        // OpenAI
+)
+
+fun isFemaleVoice(voice: String): Boolean = voice.lowercase() in FEMALE_VOICES
+
+/**
+ * 私教老师头像（固定顶部）：优先用运营放入的写实 3D 人物素材，按当前音色性别选男/女；
+ * 素材缺失时回退中性机器人脸（可动嘴）。
+ * 素材放置方式（放入后自动生效、无需改代码）：
+ *   - 图片：把 3D 渲染图放到 res/drawable，命名 `tutor_female` / `tutor_male`（如 tutor_female.png/.webp）。
+ *     静态图无法跟语音动口型，改用「说话时头像发光边框 + 轻微放大」表达"正在说话"。
+ *   - 视频口型：需接入 ExoPlayer 播放 raw/ 下的说话循环视频（走这条另说）。
+ */
+@Composable
+fun TutorAvatarView(isFemale: Boolean, speaking: Boolean, level: Float, listening: Boolean) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val resName = if (isFemale) "tutor_female" else "tutor_male"
+    val resId = remember(resName) {
+        context.resources.getIdentifier(resName, "drawable", context.packageName)
+    }
+    if (resId != 0) {
+        val glow by animateFloatAsState(targetValue = if (speaking) level.coerceIn(0f, 1f) else 0f, label = "avglow")
+        val scale by animateFloatAsState(
+            targetValue = if (speaking) 1f + 0.012f * level else if (listening) 1.006f else 1f, label = "avscale")
+        Box(Modifier.fillMaxWidth().height(300.dp)) {
+            androidx.compose.foundation.Image(
+                painter = androidx.compose.ui.res.painterResource(id = resId),
+                contentDescription = if (isFemale) "AI 女老师头像" else "AI 男老师头像",
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().scale(scale),
+            )
+            // 底部渐隐到背景色，让字幕自然叠在人像下缘
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(0f to Color.Transparent, 0.7f to Color.Transparent, 1f to Color(0xFF12141A))
+                )
+            )
+            // 说话指示：底部一条随电平呼吸的发光（静态图没有口型，用它表达"正在说话"）
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)
+                    .background(RT.Success.copy(alpha = if (speaking) 0.25f + 0.5f * glow else 0f))
+            )
+        }
+    } else {
+        // 无写实素材：回退机器人脸（能动嘴）
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            TutorAvatarFace(mouthOpen = if (speaking) level else 0f, listening = listening)
         }
     }
 }

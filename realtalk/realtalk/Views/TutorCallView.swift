@@ -23,10 +23,11 @@ struct TutorCallView: View {
             bottomGlow
             VStack(spacing: 0) {
                 header
-                Spacer(minLength: 12)
+                // 头像固定在顶部：不随字幕滚动。字幕在其下方固定区域，剩余空间由下方 Spacer 吸收。
                 avatar
+                    .padding(.top, 6)
                 statusLine
-                    .padding(.top, 14)
+                    .padding(.top, 12)
                 subtitles
                 Spacer(minLength: 12)
                 micIndicator
@@ -42,6 +43,9 @@ struct TutorCallView: View {
         .onAppear { model.startTutor() }
         .onReceive(timer) { _ in if model.homeConnected { elapsed += 1 } }
     }
+
+    /// 按当前所选音色判定老师性别（决定显示男/女 3D 人物）。
+    private var tutorIsFemale: Bool { TutorAvatarView.isFemaleVoice(model.ttsCurrentVoice) }
 
     // MARK: 底部光晕：从底部升到屏幕中部，亮度/范围随说话频率呼吸（参考 Claude 语音界面）
 
@@ -86,13 +90,16 @@ struct TutorCallView: View {
         .padding(.top, 10)
     }
 
-    // MARK: 老师头像（说话动嘴 + 聆听时轻微呼吸）
+    // MARK: 老师头像（固定顶部；有 3D 人物素材则显示写实人像 + 说话发光，否则回退机器人脸）
 
     private var avatar: some View {
-        TutorAvatarFace(mouthOpen: stream.isAISpeaking ? stream.aiAudioLevel : 0,
-                        listening: stream.isAISpeaking == false && model.homeConnected)
-            .frame(width: 210, height: 210)
-            .accessibilityLabel("AI 老师头像")
+        TutorAvatarView(
+            isFemale: tutorIsFemale,
+            speaking: stream.isAISpeaking,
+            level: stream.isAISpeaking ? stream.aiAudioLevel : 0,
+            listening: stream.isAISpeaking == false && model.homeConnected
+        )
+        .accessibilityLabel(tutorIsFemale ? "AI 女老师头像" : "AI 男老师头像")
     }
 
     private var statusLine: some View {
@@ -249,6 +256,71 @@ struct TutorCallView: View {
             }
         }
         .padding(.horizontal, 24)
+    }
+}
+
+/// 私教老师头像（固定顶部）：优先用运营放入的写实 3D 人物素材，按当前音色性别选男/女；
+/// 素材缺失时回退中性机器人脸（可动嘴）。
+/// 素材放置方式（放入后自动生效、无需改代码）：
+///   - 图片：在 Assets.xcassets 里新建图集，命名 `tutor_female` / `tutor_male`（3D 渲染 PNG，建议竖版透明底/白底）。
+///     静态图无法跟语音动口型，改用「说话时头像发光 + 轻微缩放」表达"正在说话"。
+///   - 视频：把 `tutor_female.mp4` / `tutor_male.mp4`（几秒说话循环）加入 App Bundle，AI 说话时循环播放、聆听时定帧
+///     （如需口型动感走这条；接入见 VideoAvatarView 注释）。
+struct TutorAvatarView: View {
+    var isFemale: Bool
+    var speaking: Bool
+    var level: Double
+    var listening: Bool
+    @State private var breathe = false
+
+    /// 女声音色集合（Qwen 本地 + OpenAI）；不在其中默认男声。
+    private static let femaleVoices: Set<String> = [
+        "vivian", "serena", "ono_anna", "sohee",         // Qwen 本地
+        "coral", "shimmer", "sage", "marin",              // OpenAI
+    ]
+    static func isFemaleVoice(_ voice: String) -> Bool {
+        femaleVoices.contains(voice.lowercased())
+    }
+
+    private var assetName: String { isFemale ? "tutor_female" : "tutor_male" }
+    private var hasImage: Bool { UIImage(named: assetName) != nil }
+
+    var body: some View {
+        Group {
+            if hasImage {
+                photoAvatar
+            } else {
+                // 无写实素材：回退机器人脸（能动嘴，性别只影响荧光色调）
+                TutorAvatarFace(mouthOpen: speaking ? level : 0, listening: listening)
+                    .frame(width: 210, height: 210)
+            }
+        }
+    }
+
+    /// 写实 3D 人物：竖版铺满顶部 + 底部渐隐（与截图一致）；说话时描边发光并轻微放大表达"在说话"。
+    private var photoAvatar: some View {
+        Image(assetName)
+            .resizable()
+            .scaledToFill()
+            .frame(height: 300)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            .overlay(
+                // 底部渐隐到背景色，让字幕自然叠在人像下缘
+                LinearGradient(colors: [.clear, .clear, Color(red: 0.07, green: 0.08, blue: 0.10)],
+                               startPoint: .top, endPoint: .bottom)
+            )
+            .overlay(alignment: .bottom) {
+                // 说话指示：底部一条随电平呼吸的发光（静态图没有口型，用它表达"正在说话"）
+                Rectangle()
+                    .fill(RTTheme.success.opacity(speaking ? 0.25 + 0.5 * level : 0))
+                    .frame(height: 3)
+                    .blur(radius: 2)
+            }
+            .scaleEffect(speaking ? 1.0 + 0.012 * level : (breathe && listening ? 1.006 : 1.0))
+            .animation(.easeOut(duration: 0.12), value: level)
+            .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: breathe)
+            .onAppear { breathe = true }
     }
 }
 
