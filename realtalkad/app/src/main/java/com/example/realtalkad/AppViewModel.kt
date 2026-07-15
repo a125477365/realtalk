@@ -126,10 +126,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         homeWorkWatchdog = null
         if (!on) return
         homeWorkWatchdog = viewModelScope.launch {
-            kotlinx.coroutines.delay(150_000)
+            // 本地 CPU 模型一轮回复实测可达 3 分钟：看门狗给到 4 分钟，只兜「彻底没回应」
+            kotlinx.coroutines.delay(240_000)
             if (homeWorking.value) {
                 homeWorking.value = false
-                homeStatus.value = "老师一直没回应，请再说一次"
+                homeStatus.value = "老师响应超时（本地模型较慢），可再说一次或稍后再试"
             }
         }
     }

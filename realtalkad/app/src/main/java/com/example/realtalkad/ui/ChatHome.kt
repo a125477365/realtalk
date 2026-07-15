@@ -908,11 +908,6 @@ fun AttachmentSheet(model: AppViewModel, isRecording: Boolean, dismiss: () -> Un
         Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(
-            "添加到对话", fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp,
-            color = RT.TextPrimary, modifier = Modifier.fillMaxWidth(),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-        )
         Column(
             Modifier.fillMaxWidth()
                 .background(RT.Surface, RoundedCornerShape(16.dp))

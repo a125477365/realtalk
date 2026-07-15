@@ -2161,11 +2161,13 @@ async def capture_upload_complete(
     """采集分块上传收尾。改为异步：快速校验+配额后把生成任务推入 Redis 队列即返回，
     App 收到「上传成功」即可删除本地文件，不必等待大模型生成；场景生成完会出现在场景列表。"""
     require_ai_access(user)
-    if len(request.items) > settings.transcript_upload_max_items:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="转写条目数超过上限，请改用分块采集上传")
+    # 注意：条目在 chunk 阶段已入 Redis，这里从会话取——CaptureUploadCompleteRequest 本身没有 items 字段
+    # （此前误读 request.items → AttributeError → 500，客户端表现为「采集内容上传失败：请求没有完成」）
     items = await asyncio.to_thread(capture_store.load_items, request.upload_id, user.id)
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="上传会话不存在或已过期，请重新开始")
+    if len(items) > settings.transcript_upload_max_items:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="转写条目数超过上限，请分多次采集上传")
     if not items:
         await asyncio.to_thread(capture_store.delete_session, request.upload_id, user.id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="本次采集没有可生成场景的对话")

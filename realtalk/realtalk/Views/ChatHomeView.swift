@@ -539,11 +539,7 @@ struct AttachmentSheet: View {
         ZStack {
             RTTheme.background.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
-                Text("添加到对话")
-                    .font(.headline)
-                    .foregroundStyle(RTTheme.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 18)
+                Color.clear.frame(height: 8)   // 顶部留白（不再显示标题文字）
 
                 VStack(spacing: 0) {
                     attachRow(
@@ -633,6 +629,8 @@ struct TalkWaveBar: View {
     let level: Double
 
     var body: some View {
+        // 电平放大：正常说话 RMS 偏小，直接用会几乎看不出跳动
+        let boosted = min(1.0, level * 2.4)
         HStack(spacing: 4) {
             ForEach(0..<21, id: \.self) { i in
                 // 伪随机高度系数 + 实时电平：中间高两端低，看起来像语音波形
@@ -640,10 +638,10 @@ struct TalkWaveBar: View {
                 let jitter = Double((i * 7) % 5) / 5.0
                 Capsule()
                     .fill(RTTheme.accent)
-                    .frame(width: 3, height: 8 + CGFloat(base * (6 + jitter * 10 + 26 * level)))
+                    .frame(width: 3, height: 6 + CGFloat(base * (3 + jitter * 6 + 38 * boosted)))
             }
         }
-        .animation(.easeOut(duration: 0.1), value: level)
+        .animation(.easeOut(duration: 0.08), value: level)
         .accessibilityLabel("正在录音")
     }
 }
@@ -720,7 +718,7 @@ struct RecordingOverlayView: View {
                 .padding(.bottom, 24)
             }
         }
-        .onReceive(timer) { _ in if speech.isRecording { elapsed += 1 } }
+        .onReceive(timer) { _ in elapsed += 1 }
         .interactiveDismissDisabled()   // 只能通过 完成/取消 退出
     }
 

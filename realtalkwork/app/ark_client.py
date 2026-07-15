@@ -680,8 +680,10 @@ async def generate_freetalk_reply(
     if scene_context:
         system += "\n\n" + scene_context
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
-    # 上下文不再写死条数：按字符预算取最近历史(约 12000 字符，正常=全量 200 条内的历史)
-    for item in _fit_recent(recent, 12000):
+    # 上下文按字符预算取最近历史：云端 12000 字符；本地 CPU 推理提示词求值极慢（无 SIMD llama.cpp），
+    # 预算压到 4000 字符可把一轮回复从 2~3 分钟压到 1 分钟内，对话连续性影响很小
+    history_budget = 4000 if _is_local_base(config.base_url) else 12000
+    for item in _fit_recent(recent, history_budget):
         messages.append({"role": "user" if item.get("speaker") == "user" else "assistant", "content": item.get("content", "")})
     messages.append({"role": "user", "content": user_text})
     # 模型不可用直接抛错（不再回"Sorry, I missed that"兜底句）

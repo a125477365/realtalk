@@ -189,10 +189,11 @@ final class AppModel: ObservableObject {
         homeWorkWatchdog = nil
         guard on else { return }
         homeWorkWatchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 150 * 1_000_000_000)
+            // 本地 CPU 模型一轮回复实测可达 3 分钟：看门狗给到 4 分钟，只兜「彻底没回应」
+            try? await Task.sleep(nanoseconds: 240 * 1_000_000_000)
             guard Task.isCancelled == false, let self, self.homeWorking else { return }
             self.homeWorking = false
-            self.homeStatus = "老师一直没回应，请再说一次"
+            self.homeStatus = "老师响应超时（本地模型较慢），可再说一次或稍后再试"
         }
     }
 
@@ -1043,6 +1044,7 @@ final class AppModel: ObservableObject {
         if let started { transcripts.discardPending(since: started) }
         statusMessage = "已取消录音，本次内容未保存"
         homeStatus = statusMessage
+        reconnectIfNeeded()   // 采集结束恢复对话连接
     }
 
     /// 清除本地语音缓存（设置页），返回释放大小的文案。
@@ -1082,9 +1084,15 @@ final class AppModel: ObservableObject {
             if uploaded > 0 {
                 await loadTodayScenarios()
             }
+            reconnectIfNeeded()   // 采集结束恢复对话连接（采集前为让出麦克风断开了）
         } else {
+            // 关键：采集与对话流不能同时占用麦克风（两个带回声消除的音频引擎互踩，
+            // 表现为录音引擎起不来、计时一直 0）。手动采集前先断开对话流，结束后自动重连。
+            stopHomeChat()
+            if homeSceneStrict { stream.stop() }
             await startCaptureWithQuotaCheck()
             manualCaptureUI = speech.isRecording   // 手动发起才全屏；自动时段采集走 evaluate 循环不置位
+            if speech.isRecording == false { reconnectIfNeeded() }   // 没录起来就把对话恢复
         }
     }
 
@@ -1157,10 +1165,18 @@ final class AppModel: ObservableObject {
             captureRemainingTokens = quota.remainingTokens
             captureBaselineChars = pendingCharCount
             await speech.start()
+            guard speech.isRecording else {   // 启动失败必须让用户知道（此前静默假装在录，计时永远是 0）
+                presentFailure(speech.lastError ?? "录音没能启动，请重试", title: "无法开始采集")
+                return
+            }
             captureStartedAt = Date()
             statusMessage = quota.message.isEmpty ? "正在采集真实对话" : quota.message
         } else {
             await speech.start()
+            guard speech.isRecording else {
+                presentFailure(speech.lastError ?? "录音没能启动，请重试", title: "无法开始采集")
+                return
+            }
             captureStartedAt = Date()
             statusMessage = "正在采集真实对话"
         }

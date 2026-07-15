@@ -32,6 +32,15 @@ struct ContentView: View {
                     model.tutorMode = "chat"; model.showTutor = true
                 } else if uiArgs.contains("--uiverify-scenepicker") {
                     model.showScenePicker = true
+                } else if uiArgs.contains("--uiverify-record") {
+                    // 手动采集全屏录音页验证
+                    await model.toggleRecording()
+                } else if uiArgs.contains("--uiverify-talk") {
+                    // 「点击说话」按下形态（X+波形+✓）验证：等连上后按下
+                    for _ in 0..<40 where model.homeConnected == false {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                    model.toggleHomeTalk()
                 }
             }
             #endif
