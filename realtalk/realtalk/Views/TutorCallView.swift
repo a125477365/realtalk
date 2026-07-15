@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import SwiftUI
 
@@ -284,10 +285,15 @@ struct TutorAvatarView: View {
 
     private var assetName: String { isFemale ? "tutor_female" : "tutor_male" }
     private var hasImage: Bool { UIImage(named: assetName) != nil }
+    /// 说话循环视频（口型动感）：把 tutor_female.mp4 / tutor_male.mp4 拖进 realtalk/realtalk/ 目录即生效
+    /// （工程是文件夹自动同步格式，无需改工程文件）。AI 说话时循环播放、安静时定帧；视频本身静音。
+    private var videoURL: URL? { Bundle.main.url(forResource: assetName, withExtension: "mp4") }
 
     var body: some View {
         Group {
-            if hasImage {
+            if let url = videoURL {
+                videoAvatar(url)
+            } else if hasImage {
                 photoAvatar
             } else {
                 // 无写实素材：回退机器人脸（能动嘴，性别只影响荧光色调）
@@ -295,6 +301,25 @@ struct TutorAvatarView: View {
                     .frame(width: 210, height: 210)
             }
         }
+    }
+
+    /// 视频人像：AI 说话时循环播放（有口型），聆听/静默时暂停定帧。
+    private func videoAvatar(_ url: URL) -> some View {
+        LoopingVideoView(url: url, playing: speaking)
+            .frame(height: 300)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            .overlay(
+                // 底部渐隐到背景色，让字幕自然叠在人像下缘
+                LinearGradient(colors: [.clear, .clear, Color(red: 0.07, green: 0.08, blue: 0.10)],
+                               startPoint: .top, endPoint: .bottom)
+            )
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(RTTheme.success.opacity(speaking ? 0.25 + 0.5 * level : 0))
+                    .frame(height: 3)
+                    .blur(radius: 2)
+            }
     }
 
     /// 写实 3D 人物：竖版铺满顶部 + 底部渐隐（与截图一致）；说话时描边发光并轻微放大表达"在说话"。
@@ -321,6 +346,54 @@ struct TutorAvatarView: View {
             .animation(.easeOut(duration: 0.12), value: level)
             .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: breathe)
             .onAppear { breathe = true }
+    }
+}
+
+/// 无缝循环视频层（静音）：AVPlayerLooper 循环播放说话小视频；playing=false 时暂停定帧。
+/// 声音永远来自后端 TTS，视频只提供口型画面，必须静音。
+private struct LoopingVideoView: UIViewRepresentable {
+    let url: URL
+    let playing: Bool
+
+    final class PlayerContainerView: UIView {
+        override static var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    final class Coordinator {
+        var player: AVQueuePlayer?
+        var looper: AVPlayerLooper?
+        var url: URL?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> PlayerContainerView {
+        let view = PlayerContainerView()
+        view.playerLayer.videoGravity = .resizeAspectFill
+        attach(url, to: view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateUIView(_ view: PlayerContainerView, context: Context) {
+        if context.coordinator.url != url {   // 切换音色性别 → 换视频
+            attach(url, to: view, coordinator: context.coordinator)
+        }
+        if playing {
+            context.coordinator.player?.play()
+        } else {
+            context.coordinator.player?.pause()
+        }
+    }
+
+    private func attach(_ url: URL, to view: PlayerContainerView, coordinator: Coordinator) {
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        coordinator.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        coordinator.player = player
+        coordinator.url = url
+        view.playerLayer.player = player
     }
 }
 

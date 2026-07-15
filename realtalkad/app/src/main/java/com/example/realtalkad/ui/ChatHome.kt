@@ -762,7 +762,42 @@ fun TutorAvatarView(isFemale: Boolean, speaking: Boolean, level: Float, listenin
     val resId = remember(resName) {
         context.resources.getIdentifier(resName, "drawable", context.packageName)
     }
-    if (resId != 0) {
+    // 说话循环视频（口型动感）：res/raw/tutor_female.mp4 / tutor_male.mp4，放入即生效。
+    // AI 说话时循环播放、安静时定帧；声音永远来自 TTS，视频静音。
+    val rawId = remember(resName) {
+        context.resources.getIdentifier(resName, "raw", context.packageName)
+    }
+    if (rawId != 0) {
+        val glow by animateFloatAsState(targetValue = if (speaking) level.coerceIn(0f, 1f) else 0f, label = "vidglow")
+        Box(Modifier.fillMaxWidth().height(300.dp)) {
+            androidx.compose.runtime.key(rawId) {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { ctx ->
+                        android.widget.VideoView(ctx).apply {
+                            setVideoURI(android.net.Uri.parse("android.resource://${ctx.packageName}/$rawId"))
+                            setOnPreparedListener { mp ->
+                                mp.isLooping = true
+                                mp.setVolume(0f, 0f)
+                                mp.seekTo(1)   // 显示首帧而不是黑屏
+                            }
+                        }
+                    },
+                    update = { v -> if (speaking) { if (!v.isPlaying) v.start() } else if (v.isPlaying) v.pause() },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            // 底部渐隐到背景色，让字幕自然叠在人像下缘
+            Box(
+                Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(0f to Color.Transparent, 0.7f to Color.Transparent, 1f to Color(0xFF12141A))
+                )
+            )
+            Box(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)
+                    .background(RT.Success.copy(alpha = if (speaking) 0.25f + 0.5f * glow else 0f))
+            )
+        }
+    } else if (resId != 0) {
         val glow by animateFloatAsState(targetValue = if (speaking) level.coerceIn(0f, 1f) else 0f, label = "avglow")
         val scale by animateFloatAsState(
             targetValue = if (speaking) 1f + 0.012f * level else if (listening) 1.006f else 1f, label = "avscale")
