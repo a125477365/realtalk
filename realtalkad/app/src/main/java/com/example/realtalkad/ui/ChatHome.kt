@@ -941,17 +941,6 @@ fun AttachmentSheet(model: AppViewModel, isRecording: Boolean, dismiss: () -> Un
             ) { dismiss(); model.showScenePicker.value = true }
             HorizontalDivider(color = RT.Hairline, modifier = Modifier.padding(start = 56.dp))
             AttachRow(
-                icon = { Icon(Icons.Filled.ChatBubbleOutline, contentDescription = null, tint = RT.Success) },
-                title = "自由对话",
-                subtitle = if (sceneName == null) "不带场景，和老师随便聊" else "退出当前场景，回到自由闲聊",
-                fontScale = fontScale,
-            ) {
-                dismiss()
-                if (sceneName != null) model.exitHomeScene()
-                else if (!connected) model.startHomeChat()
-            }
-            HorizontalDivider(color = RT.Hairline, modifier = Modifier.padding(start = 56.dp))
-            AttachRow(
                 icon = { Icon(Icons.Filled.Language, contentDescription = null, tint = RT.Accent) },
                 title = "实时翻译",
                 subtitle = "说中文出英文、说英文出中文，逐句同传",

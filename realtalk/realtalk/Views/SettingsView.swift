@@ -3,6 +3,10 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var voiceCacheSize = VoiceCacheStore.shared.totalBytesText
+    @State private var storageMessage = ""
+    @State private var clearingChat = false
+    @State private var confirmClearChat = false
 
     var body: some View {
         NavigationStack {
@@ -33,6 +37,38 @@ struct SettingsView: View {
                     Text("当前字体 \(Int(model.fontScale * 100))%")
                         .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(.secondary)
+                }
+
+                Section("存储管理") {
+                    HStack {
+                        Text("语音缓存")
+                        Spacer()
+                        Text(voiceCacheSize).foregroundStyle(.secondary)
+                    }
+                    Button("清除语音缓存", role: .destructive) {
+                        storageMessage = model.clearVoiceCache()
+                        voiceCacheSize = VoiceCacheStore.shared.totalBytesText
+                    }
+                    Button(clearingChat ? "正在清除聊天记录…" : "清除聊天记录", role: .destructive) {
+                        confirmClearChat = true
+                    }
+                    .disabled(clearingChat)
+                    if storageMessage.isEmpty == false {
+                        Text(storageMessage)
+                            .font(.system(size: 12 * model.fontScale))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .confirmationDialog("清除聊天记录？私教/自由对话的历史将从服务器删除，无法恢复。",
+                                    isPresented: $confirmClearChat, titleVisibility: .visible) {
+                    Button("清除聊天记录", role: .destructive) {
+                        clearingChat = true
+                        Task { @MainActor in
+                            storageMessage = await model.clearChatHistory()
+                            clearingChat = false
+                        }
+                    }
+                    Button("取消", role: .cancel) {}
                 }
 
                 Section {

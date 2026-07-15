@@ -53,6 +53,13 @@ final class TranscriptStore: ObservableObject {
         save()
     }
 
+    /// 丢弃某时刻之后采集、尚未上传的片段（用户取消录音：本次内容不生成场景）。
+    func discardPending(since: Date) {
+        let before = segments.count
+        segments.removeAll { $0.uploadedAt == nil && $0.timestamp >= since }
+        if segments.count != before { save() }
+    }
+
     func markUploaded(ids: [UUID]) {
         guard ids.isEmpty == false else { return }
         let now = Date()

@@ -230,6 +230,8 @@ final class AppModel: ObservableObject {
             // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
             self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: true))
         }
+        // 收到的 AI 语音按句存本地（微信式）：重播按钮零等待、不再重新合成
+        freeStream.onAIAudio = { text, data in VoiceCacheStore.shared.put(data, for: text) }
         freeStream.onError = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg; self?.homeConnected = false }
         freeStream.onResultMessage = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg }
         freeStream.onStatus = { [weak self] msg in self?.homeStatus = msg }
@@ -287,10 +289,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 卡内「朗读」按钮：单句重听（走后端 TTS，带缓存）。
-    /// 本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，合成完成/失败都会更新。
+    /// 卡内「朗读」按钮：单句重听。本地缓存命中零等待；未命中走后端合成
+    /// （本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，完成/失败都会更新）。
     func speakText(_ text: String) {
-        homeStatus = "正在合成语音，请稍候…"
+        if VoiceCacheStore.shared.get(text) == nil {
+            homeStatus = "正在合成语音，请稍候…"
+        }
         voice.speak(text)
     }
 
@@ -326,10 +330,22 @@ final class AppModel: ObservableObject {
         startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
     }
 
-    /// 断线重连（私教「重连」按钮）。
+    /// WS 无法自己续期 access 令牌：重连前先打一个带鉴权的轻请求——
+    /// 令牌过期时 APIClient 会自动用 refresh 换新（App 开太久后「点重连没反应」的根因）。
+    private func afterTokenRefresh(_ then: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            if let token = auth.token { _ = try? await api.currentUser(token: token) }
+            then()
+        }
+    }
+
+    /// 断线重连（私教「重连」按钮）：先续期令牌再重连。
     func reconnectTutor() {
-        freeStream.stop()
-        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        afterTokenRefresh { [weak self] in
+            guard let self else { return }
+            self.freeStream.stop()
+            self.startHomeChat(sceneId: self.homeSceneId, sceneName: self.homeSceneName, liveTurn: self.tutorImmersive)
+        }
     }
 
     /// 换音色：入库（后端 TTS/实时通道都按用户音色下发）后按当前形态重连即刻生效。
@@ -384,37 +400,55 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 常规「点击说话」：未连接/已掉线则先整体重连（此前掉线后点按无反应，只能重启 App）；
+    /// 常规「点击说话」：未连接/已掉线则先续期令牌整体重连（此前掉线后点按无反应，只能重启 App）；
     /// 再按手动模式开始/结束录音。严格场景走 roleplay 流的手动提交。
     func toggleHomeTalk() {
         if homeSceneStrict {
             if stream.isConnected == false {
                 homeStatus = "正在重新连接…"
-                reconnectStrictStream()
+                afterTokenRefresh { [weak self] in self?.reconnectStrictStream() }
                 return
             }
             if stream.manualRecording { stream.endManualUtterance() } else { stream.beginManualUtterance() }
             return
         }
         if homeConnected == false || freeStream.isConnected == false {
-            startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName)
+            homeStatus = "正在重新连接…"
+            afterTokenRefresh { [weak self] in
+                guard let self else { return }
+                self.startHomeChat(sceneId: self.homeSceneId, sceneName: self.homeSceneName)
+            }
             return
         }
         if freeStream.manualRecording { freeStream.endManualUtterance() } else { freeStream.beginManualUtterance() }
+    }
+
+    /// 取消本句说话（说话条左侧 X）：丢弃录音，不发送。
+    func cancelHomeTalk() {
+        if homeSceneStrict { stream.cancelManualUtterance() } else { freeStream.cancelManualUtterance() }
     }
 
     /// 回到前台/掉线后兜底重连：连接还在就什么都不做（幂等，可放心在 scenePhase 变化时调用）。
     func reconnectIfNeeded() {
         guard auth.token != nil else { return }
         if showTutor {
-            if freeStream.isConnected == false { startTutor() }
+            if freeStream.isConnected == false {
+                afterTokenRefresh { [weak self] in self?.startTutor() }
+            }
             return
         }
         if homeSceneStrict {
-            if stream.isConnected == false, roleplay != nil { reconnectStrictStream() }
+            if stream.isConnected == false, roleplay != nil {
+                afterTokenRefresh { [weak self] in self?.reconnectStrictStream() }
+            }
             return
         }
-        if freeStream.isConnected == false { startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName) }
+        if freeStream.isConnected == false {
+            afterTokenRefresh { [weak self] in
+                guard let self else { return }
+                self.startHomeChat(sceneId: self.homeSceneId, sceneName: self.homeSceneName)
+            }
+        }
     }
 
     /// 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。
@@ -992,8 +1026,49 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 手动发起的采集（+ 面板「实时录音」）：全屏录音页只在手动时显示，自动时段采集不打扰使用。
+    @Published var manualCaptureUI = false
+
+    /// 取消录音（录音全屏页「取消」）：丢弃本次采集内容，不上传、不生成场景。
+    func cancelRecording() {
+        guard speech.isRecording else { return }
+        if autoCaptureEnabled, let end = currentAutoWindowEnd() {
+            autoCaptureSuppressedUntil = end
+        }
+        captureRemainingTokens = nil
+        let started = captureStartedAt
+        commitCaptureSeconds()
+        speech.stop(savePartial: false)
+        manualCaptureUI = false
+        if let started { transcripts.discardPending(since: started) }
+        statusMessage = "已取消录音，本次内容未保存"
+        homeStatus = statusMessage
+    }
+
+    /// 清除本地语音缓存（设置页），返回释放大小的文案。
+    func clearVoiceCache() -> String {
+        let freed = VoiceCacheStore.shared.clear()
+        return "已清除语音缓存 " + ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)
+    }
+
+    /// 清除私教/自由对话聊天记录（设置页）：服务端删除 + 本地清屏并重连。
+    func clearChatHistory() async -> String {
+        guard let token = auth.token else { return "请先登录" }
+        do {
+            let message = try await api.clearFreetalkHistory(token: token)
+            homeItems = []
+            if showTutor == false, homeSceneStrict == false {
+                startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName)
+            }
+            return message
+        } catch {
+            return "清除失败：\(error.localizedDescription)"
+        }
+    }
+
     func toggleRecording() async {
         if speech.isRecording {
+            manualCaptureUI = false
             // 若在自动采集时段内手动停止：抑制本时段的自动重启，直到该时段结束
             if autoCaptureEnabled, let end = currentAutoWindowEnd() {
                 autoCaptureSuppressedUntil = end
@@ -1009,6 +1084,7 @@ final class AppModel: ObservableObject {
             }
         } else {
             await startCaptureWithQuotaCheck()
+            manualCaptureUI = speech.isRecording   // 手动发起才全屏；自动时段采集走 evaluate 循环不置位
         }
     }
 
@@ -1593,11 +1669,17 @@ final class AppModel: ObservableObject {
     }
 
     /// 供 VoicePromptPlayer 拉取后端 TTS 音频（主线程隔离，避免 actor 问题）。
+    /// 先查本地语音缓存（听过的句子零等待），未命中才调后端合成并存入本地。
     /// 失败必须让用户看到原因（此前静默跳过——点了重播没声音也不知道为什么）。
     func fetchTTSAudio(_ text: String, cache: Bool = true) async -> Data? {
+        if let local = VoiceCacheStore.shared.get(text) {
+            if homeStatus.hasPrefix("正在合成语音") { homeStatus = "" }
+            return local
+        }
         guard let token = auth.token else { return nil }
         do {
             let data = try await api.ttsSpeak(text: text, cache: cache, token: token)
+            if cache { VoiceCacheStore.shared.put(data, for: text) }
             if homeStatus.hasPrefix("正在合成语音") { homeStatus = "" }
             return data
         } catch {

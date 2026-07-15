@@ -619,6 +619,35 @@ async def generate_translation(user_text: str, user_id: str | None = None) -> st
     return content.strip()
 
 
+async def generate_zh_translation(user_text: str, user_id: str | None = None, strict_retry: bool = False) -> str:
+    """字幕「译」按钮专用：英文台词 → 简体中文（强制中文输出，不做自动判向——
+    弱模型用同传提示词经常原样回英文）。strict_retry=True 用更强硬提示词重试。"""
+    config = resolve_ai_config()
+    if not config.enabled:
+        raise RuntimeError("AI 模型未配置：请在管理台「系统设置 → 模型」中配置")
+    if strict_retry:
+        system = (
+            "你是翻译器。把用户给出的英文句子翻译成简体中文。"
+            "只输出中文译文本身，禁止输出任何英文单词、拼音、解释或标点以外的内容。"
+        )
+    else:
+        system = (
+            "Translate the user's English sentence into Simplified Chinese. "
+            "Reply with ONLY the Chinese translation — no English, no explanations, no quotes."
+        )
+    content = await _chat_completion(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_text},
+        ],
+        temperature=0.2,
+        kind="chat",
+        user_id=user_id,
+        config=config,
+    )
+    return content.strip().strip('"').strip()
+
+
 _FREETALK_FALLBACK = {
     "user_display": "", "user_translation": "",
     "reply_en": "Let's practice! Tell me about your day — what did you do this morning?",

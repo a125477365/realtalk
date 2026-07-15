@@ -288,7 +288,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             else { stream.beginManualUtterance(); homeManualRecording.value = stream.manualRecording }
             return
         }
-        if (!homeConnected.value || !freeStream.isConnected) { startHomeChat(homeSceneId, homeSceneName.value); return }
+        if (!homeConnected.value || !freeStream.isConnected) {
+            homeStatus.value = "正在重新连接…"
+            afterTokenRefresh { startHomeChat(homeSceneId, homeSceneName.value) }
+            return
+        }
         if (freeStream.manualRecording) { freeStream.endManualUtterance(); homeManualRecording.value = false }
         else { freeStream.beginManualUtterance(); homeManualRecording.value = freeStream.manualRecording }
     }
@@ -297,14 +301,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun reconnectIfNeeded() {
         if (auth.token == null) return
         if (showTutor.value) {
-            if (!freeStream.isConnected) startTutor()
+            if (!freeStream.isConnected) afterTokenRefresh { startTutor() }
             return
         }
         if (homeSceneStrict.value) {
-            if (!stream.isConnected && roleplay != null) reconnectStrictStream()
+            if (!stream.isConnected && roleplay != null) afterTokenRefresh { reconnectStrictStream() }
             return
         }
-        if (!freeStream.isConnected) startHomeChat(homeSceneId, homeSceneName.value)
+        if (!freeStream.isConnected) afterTokenRefresh { startHomeChat(homeSceneId, homeSceneName.value) }
     }
 
     /** 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。 */
@@ -407,10 +411,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
     }
 
-    /** 断线重连（私教「重连」按钮）。 */
+    /** WS 无法自己续期 access 令牌：重连前先打一个带鉴权的轻请求——
+     *  令牌过期时 ApiClient 会自动用 refresh 换新（App 开太久后「点重连没反应」的根因）。 */
+    private fun afterTokenRefresh(then: () -> Unit) {
+        viewModelScope.launch {
+            auth.token?.let { t -> runCatching { api.currentUser(t) } }
+            then()
+        }
+    }
+
+    /** 断线重连（私教「重连」按钮）：先续期令牌再重连。 */
     fun reconnectTutor() {
-        freeStream.stop()
-        startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
+        afterTokenRefresh {
+            freeStream.stop()
+            startHomeChat(homeSceneId, homeSceneName.value, liveTurn = tutorImmersive.value)
+        }
     }
 
     /** 换音色：入库后按当前形态重连即刻生效。 */

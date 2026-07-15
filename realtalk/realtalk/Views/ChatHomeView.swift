@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// 常规对话主界面（新首页）：白底聊天流，自由聊天 / 自由场景 / 严格场景全在这一个界面。
@@ -58,6 +59,14 @@ struct ChatHomeView: View {
             // 私教通话（全屏，Claude 语音式界面）
             .fullScreenCover(isPresented: $model.showTutor) {
                 TutorCallView(stream: freeStream)
+            }
+            // 手动采集录音中：整屏进入录音状态（其余操作不可用），支持后台持续录音。
+            // 自动时段采集不弹全屏（保持可正常使用 App，状态条仍有红点提示）。
+            .fullScreenCover(isPresented: Binding(
+                get: { speech.isRecording && model.manualCaptureUI },
+                set: { _ in }   // 只能通过页内「完成/取消」结束
+            )) {
+                RecordingOverlayView()
             }
             // 学习提醒「私教来电」
             .fullScreenCover(isPresented: Binding(
@@ -418,24 +427,46 @@ struct ChatHomeView: View {
                         .foregroundStyle(RTTheme.textSecondary)
                         .frame(width: 40, height: 44)
                 }
-            } else {
-                // 左：+（附加功能上拉面板）；采集中变成红色停止按钮，一眼可见正在采集
-                Button {
-                    if speech.isRecording {
-                        Task { await model.toggleRecording() }
-                    } else {
-                        showingAttach = true
-                    }
-                } label: {
-                    Image(systemName: speech.isRecording ? "stop.fill" : "plus")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(speech.isRecording ? .white : RTTheme.textPrimary)
+            } else if recordingNow {
+                // 说话中：左 X 取消 / 中间波形 / 右侧蓝色对勾发送（参考微信语音条）
+                Button { model.cancelHomeTalk() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(RTTheme.textSecondary)
                         .frame(width: 48, height: 48)
-                        .background(speech.isRecording ? Color.red : RTTheme.surface, in: Circle())
-                        .overlay(Circle().stroke(speech.isRecording ? Color.clear : RTTheme.hairline, lineWidth: 1))
+                        .background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(speech.isRecording ? "停止采集并生成场景" : "更多功能")
+                .accessibilityLabel("取消这句话")
+
+                TalkWaveBar(level: model.homeSceneStrict ? rpStream.audioLevel : freeStream.audioLevel)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 25))
+                    .overlay(RoundedRectangle(cornerRadius: 25).stroke(RTTheme.hairline, lineWidth: 1.5))
+
+                Button { model.toggleHomeTalk() } label: {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .background(RTTheme.accent, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("发送这句话")
+            } else {
+                // 左：+（附加功能上拉面板）
+                Button { showingAttach = true } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                        .frame(width: 48, height: 48)
+                        .background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("更多功能")
 
                 talkButton
 
@@ -463,7 +494,8 @@ struct ChatHomeView: View {
         model.homeSceneStrict ? rpStream.manualRecording : freeStream.manualRecording
     }
 
-    /// 说话按钮：描边样式（与主界面背景区分即可，不再用品牌渐变大色块）；录音中红色实心。
+    /// 说话按钮：描边样式（与主界面背景区分即可，不再用品牌渐变大色块）。
+    /// 按下开始说话后整条会切换成「X + 波形 + ✓」形态（见 inputBar）。
     private var talkButton: some View {
         Button {
             model.toggleHomeTalk()
@@ -473,25 +505,19 @@ struct ChatHomeView: View {
                     ProgressView().tint(RTTheme.textSecondary)
                     Text("请稍候…").foregroundStyle(RTTheme.textSecondary)
                 } else {
-                    Image(systemName: recordingNow ? "stop.fill" : "mic.fill")
-                        .foregroundStyle(recordingNow ? .white : RTTheme.accent)
-                    Text(recordingNow ? "说完了，发送" : "点击说话")
-                        .foregroundStyle(recordingNow ? .white : RTTheme.textPrimary)
+                    Image(systemName: "mic.fill").foregroundStyle(RTTheme.accent)
+                    Text("点击说话").foregroundStyle(RTTheme.textPrimary)
                 }
             }
             .font(.system(size: 16 * model.fontScale, weight: .semibold))
             .frame(maxWidth: .infinity, minHeight: 50)
             .frame(height: 50)
-            .background(recordingNow ? AnyShapeStyle(Color.red) : AnyShapeStyle(RTTheme.surface),
-                        in: RoundedRectangle(cornerRadius: 25))
-            .overlay(
-                RoundedRectangle(cornerRadius: 25)
-                    .stroke(recordingNow ? Color.clear : RTTheme.hairline, lineWidth: 1.5)
-            )
+            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 25))
+            .overlay(RoundedRectangle(cornerRadius: 25).stroke(RTTheme.hairline, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
         .disabled(model.homeWorking)
-        .accessibilityHint("开始或结束本轮录音")
+        .accessibilityHint("开始本轮录音")
     }
 
     private func sendDraft() {
@@ -551,20 +577,6 @@ struct AttachmentSheet: View {
                     }
                     divider
                     attachRow(
-                        icon: "bubble.left.and.bubble.right",
-                        tint: RTTheme.success,
-                        title: "自由对话",
-                        subtitle: model.homeSceneName == nil ? "不带场景，和老师随便聊" : "退出当前场景，回到自由闲聊"
-                    ) {
-                        dismiss()
-                        if model.homeSceneName != nil {
-                            model.exitHomeScene()
-                        } else if model.homeConnected == false {
-                            model.startHomeChat()
-                        }
-                    }
-                    divider
-                    attachRow(
                         icon: "globe",
                         tint: RTTheme.accent,
                         title: "实时翻译",
@@ -613,4 +625,111 @@ struct AttachmentSheet: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+
+/// 说话中的波形条：中间一排随音量跳动的竖条（说话条形态：X + 波形 + ✓）。
+struct TalkWaveBar: View {
+    let level: Double
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<21, id: \.self) { i in
+                // 伪随机高度系数 + 实时电平：中间高两端低，看起来像语音波形
+                let base = 0.35 + 0.65 * sin(Double(i) / 20 * .pi)
+                let jitter = Double((i * 7) % 5) / 5.0
+                Capsule()
+                    .fill(RTTheme.accent)
+                    .frame(width: 3, height: 8 + CGFloat(base * (6 + jitter * 10 + 26 * level)))
+            }
+        }
+        .animation(.easeOut(duration: 0.1), value: level)
+        .accessibilityLabel("正在录音")
+    }
+}
+
+/// 采集录音全屏页：整个界面进入录音状态（其余功能不可用），
+/// 支持切到其他 App 后台持续录音（Info.plist 已含 audio 后台模式）。
+struct RecordingOverlayView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var speech: SpeechCaptureManager
+    @State private var pulse = false
+    @State private var elapsed = 0
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
+            VStack(spacing: 0) {
+                Spacer()
+                // 红色呼吸录音指示
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.18))
+                        .frame(width: pulse ? 168 : 128, height: pulse ? 168 : 128)
+                    Circle()
+                        .fill(Color.red.opacity(0.30))
+                        .frame(width: 112, height: 112)
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulse)
+                .onAppear { pulse = true }
+
+                Text(timeString)
+                    .font(.system(size: 34, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .padding(.top, 26)
+                Text("正在录音，停止后自动生成练习场景")
+                    .font(.system(size: 16 * model.fontScale, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.top, 10)
+                Text("可以切到其他 App，录音会在后台继续")
+                    .font(.system(size: 13 * model.fontScale))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.top, 6)
+                Spacer()
+
+                // 完成 = 停止并上传生成场景；取消 = 丢弃本次内容
+                Button {
+                    Task { await model.toggleRecording() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("完成，生成场景")
+                    }
+                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 54)
+                    .background(RTTheme.success, in: RoundedCornerShapeCapsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 40)
+
+                Button {
+                    model.cancelRecording()
+                } label: {
+                    Text("取消录音（不保存）")
+                        .font(.system(size: 15 * model.fontScale, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(.vertical, 16)
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 24)
+            }
+        }
+        .onReceive(timer) { _ in if speech.isRecording { elapsed += 1 } }
+        .interactiveDismissDisabled()   // 只能通过 完成/取消 退出
+    }
+
+    private var timeString: String {
+        String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+    }
+}
+
+/// Capsule 的 InsettableShape 包装（给按钮背景用）。
+private struct RoundedCornerShapeCapsule: Shape {
+    func path(in rect: CGRect) -> Path { Capsule().path(in: rect) }
 }

@@ -246,6 +246,16 @@ final class APIClient {
         return try await send(request)
     }
 
+    /// 设置页「清除聊天记录」：删除服务端私教/自由对话历史。
+    func clearFreetalkHistory(token: String) async throws -> String {
+        var request = URLRequest(url: url(for: "/freetalk/history"))
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 60
+        addDefaultHeaders(to: &request, token: token)
+        let response: MessageResponse = try await send(request)
+        return response.message
+    }
+
     /// 字幕卡内「译」按钮的按需翻译：该条消息没带翻译时调用一次，结果缓存在字幕条上。
     func translate(text: String, token: String) async throws -> String {
         var request = URLRequest(url: url(for: "/practice/translate"))

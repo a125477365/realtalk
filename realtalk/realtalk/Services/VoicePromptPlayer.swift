@@ -36,8 +36,15 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
         queue = trimmed
         cacheForQueue = cache
         self.completion = completion
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+        // 关键：不能切到 .playback！对话流的 AVAudioEngine（VoiceProcessingIO）还在录音，
+        // 中途换类别会打断它并疯狂报 "auou/vpio render err: -1"，之后整个音频系统失灵。
+        // 统一用与对话流一致的 .playAndRecord + .voiceChat（外放），已是该类别则不动。
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playAndRecord {
+            try? session.setCategory(.playAndRecord, mode: .voiceChat,
+                                     options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
+            try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        }
         startLevelTimer()
         speakNext()
     }

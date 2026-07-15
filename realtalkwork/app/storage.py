@@ -2515,6 +2515,12 @@ class Database:
             if old:
                 conn.execute(delete(freetalk_messages).where(freetalk_messages.c.id.in_([r[0] for r in old])))
 
+    def clear_freetalk_messages(self, user_id: str) -> int:
+        """清空该用户的私教/自由对话聊天记录（设置页「清除聊天记录」）。返回删除条数。"""
+        with self.engine.begin() as conn:
+            result = conn.execute(delete(freetalk_messages).where(freetalk_messages.c.user_id == user_id))
+        return int(result.rowcount or 0)
+
     def list_freetalk_messages(self, user_id: str, limit: int = 30) -> list[dict[str, str]]:
         """最近 limit 条（时间正序返回），供上下文与开场字幕回放。"""
         with self.engine.connect() as conn:

@@ -25,6 +25,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// (text, translation, 词级发音详情, 语速wpm)——词级来自本地语音服务器 whisper 置信度，云端无词级时为空
     var onUserText: ((String, String, [WordScore], Int) -> Void)?
     var onAIText: ((String, String) -> Void)?      // (text, translation)
+    /// 一句 AI 语音接收完成：(对应台词文本, 音频数据)——上层存本地缓存供「重播」零等待
+    var onAIAudio: ((String, Data) -> Void)?
     var onTerminated: ((String) -> Void)?          // 涉敏感话题被后端中断：提示并退出会话
 
     /// 词级发音详情（低置信 ≈ 发音待提高）
@@ -74,6 +76,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var aiQueue: [Data] = []
     private var incomingAudio = Data()
     private var receivingAudio = false
+    private var lastAIText = ""                    // 最近一条 ai_text（音频与文本按序对应）
     private var active = false
     // 断线重连：网络抖动时不直接报错停掉，自动重连；重连后后端回完整状态并补念当前待回应那句
     private var streamURL: URL?
@@ -215,8 +218,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// 每 ~0.1s 一个 PCM 块：电平/VAD/抢话 + 说话中把帧实时发给后端（边说边传）。
     private func processChunk(_ data: Data, level: Double) {
         guard active else { return }
+        // 暂停（麦克风斜线）＝彻底不听：电平归零、界面不再跳动，也不上传任何帧
+        if isPaused {
+            if audioLevel != 0 { audioLevel = 0 }
+            return
+        }
         audioLevel = level
-        guard isConnected, isPaused == false else { return }
+        guard isConnected else { return }
 
         if liveMode {
             // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
@@ -314,6 +322,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         sendJSON(["type": "reset_audio"])   // 清掉可能残留的帧，从干净状态开始
         manualRecording = true
         if engineRunning == false { startRecording() }
+    }
+
+    /// 取消本句（说话条左侧 X）：丢弃已上传的帧，不提交、不评分。
+    func cancelManualUtterance() {
+        guard manualCommit, manualRecording else { return }
+        manualRecording = false
+        resetUtterance(sendReset: true)   // 通知后端清掉本轮已积累的帧
     }
 
     /// 点按结束：提交本句（跳过 VAD 噪音门槛——用户明确点了发送）。
@@ -483,7 +498,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                 }
             }
         case "ai_text":
-            if let t = obj["text"] as? String { onAIText?(t, obj["translation"] as? String ?? "") }
+            if let t = obj["text"] as? String {
+                lastAIText = t
+                onAIText?(t, obj["translation"] as? String ?? "")
+            }
         case "ai_line":
             break   // 字幕由 result 的完整状态驱动（roleplay.messages）
         case "ai_audio_error":
@@ -494,7 +512,11 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             incomingAudio.removeAll()
         case "ai_audio_end":
             receivingAudio = false
-            if incomingAudio.isEmpty == false { enqueueAI(incomingAudio) }
+            if incomingAudio.isEmpty == false {
+                // 先交上层存本地（微信式语音缓存，重播零等待），再进播放队列
+                if lastAIText.isEmpty == false { onAIAudio?(lastAIText, incomingAudio) }
+                enqueueAI(incomingAudio)
+            }
             incomingAudio.removeAll()
         case "result":
             if let state = obj["state"], let data = try? JSONSerialization.data(withJSONObject: state) {

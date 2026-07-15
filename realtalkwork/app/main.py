@@ -33,6 +33,7 @@ from .ark_client import (
     translate_instructions,
     generate_freetalk_reply,
     generate_translation,
+    generate_zh_translation,
     generate_refinements,
     generate_learning,
     SCENE_MARKER_RE,
@@ -1684,16 +1685,25 @@ async def practice_refine(request: RefineRequest, user: UserOut = Depends(curren
 
 @app.post("/practice/translate", response_model=TranslateResponse)
 async def practice_translate(request: TranslateRequest, user: UserOut = Depends(current_user)) -> TranslateResponse:
-    """字幕卡内「译」按钮的按需翻译：历史回放/实时通道等场景下 translation 为空时客户端调用一次。
-    英→简中 / 中→英 自动判向，结果由客户端缓存在该条字幕上。"""
+    """字幕卡内「译」按钮的按需翻译：AI 台词（英文）→ 简体中文。
+    不用同传的自动判向提示词——弱模型经常原样回英文；这里强制中文输出，
+    结果无中文字符时换更强硬的提示词重试一次。"""
     require_ai_access(user, estimated_cents=estimate_text_cost_cents(len(request.text or "")))
     text = (request.text or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="text 不能为空")
     if is_political_sensitive(text):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="涉及敏感话题，无法翻译")
+
+    def _has_cjk(s: str) -> bool:
+        return any("㐀" <= ch <= "鿿" for ch in s)
+
+    if _has_cjk(text):
+        return TranslateResponse(text=text)   # 本身就是中文：不用翻
     try:
-        translated = await generate_translation(text, user_id=user.id)
+        translated = await generate_zh_translation(text, user_id=user.id)
+        if not _has_cjk(translated):
+            translated = await generate_zh_translation(text, user_id=user.id, strict_retry=True)
     except Exception as exc:  # noqa: BLE001 — #9：模型不可用直接报错
         print(f"[translate] 按需翻译失败：{str(exc)[:300]}", flush=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -2208,17 +2218,27 @@ async def upload_transcripts(
     request: TranscriptUploadRequest,
     user: UserOut = Depends(current_user),
 ) -> TranscriptUploadResponse:
-    """兼容旧客户端：不再写 transcripts 表，清洗后直接生成场景。"""
+    """兼容旧客户端：不再写 transcripts 表，清洗后生成场景。
+    生成改为后台异步：本地 CPU 大模型生成场景要几分钟，同步等待会超过客户端超时
+    （表现为「采集内容上传失败：请求没有完成」）。上传成功立即返回，场景稍后出现在列表。"""
     require_ai_access(user)
     items = sorted(clean_transcript_items(request.items), key=lambda item: item.timestamp)
     if not items:
         return TranscriptUploadResponse(uploaded=0, retention_days=0, generated=0, scenario_ids=[])
-    scenarios = await _generate_and_save_capture_scenarios(user.id, items)
+
+    async def _generate_bg() -> None:
+        try:
+            scenarios = await _generate_and_save_capture_scenarios(user.id, items)
+            print(f"[capture] 采集上传后台生成完成：{len(scenarios)} 个场景 (user={user.id})", flush=True)
+        except Exception as exc:  # noqa: BLE001 — 后台生成失败必须留日志（此前同步 500 只有裸错误）
+            print(f"[capture] 采集上传后台生成失败：{str(exc)[:300]}", flush=True)
+
+    asyncio.create_task(_generate_bg())
     return TranscriptUploadResponse(
         uploaded=len(items),
         retention_days=0,
-        generated=len(scenarios),
-        scenario_ids=[scenario.scene_id for scenario in scenarios],
+        generated=0,   # 异步生成中；完成后出现在场景列表
+        scenario_ids=[],
     )
 
 
@@ -3706,6 +3726,13 @@ async def freetalk_stream(
             await websocket.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+@app.delete("/freetalk/history", response_model=MessageResponse)
+def clear_freetalk_history(user: UserOut = Depends(current_user)) -> MessageResponse:
+    """设置页「清除聊天记录」：删掉该用户的私教/自由对话历史（不影响学习记忆与练习记录）。"""
+    removed = db.clear_freetalk_messages(user.id)
+    return MessageResponse(message=f"已清除 {removed} 条聊天记录")
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)

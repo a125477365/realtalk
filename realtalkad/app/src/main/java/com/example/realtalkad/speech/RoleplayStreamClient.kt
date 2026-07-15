@@ -226,8 +226,10 @@ class RoleplayStreamClient(private val context: Context) {
     /** 每 ~100ms 一个 PCM 块：电平/VAD/抢话 + 说话中把帧实时发给后端（边说边传）。 */
     private fun processChunk(chunk: ByteArray, level: Float) {
         if (!active) return
+        // 暂停（麦克风斜线）＝彻底不听：电平归零、界面不再跳动，也不上传任何帧
+        if (paused) { onUserLevel?.invoke(0f); return }
         onUserLevel?.invoke(level)
-        if (!connected || paused) return
+        if (!connected) return
         if (liveMode) {
             // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
             runCatching { webSocket?.send(chunk.toByteString()) }
