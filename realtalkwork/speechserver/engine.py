@@ -17,7 +17,7 @@ import urllib.request
 import wave
 
 MODELS_DIR = os.getenv("MODELS_DIR", "/models")
-DEVICE = os.getenv("SPEECH_DEVICE", "cpu")                      # cpu / cuda
+DEVICE = os.getenv("SPEECH_DEVICE", "cpu")                      # cpu / cuda / metal（Apple GPU，原生 macOS 部署）
 ASR_MODEL = os.getenv("SPEECH_ASR_MODEL", "small")              # whisper 尺寸 tiny/base/small/medium/large-v3
 LLM_REPO = os.getenv("SPEECH_LLM_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
 LLM_FILE = os.getenv("SPEECH_LLM_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
@@ -115,8 +115,11 @@ class Engines:
                     from faster_whisper import WhisperModel
 
                     path = ensure_whisper_model(ASR_MODEL)
+                    # CTranslate2 只认 cpu/cuda：metal 模式下 whisper 走 CPU int8
+                    #（Apple Silicon NEON 下 small 模型接近实时，瓶颈不在 ASR）
+                    whisper_device = "cuda" if DEVICE == "cuda" else "cpu"
                     compute = "float16" if DEVICE == "cuda" else "int8"
-                    cls._whisper = WhisperModel(path, device=DEVICE, compute_type=compute)
+                    cls._whisper = WhisperModel(path, device=whisper_device, compute_type=compute)
         return cls._whisper
 
     @classmethod
@@ -130,7 +133,8 @@ class Engines:
                     cls._llama = Llama(
                         model_path=path,
                         n_ctx=LLM_CTX,
-                        n_gpu_layers=-1 if DEVICE == "cuda" else 0,
+                        # cuda/metal 都把全部层放 GPU（metal=Apple 统一内存，llama.cpp 原生支持）
+                        n_gpu_layers=-1 if DEVICE in ("cuda", "metal") else 0,
                         verbose=False,
                     )
         return cls._llama
