@@ -119,6 +119,9 @@ async def speech(payload: dict) -> Response:
     text = str(payload.get("input", "")).strip()
     if not text:
         return JSONResponse({"error": "input 为空"}, status_code=400)
+    # instructions（情绪/语气指令，OpenAI gpt-4o-mini-tts 同名参数）：CustomVoice 模型不支持
+    # 按句语气，先接收但忽略——换 VoiceDesign 模型后可在此把它并入合成调用
+    _ = payload.get("instructions")
     wav = await engine.synthesize(text, str(payload.get("voice") or "") or None)
     return Response(content=wav, media_type="audio/wav")
 

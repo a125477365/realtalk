@@ -97,6 +97,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val masked: Boolean = false,          // AI 台词默认打码（先听后看），点击文字才显示
         val showTranslation: Boolean = false, // 卡内「译」按钮切换
         val translating: Boolean = false,     // 按需翻译请求进行中
+        val tone: String = "",                // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
     )
 
     val homeItems = MutableStateFlow<List<HomeChatItem>>(emptyList())
@@ -165,7 +166,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.onFreeTalkHistory = { items ->
             homeConnected.value = true
             // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
-            homeItems.value = items.map { HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second) }
+            homeItems.value = items.map {
+                HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second, tone = it.third)
+            }
             homeStatus.value = ""
             setHomeWorking(false)
         }
@@ -173,10 +176,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.onUserText = { t, tr, words, wpm ->
             homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
         }
-        freeStream.onAIText = { t, tr ->
+        freeStream.onAIText = { t, tr, tone ->
             setHomeWorking(false)
             // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
-            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr, masked = true)
+            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr, masked = true, tone = tone)
         }
         freeStream.onError = { msg -> setHomeWorking(false); homeStatus.value = msg; homeConnected.value = false }
         freeStream.onResultMessage = { msg -> setHomeWorking(false); homeStatus.value = msg }
@@ -237,9 +240,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 卡内「朗读」按钮：单句重听（走后端 TTS，带缓存）。
      *  本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，合成完成/失败都会更新。 */
-    fun speakText(text: String) {
+    fun speakText(text: String, tone: String = "") {
         homeStatus.value = "正在合成语音，请稍候…"
-        voice.speak(text)
+        voice.speak(text, tone = tone)
     }
 
     /** 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。 */
@@ -615,9 +618,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // AI 台词改用后端 TTS（可选音色）；后端不可用 VoicePlayer 自动回退本机 TTS
         voice.scope = viewModelScope
         // 失败必须让用户看到原因（此前静默跳过——点了重播没声音也不知道为什么）
-        voice.audioProvider = { text, cache ->
+        voice.audioProvider = { text, tone, cache ->
             auth.token?.let { t ->
-                runCatching { api.ttsSpeak(text, t, cache) }
+                runCatching { api.ttsSpeak(text, t, cache, tone) }
                     .onSuccess { if (homeStatus.value.startsWith("正在合成语音")) homeStatus.value = "" }
                     .onFailure { e ->
                         homeStatus.value = "语音合成失败：${e.message ?: "请稍后再试"}"

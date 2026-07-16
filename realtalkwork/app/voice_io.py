@@ -61,8 +61,9 @@ def _redis():
         return None
 
 
-def _tts_cache_key(text: str, voice: str, fmt: str) -> str:
-    h = hashlib.sha256(f"{voice}|{fmt}|{text}".encode("utf-8")).hexdigest()[:40]
+def _tts_cache_key(text: str, voice: str, fmt: str, instructions: str = "") -> str:
+    # 情绪指令进缓存键：同文本不同语气是不同音频
+    h = hashlib.sha256(f"{voice}|{fmt}|{instructions}|{text}".encode("utf-8")).hexdigest()[:40]
     return f"rt:tts:{h}"
 
 
@@ -269,8 +270,17 @@ def _silent_wav(seconds: float = 0.3, rate: int = 16000) -> bytes:
     )
 
 
+def tone_instructions(tone: str | None) -> str:
+    """情绪标签 → TTS 语气指令。空/未知返回空串（平语气，不带指令）。
+    云端 gpt-4o-mini-tts 按 instructions 生效；本地语音服务器收到后忽略（未来 VoiceDesign 可用）。"""
+    value = (tone or "").strip().lower()[:24]
+    if not value or not value.isalpha():
+        return ""
+    return f"Speak in a {value} tone."
+
+
 async def synthesize(text: str, voice: str | None = None, use_cache: bool = True,
-                     user_id: str | None = None) -> tuple[bytes, str]:
+                     user_id: str | None = None, instructions: str = "") -> tuple[bytes, str]:
     """把文本合成为音频，返回 (音频字节, content_type)。文本为空抛错。
 
     use_cache：是否走 Redis 合成缓存。手工点读/试听同一句可能反复听 → 缓存(默认)；
@@ -290,7 +300,7 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
         return _silent_wav(), content_type_for("wav")   # dev：便宜，不缓存不限并发
 
     ct = content_type_for(fmt)
-    cache_key = _tts_cache_key(text, voice, fmt) if use_cache else None
+    cache_key = _tts_cache_key(text, voice, fmt, instructions) if use_cache else None
     if cache_key is not None:
         cached = _cache_get(cache_key)
         if cached is not None:
@@ -306,10 +316,14 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
             raise RuntimeError("B·对话语音合成未配置，请在管理台「系统设置 → B·对话语音模型」中配置")
         # 本地 CPU 跑 Qwen3-TTS 一句话实测 60~110s，60s 上限会把本地合成全部掐死（重播/朗读永远无声）
         async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=15)) as client:
+            payload: dict[str, Any] = {"model": config["model"], "input": text, "voice": voice, "response_format": fmt}
+            if instructions:
+                # 语气指令：OpenAI gpt-4o-mini-tts 官方参数；本地语音服务器收 dict、多余字段安全忽略
+                payload["instructions"] = instructions
             resp = await client.post(
                 config["base_url"].rstrip("/") + "/audio/speech",
                 headers={"Authorization": f"Bearer {config['api_key']}"},
-                json={"model": config["model"], "input": text, "voice": voice, "response_format": fmt},
+                json=payload,
             )
         if resp.status_code >= 400:
             # 带上游错误正文抛出：日志与 /tts/speak 的 502 detail 都能看到真实原因

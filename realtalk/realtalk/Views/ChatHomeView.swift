@@ -264,8 +264,8 @@ struct ChatHomeView: View {
                     .foregroundStyle(RTTheme.textSecondary)
             }
             HStack(spacing: 16) {
-                // 波形＝重新播放这一句（与顶栏喇叭「自动播放开关」含义区分开）
-                Button { model.speakText(item.text) } label: {
+                // 波形＝重新播放这一句（本地缓存零等待；被清理则按同样情绪标签重新合成）
+                Button { model.speakText(item.text, tone: item.tone) } label: {
                     Image(systemName: "waveform")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(RTTheme.accent)

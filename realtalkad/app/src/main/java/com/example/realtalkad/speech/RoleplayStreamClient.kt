@@ -37,10 +37,10 @@ class RoleplayStreamClient(private val context: Context) {
     var onAiLevel: ((Float) -> Unit)? = null
     var onAiSpeaking: ((Boolean) -> Unit)? = null
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕。协议其余部分与沉浸式完全一致。
-    var onFreeTalkHistory: ((List<Pair<String, String>>) -> Unit)? = null   // (speaker, text)
+    var onFreeTalkHistory: ((List<Triple<String, String, String>>) -> Unit)? = null   // (speaker, text, tone)
     /** (text, translation, 词级发音详情, 语速wpm)——词级来自本地语音服务器 whisper 置信度，云端无词级为空 */
     var onUserText: ((String, String, List<WordScore>, Int) -> Unit)? = null
-    var onAIText: ((String, String) -> Unit)? = null      // (text, translation)
+    var onAIText: ((String, String, String) -> Unit)? = null      // (text, translation, tone 情绪标签)
     var onTerminated: ((String) -> Unit)? = null          // 涉敏感话题被后端中断：提示并退出会话
 
     /** 词级发音详情（低置信 ≈ 发音待提高） */
@@ -421,7 +421,9 @@ class RoleplayStreamClient(private val context: Context) {
                 // 自由对话：state 直接带历史字幕列表
                 obj.optJSONArray("messages")?.let { arr ->
                     val items = (0 until arr.length()).mapNotNull { i ->
-                        arr.optJSONObject(i)?.let { m -> m.optString("speaker", "ai") to m.optString("text") }
+                        arr.optJSONObject(i)?.let { m ->
+                            Triple(m.optString("speaker", "ai"), m.optString("text"), m.optString("tone"))
+                        }
                     }
                     onFreeTalkHistory?.invoke(items)
                 }
@@ -462,7 +464,7 @@ class RoleplayStreamClient(private val context: Context) {
                     else { onStatus?.invoke(""); onCommitted?.invoke() }
                 }
             }
-            "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"))
+            "ai_text" -> onAIText?.invoke(obj.optString("text"), obj.optString("translation"), obj.optString("tone"))
             "ai_audio_error" -> onStatus?.invoke("老师的语音没能合成，本句只显示文字")
             "ai_audio_begin" -> { receivingAudio = true; incoming = java.io.ByteArrayOutputStream() }
             "ai_audio_end" -> {

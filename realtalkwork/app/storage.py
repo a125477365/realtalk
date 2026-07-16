@@ -208,6 +208,9 @@ freetalk_messages = Table(
     Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("speaker", Text, nullable=False),  # user / ai
     Column("content", Text, nullable=False),
+    # 情绪标签（cheerful/encouraging/…，可为空）：合成语音的语气，随消息持久化——
+    # 重播时按同样语气重新合成（实时通道的即兴语音无标签，重播按平语气合成）
+    Column("tone", Text, nullable=False, server_default=""),
     Column("created_at", Text, nullable=False),
 )
 Index("idx_freetalk_messages_user_created", freetalk_messages.c.user_id, freetalk_messages.c.created_at)
@@ -460,6 +463,7 @@ class Database:
         self._ensure_preset_owner()
         with self.engine.begin() as conn:
             self._ensure_column(conn, "users", "balance_cents", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "freetalk_messages", "tone", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "users", "wechat_openid", "TEXT")
             self._ensure_column(conn, "users", "display_name", "TEXT")
             self._ensure_column(conn, "users", "avatar_url", "TEXT")
@@ -2497,12 +2501,13 @@ class Database:
 
     _FREETALK_KEEP_MESSAGES = 200   # 每用户最多保留的历史条数（超过删最旧，字幕回放/上下文都用不到更早的）
 
-    def add_freetalk_message(self, user_id: str, speaker: str, content: str) -> None:
+    def add_freetalk_message(self, user_id: str, speaker: str, content: str, tone: str = "") -> None:
         now = _iso(_now())
         with self.engine.begin() as conn:
             conn.execute(
                 insert(freetalk_messages).values(
-                    id=str(uuid.uuid4()), user_id=user_id, speaker=speaker, content=content, created_at=now,
+                    id=str(uuid.uuid4()), user_id=user_id, speaker=speaker, content=content,
+                    tone=(tone or "")[:40], created_at=now,
                 )
             )
             # 裁剪：只留最近 N 条（按时间删最旧）
@@ -2514,6 +2519,15 @@ class Database:
             ).fetchall()
             if old:
                 conn.execute(delete(freetalk_messages).where(freetalk_messages.c.id.in_([r[0] for r in old])))
+
+    def apply_light_migrations(self) -> None:
+        """追加型小迁移（只加列，幂等、多活安全）：API 启动时自动执行，
+        升级镜像后无需手动去装库节点跑 db_init。破坏性变更仍必须走 db_init。"""
+        try:
+            with self.engine.begin() as conn:
+                self._ensure_column(conn, "freetalk_messages", "tone", "TEXT NOT NULL DEFAULT ''")
+        except Exception as exc:  # noqa: BLE001 — 迁移失败要醒目留日志，但不阻断启动（列缺失时写入会再报错）
+            print(f"[db] 轻量迁移失败：{str(exc)[:200]}", flush=True)
 
     def clear_freetalk_messages(self, user_id: str) -> int:
         """清空该用户的私教/自由对话聊天记录（设置页「清除聊天记录」）。返回删除条数。"""
@@ -2534,7 +2548,7 @@ class Database:
                 .mappings()
                 .fetchall()
             )
-        return [{"speaker": r["speaker"], "content": r["content"]} for r in reversed(rows)]
+        return [{"speaker": r["speaker"], "content": r["content"], "tone": r["tone"] or ""} for r in reversed(rows)]
 
     # ---- 学习提醒（智能电话）----
 

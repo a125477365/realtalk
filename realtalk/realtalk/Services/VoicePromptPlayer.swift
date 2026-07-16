@@ -10,24 +10,28 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
     @Published private(set) var audioLevel: Double = 0
 
-    /// 由 AppModel 注入：给定(文本, 是否走缓存)返回后端合成音频（调 /tts/speak）。cache=false 用于指导性内容（不入 Redis）。
-    var audioProvider: ((String, Bool) async -> Data?)?
+    /// 由 AppModel 注入：给定(文本, 情绪标签, 是否走缓存)返回后端合成音频（调 /tts/speak）。cache=false 用于指导性内容（不入 Redis）。
+    var audioProvider: ((String, String, Bool) async -> Data?)?
 
     private var player: AVAudioPlayer?
-    private var queue: [String] = []
+    private var queue: [(text: String, tone: String)] = []
     private var cacheForQueue = true   // 本批文本是否走后端缓存（指导内容传 false）
     private var completion: (() -> Void)?
     private var levelTimer: Timer?
     private var fetchTask: Task<Void, Never>?
 
-    func speak(_ text: String, cache: Bool = true, completion: (() -> Void)? = nil) {
-        speak([text], cache: cache, completion: completion)
+    func speak(_ text: String, tone: String = "", cache: Bool = true, completion: (() -> Void)? = nil) {
+        speak([(text, tone)], cache: cache, completion: completion)
     }
 
     func speak(_ texts: [String], cache: Bool = true, completion: (() -> Void)? = nil) {
-        let trimmed = texts
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.isEmpty == false }
+        speak(texts.map { ($0, "") }, cache: cache, completion: completion)
+    }
+
+    func speak(_ items: [(String, String)], cache: Bool = true, completion: (() -> Void)? = nil) {
+        let trimmed = items
+            .map { (text: $0.0.trimmingCharacters(in: .whitespacesAndNewlines), tone: $0.1) }
+            .filter { $0.text.isEmpty == false }
         guard trimmed.isEmpty == false else {
             completion?()
             return
@@ -71,12 +75,12 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
             finished?()
             return
         }
-        let text = queue.removeFirst()
+        let item = queue.removeFirst()
         isSpeaking = true
         guard let provider = audioProvider else { speakNext(); return }   // 无后端合成器 → 跳过（字幕仍在）
         let useCache = cacheForQueue
         fetchTask = Task { [weak self] in
-            let data = await provider(text, useCache)
+            let data = await provider(item.text, item.tone, useCache)
             guard let self, Task.isCancelled == false else { return }
             if let data, self.playData(data) { return }   // 播放完成会在 delegate 里继续下一句
             self.speakNext()                               // 后端音频不可用 → 跳过该句，不再本机合成

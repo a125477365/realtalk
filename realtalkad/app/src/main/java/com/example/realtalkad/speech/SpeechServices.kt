@@ -194,8 +194,8 @@ class VoicePlayer(private val context: Context) {
     var onStateChange: ((Boolean) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
 
-    /** 由 AppViewModel 注入：给定(文本, 是否走缓存)返回后端合成音频（调 /tts/speak）。指导内容传 cache=false。 */
-    var audioProvider: (suspend (String, Boolean) -> ByteArray?)? = null
+    /** 由 AppViewModel 注入：给定(文本, 情绪标签, 是否走缓存)返回后端合成音频（调 /tts/speak）。指导内容传 cache=false。 */
+    var audioProvider: (suspend (String, String, Boolean) -> ByteArray?)? = null
     var scope: CoroutineScope? = null
 
     private var pendingCompletion: (() -> Unit)? = null
@@ -204,7 +204,7 @@ class VoicePlayer(private val context: Context) {
     private var fetchJob: Job? = null
 
     // 只用后端语音服务，普通朗读与实时对话使用用户选择的同一声音。
-    fun speak(text: String, cache: Boolean = true, completion: (() -> Unit)? = null) {
+    fun speak(text: String, tone: String = "", cache: Boolean = true, completion: (() -> Unit)? = null) {
         if (text.isBlank()) { completion?.invoke(); return }
         stopPlayback()
         val provider = audioProvider
@@ -213,7 +213,7 @@ class VoicePlayer(private val context: Context) {
             isSpeaking = true
             onStateChange?.invoke(true)
             fetchJob = sc.launch {
-                val bytes = runCatching { provider(text, cache) }.getOrNull()
+                val bytes = runCatching { provider(text, tone, cache) }.getOrNull()
                 if (bytes != null && playBytes(bytes, completion)) return@launch
                 withContext(Dispatchers.Main) { skip(completion) }   // 后端音频不可用 → 跳过
             }

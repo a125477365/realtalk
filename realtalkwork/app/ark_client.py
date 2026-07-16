@@ -456,15 +456,27 @@ _FREETALK_SCENE_POLICY = (
 
 _FREETALK_JSON_POLICY = (
     "\n\nRespond with ONLY a JSON object (no markdown, no code fence) with exactly these string fields:\n"
-    '{"user_display": "...", "user_translation": "...", "reply_en": "...", "reply_zh": "..."}\n'
+    '{"user_display": "...", "user_translation": "...", "reply_en": "...", "reply_zh": "...", "tone": "..."}\n'
     "- user_display: the user's latest utterance echoed back. If it was Chinese, rewrite in Simplified Chinese "
     "(简体, never Traditional). If English, keep as-is, lightly cleaned. Empty string if there is no user utterance.\n"
     "- user_translation: translate the user's utterance to the OTHER language — Chinese→English, or English→Simplified "
     "Chinese. Empty string if there is no user utterance.\n"
     "- reply_en: your spoken tutor reply (English; Chinese only when explaining a word/grammar as allowed above).\n"
     "- reply_zh: a natural Simplified-Chinese translation of reply_en (for learners who need it).\n"
+    "- tone: how reply_en should SOUND when spoken, exactly one of: cheerful / encouraging / warm / calm / "
+    "serious / apologetic / excited / neutral. Match the teaching moment (praise→cheerful, correction→warm, "
+    "celebration→excited). Use neutral if unsure.\n"
     "All Chinese in every field MUST be Simplified. Output valid JSON only."
 )
+
+# 合法情绪标签白名单（防脏值进 DB/缓存键/TTS 指令）
+FREETALK_TONES = {"cheerful", "encouraging", "warm", "calm", "serious", "apologetic", "excited", "neutral"}
+
+
+def normalize_tone(raw: str | None) -> str:
+    """把模型给的语气标签规整到白名单：neutral/未知/空 → ""（平语气，不带指令）。"""
+    value = (raw or "").strip().lower()
+    return value if value in FREETALK_TONES and value != "neutral" else ""
 
 def _fit_recent(items: list[dict[str, str]], budget_chars: int) -> list[dict[str, str]]:
     """从最近往前取历史，直到字符预算用完——取代写死的条数截断。
@@ -695,6 +707,7 @@ async def generate_freetalk_reply(
             "user_translation": str(data.get("user_translation", "")).strip(),
             "reply_en": str(data.get("reply_en", "")).strip() or _FREETALK_FALLBACK["reply_en"],
             "reply_zh": str(data.get("reply_zh", "")).strip(),
+            "tone": normalize_tone(str(data.get("tone", ""))),
         }
     except Exception:  # noqa: BLE001 — 模型没按 JSON 输出（小模型常见）
         plain = content.strip().strip("`").strip()
@@ -718,13 +731,13 @@ async def generate_freetalk_reply(
                 salvage = re.sub(r"\s+", " ", salvage).strip(" ,:")
                 reply_en = salvage or _FREETALK_FALLBACK["reply_en"]
                 print(f"[ai] 自由对话回复JSON残缺，打捞英文句采用：{reply_en[:60]!r}", flush=True)
-                return {"user_display": "", "user_translation": "", "reply_en": reply_en, "reply_zh": ""}
+                return {"user_display": "", "user_translation": "", "reply_en": reply_en, "reply_zh": "", "tone": ""}
             print(f"[ai] 自由对话回复JSON解析失败，正则提取字段采用：{reply_en[:60]!r}", flush=True)
             return {"user_display": _field("user_display"), "user_translation": _field("user_translation"),
-                    "reply_en": reply_en, "reply_zh": _field("reply_zh")}
+                    "reply_en": reply_en, "reply_zh": _field("reply_zh"), "tone": normalize_tone(_field("tone"))}
         # 纯文本（无 JSON 痕迹）：内容仍是老师的话，直接当回复用
         print(f"[ai] 自由对话回复非JSON，按纯文本采用：{plain[:80]!r}", flush=True)
-        return {"user_display": "", "user_translation": "", "reply_en": plain or _FREETALK_FALLBACK["reply_en"], "reply_zh": ""}
+        return {"user_display": "", "user_translation": "", "reply_en": plain or _FREETALK_FALLBACK["reply_en"], "reply_zh": "", "tone": ""}
 
 
 async def update_freetalk_memory(user_id: str) -> None:

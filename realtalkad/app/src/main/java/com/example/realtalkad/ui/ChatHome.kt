@@ -366,7 +366,7 @@ private fun AiCard(model: AppViewModel, item: AppViewModel.HomeChatItem, fontSca
             // 波形＝重新播放这一句（与顶栏喇叭「自动播放开关」含义区分开）
             Icon(
                 Icons.Filled.GraphicEq, contentDescription = "重新播放这一句", tint = RT.Accent,
-                modifier = Modifier.size(20.dp).clickable { model.speakText(item.text) },
+                modifier = Modifier.size(20.dp).clickable { model.speakText(item.text, item.tone) },
             )
             Text(
                 "译",
@@ -545,6 +545,7 @@ private fun LegendDot(label: String, color: Color, fontScale: Float) {
  * 深色底 + 底部光晕随说话音量呼吸、老师头像动嘴、随声音变化的麦克风、
  * 底部一排：音色胶囊（中）+ 退出 X（右）。注重自由对话，不放多余选项。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TutorCallScreen(model: AppViewModel) {
     val connected by model.homeConnected.collectAsState()
@@ -563,6 +564,7 @@ fun TutorCallScreen(model: AppViewModel) {
 
     var elapsed by remember { mutableStateOf(0) }
     var showVoiceMenu by remember { mutableStateOf(false) }
+    var guidanceFor by remember { mutableStateOf<AppViewModel.HomeChatItem?>(null) }
 
     LaunchedEffect(Unit) { model.startTutor() }
     LaunchedEffect(connected) { while (true) { delay(1000); if (connected) elapsed++ } }
@@ -649,9 +651,40 @@ fun TutorCallScreen(model: AppViewModel) {
                                     .background(if (item.kind == AppViewModel.HomeKind.USER) RT.Accent else RT.Success, CircleShape))
                                 Text(item.text, color = Color.White, fontWeight = FontWeight.Medium, fontSize = (17 * fontScale).sp)
                             }
-                            if (showChinese && item.translation.isNotBlank()) {
+                            if (item.showTranslation && item.translating) {
+                                Text("正在翻译…", color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = (13 * fontScale).sp, modifier = Modifier.padding(start = 15.dp))
+                            } else if (item.translation.isNotBlank() && (showChinese || item.showTranslation)) {
                                 Text(item.translation, color = Color.White.copy(alpha = 0.65f),
                                     fontSize = (14 * fontScale).sp, modifier = Modifier.padding(start = 15.dp))
+                            }
+                            // 行内小操作（暂停/任意时刻可点）：AI 句=重播+译；用户句=发音指导
+                            Row(
+                                Modifier.padding(start = 15.dp, top = 3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (item.kind == AppViewModel.HomeKind.AI) {
+                                    Icon(
+                                        Icons.Filled.GraphicEq, contentDescription = "重新播放这一句",
+                                        tint = Color.White.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(18.dp).clickable { model.speakText(item.text, item.tone) },
+                                    )
+                                    Text(
+                                        "译", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier
+                                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(5.dp))
+                                            .clickable { model.toggleItemTranslation(item.id) }
+                                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                                    )
+                                } else {
+                                    Text(
+                                        "发音指导 ›", color = Color.White.copy(alpha = 0.8f),
+                                        fontSize = (12 * fontScale).sp, fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.clickable { guidanceFor = item },
+                                    )
+                                }
                             }
                         }
                     }
@@ -735,6 +768,11 @@ fun TutorCallScreen(model: AppViewModel) {
             Text("内容由 AI 生成", color = Color.White.copy(alpha = 0.35f), fontSize = 11.sp,
                 modifier = Modifier.padding(top = 10.dp, bottom = 8.dp).fillMaxWidth(),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
+    }
+    guidanceFor?.let { item ->
+        ModalBottomSheet(onDismissRequest = { guidanceFor = null }) {
+            GuidanceDetailSheet(model, item, fontScale)
         }
     }
 }

@@ -153,6 +153,7 @@ final class AppModel: ObservableObject {
         var masked: Bool = false      // AI 台词默认打码（先听后看），点击文字才显示
         var showTranslation: Bool = false   // 卡内「译」按钮切换
         var translating: Bool = false       // 按需翻译请求进行中
+        var tone: String = ""               // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
     }
 
     @Published var homeItems: [HomeChatItem] = []
@@ -217,7 +218,7 @@ final class AppModel: ObservableObject {
         freeStream.onFreeTalkHistory = { [weak self] items in
             self?.homeConnected = true
             // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
-            self?.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text) }
+            self?.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text, tone: $0.tone) }
             self?.homeStatus = ""
             self?.setHomeWorking(false)
         }
@@ -225,14 +226,14 @@ final class AppModel: ObservableObject {
         freeStream.onUserText = { [weak self] t, tr, words, wpm in
             self?.homeItems.append(HomeChatItem(kind: .user, text: t, translation: tr, words: words, wpm: wpm))
         }
-        freeStream.onAIText = { [weak self] t, tr in
+        freeStream.onAIText = { [weak self] t, tr, tone in
             guard let self else { return }
             self.setHomeWorking(false)
             // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
-            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: true))
+            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: true, tone: tone))
         }
-        // 收到的 AI 语音按句存本地（微信式）：重播按钮零等待、不再重新合成
-        freeStream.onAIAudio = { text, data in VoiceCacheStore.shared.put(data, for: text) }
+        // 收到的 AI 语音按句存本地（微信式）：重播按钮零等待、不再重新合成；键含情绪标签
+        freeStream.onAIAudio = { text, tone, data in VoiceCacheStore.shared.put(data, for: text, tone: tone) }
         freeStream.onError = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg; self?.homeConnected = false }
         freeStream.onResultMessage = { [weak self] msg in self?.setHomeWorking(false); self?.homeStatus = msg }
         freeStream.onStatus = { [weak self] msg in self?.homeStatus = msg }
@@ -290,13 +291,14 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 卡内「朗读」按钮：单句重听。本地缓存命中零等待；未命中走后端合成
-    /// （本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，完成/失败都会更新）。
-    func speakText(_ text: String) {
-        if VoiceCacheStore.shared.get(text) == nil {
+    /// 卡内「朗读」按钮：单句重听。本地缓存命中零等待；未命中走后端按同样情绪标签重新合成
+    /// （内容与原文完全一致；实时通道即兴语音无标签→平语气合成）。
+    /// 本地 CPU 合成一句可能要 1~2 分钟：立即给状态反馈，完成/失败都会更新。
+    func speakText(_ text: String, tone: String = "") {
+        if VoiceCacheStore.shared.get(text, tone: tone) == nil {
             homeStatus = "正在合成语音，请稍候…"
         }
-        voice.speak(text)
+        voice.speak(text, tone: tone)
     }
 
     /// 进入主界面时的一次性数据加载（原 MainChatView .task 的内容）。
@@ -788,9 +790,9 @@ final class AppModel: ObservableObject {
             }
         }
         // AI 台词全部走后端 TTS（B 类对话语音模型派生，无本机合成兜底；后端不可用直接报错）
-        voice.audioProvider = { [weak self] text, cache in
+        voice.audioProvider = { [weak self] text, tone, cache in
             guard let self else { return nil }
-            return await self.fetchTTSAudio(text, cache: cache)
+            return await self.fetchTTSAudio(text, tone: tone, cache: cache)
         }
         // 沉浸式后端语音流（WS）：整段对话由流驱动，结果回来直接刷新对练状态
         stream.onCommitted = { [weak self] in
@@ -1685,17 +1687,17 @@ final class AppModel: ObservableObject {
     }
 
     /// 供 VoicePromptPlayer 拉取后端 TTS 音频（主线程隔离，避免 actor 问题）。
-    /// 先查本地语音缓存（听过的句子零等待），未命中才调后端合成并存入本地。
+    /// 先查本地语音缓存（听过的句子零等待），未命中才调后端按同样情绪标签重新合成并存入本地。
     /// 失败必须让用户看到原因（此前静默跳过——点了重播没声音也不知道为什么）。
-    func fetchTTSAudio(_ text: String, cache: Bool = true) async -> Data? {
-        if let local = VoiceCacheStore.shared.get(text) {
+    func fetchTTSAudio(_ text: String, tone: String = "", cache: Bool = true) async -> Data? {
+        if let local = VoiceCacheStore.shared.get(text, tone: tone) {
             if homeStatus.hasPrefix("正在合成语音") { homeStatus = "" }
             return local
         }
         guard let token = auth.token else { return nil }
         do {
-            let data = try await api.ttsSpeak(text: text, cache: cache, token: token)
-            if cache { VoiceCacheStore.shared.put(data, for: text) }
+            let data = try await api.ttsSpeak(text: text, tone: tone, cache: cache, token: token)
+            if cache { VoiceCacheStore.shared.put(data, for: text, tone: tone) }
             if homeStatus.hasPrefix("正在合成语音") { homeStatus = "" }
             return data
         } catch {

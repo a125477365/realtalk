@@ -21,12 +21,12 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var onStatus: ((String) -> Void)?   // 「重连中/已重连」等提示
     var onCommitted: (() -> Void)?      // 一句录音已提交后端（用于「已发送，正在识别评分…」状态提示）
     // 自由对话（/freetalk/stream）事件：历史回放 + 双方逐句字幕(带中文翻译)。协议其余部分与沉浸式完全一致。
-    var onFreeTalkHistory: (([(speaker: String, text: String)]) -> Void)?
+    var onFreeTalkHistory: (([(speaker: String, text: String, tone: String)]) -> Void)?
     /// (text, translation, 词级发音详情, 语速wpm)——词级来自本地语音服务器 whisper 置信度，云端无词级时为空
     var onUserText: ((String, String, [WordScore], Int) -> Void)?
-    var onAIText: ((String, String) -> Void)?      // (text, translation)
-    /// 一句 AI 语音接收完成：(对应台词文本, 音频数据)——上层存本地缓存供「重播」零等待
-    var onAIAudio: ((String, Data) -> Void)?
+    var onAIText: ((String, String, String) -> Void)?      // (text, translation, tone 情绪标签)
+    /// 一句 AI 语音接收完成：(台词文本, 情绪标签, 音频数据)——上层存本地缓存供「重播」零等待
+    var onAIAudio: ((String, String, Data) -> Void)?
     var onTerminated: ((String) -> Void)?          // 涉敏感话题被后端中断：提示并退出会话
 
     /// 词级发音详情（低置信 ≈ 发音待提高）
@@ -77,6 +77,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private var incomingAudio = Data()
     private var receivingAudio = false
     private var lastAIText = ""                    // 最近一条 ai_text（音频与文本按序对应）
+    private var lastAITone = ""                    // 最近一条 ai_text 的情绪标签（随音频入本地缓存）
     private var active = false
     // 断线重连：网络抖动时不直接报错停掉，自动重连；重连后后端回完整状态并补念当前待回应那句
     private var streamURL: URL?
@@ -459,9 +460,11 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             if let state = obj["state"], let d = try? JSONSerialization.data(withJSONObject: state) {
                 onResultState?(d)
             }
-            // 自由对话：state 直接带历史字幕列表
+            // 自由对话：state 直接带历史字幕列表（含每句的情绪标签，重播还原语气用）
             if let msgs = obj["messages"] as? [[String: Any]] {
-                onFreeTalkHistory?(msgs.map { (speaker: $0["speaker"] as? String ?? "ai", text: $0["text"] as? String ?? "") })
+                onFreeTalkHistory?(msgs.map { (speaker: $0["speaker"] as? String ?? "ai",
+                                               text: $0["text"] as? String ?? "",
+                                               tone: $0["tone"] as? String ?? "") })
             }
             startRecording()
         case "user_text":
@@ -500,7 +503,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         case "ai_text":
             if let t = obj["text"] as? String {
                 lastAIText = t
-                onAIText?(t, obj["translation"] as? String ?? "")
+                lastAITone = obj["tone"] as? String ?? ""
+                onAIText?(t, obj["translation"] as? String ?? "", lastAITone)
             }
         case "ai_line":
             break   // 字幕由 result 的完整状态驱动（roleplay.messages）
@@ -514,7 +518,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             receivingAudio = false
             if incomingAudio.isEmpty == false {
                 // 先交上层存本地（微信式语音缓存，重播零等待），再进播放队列
-                if lastAIText.isEmpty == false { onAIAudio?(lastAIText, incomingAudio) }
+                if lastAIText.isEmpty == false { onAIAudio?(lastAIText, lastAITone, incomingAudio) }
                 enqueueAI(incomingAudio)
             }
             incomingAudio.removeAll()

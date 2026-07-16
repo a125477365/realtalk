@@ -15,19 +15,21 @@ final class VoiceCacheStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
-    private func fileURL(for text: String) -> URL {
-        let digest = SHA256.hash(data: Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+    /// 键 = 文本 + 情绪标签：同一句话不同语气是不同音频；实时通道的即兴语音 tone 为空。
+    private func fileURL(for text: String, tone: String) -> URL {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digest = SHA256.hash(data: Data("\(tone)|\(normalized)".utf8))
         let name = digest.map { String(format: "%02x", $0) }.joined().prefix(40)
         return dir.appendingPathComponent("\(name).audio")
     }
 
-    func get(_ text: String) -> Data? {
-        try? Data(contentsOf: fileURL(for: text))
+    func get(_ text: String, tone: String = "") -> Data? {
+        try? Data(contentsOf: fileURL(for: text, tone: tone))
     }
 
-    func put(_ data: Data, for text: String) {
+    func put(_ data: Data, for text: String, tone: String = "") {
         guard data.isEmpty == false else { return }
-        try? data.write(to: fileURL(for: text), options: [.atomic])
+        try? data.write(to: fileURL(for: text, tone: tone), options: [.atomic])
     }
 
     /// 缓存总大小（字节），设置页展示用。

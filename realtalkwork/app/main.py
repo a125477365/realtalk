@@ -300,6 +300,7 @@ async def startup() -> None:
         raise RuntimeError(
             "数据库未初始化：请在安装数据库的节点运行 `python -m app.db_init` 完成建表与系统参数入库后再启动 API。"
         )
+    db.apply_light_migrations()   # 追加型小迁移（加列，幂等）：升级镜像后无需手动跑 db_init
     _warn_insecure_config()
     db.cleanup_expired()
     asyncio.create_task(_cleanup_loop())
@@ -1016,13 +1017,17 @@ def _enforce_user_rate(user_id: str, name: str, limit: int, window: int = 60) ->
 async def tts_speak(
     text: str = Query(..., min_length=1, max_length=600),
     cache: bool = Query(default=True),  # 指导性内容传 cache=false（不入 Redis，太杂且不复用）
+    tone: str = Query(default="", max_length=24),  # 情绪标签：重播按当时语气重新合成（空=平语气）
     user: UserOut = Depends(current_user),
 ) -> Response:
-    """用用户选定的音色朗读一段文本（练习时播放 AI 台词）。"""
+    """用用户选定的音色朗读一段文本（练习时播放 AI 台词）。tone 随消息持久化的情绪标签，
+    云端 TTS 按 instructions 生效、本地服务安全忽略——同文本+同 tone 的重新合成语气风格一致。"""
     _enforce_user_rate(user.id, "tts", settings.tts_user_rate_per_min)
     voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
     try:
-        audio, content_type = await voice_io.synthesize(text, voice, use_cache=cache, user_id=user.id)
+        audio, content_type = await voice_io.synthesize(
+            text, voice, use_cache=cache, user_id=user.id,
+            instructions=voice_io.tone_instructions(tone))
     except voice_io.TTSOverloaded as exc:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — 上游合成失败：日志留痕 + 502 带原因（此前裸 500 无从排查）
@@ -3223,10 +3228,12 @@ async def freetalk_stream(
         async with send_lock:
             await websocket.send_bytes(data)
 
-    async def _send_tts(text: str) -> None:
+    async def _send_tts(text: str, tone: str = "") -> None:
         try:
-            # 自由对话回复每句唯一且动态 → 不入 Redis(与指导内容同策略)，实时合成推流
-            audio, ct = await voice_io.synthesize(text, voice, use_cache=False, user_id=user.id)
+            # 自由对话回复每句唯一且动态 → 不入 Redis(与指导内容同策略)，实时合成推流；
+            # tone=LLM 给的情绪标签 → 云端 TTS 带 instructions 合成，本地服务忽略
+            audio, ct = await voice_io.synthesize(text, voice, use_cache=False, user_id=user.id,
+                                                  instructions=voice_io.tone_instructions(tone))
         except Exception as exc:  # noqa: BLE001 — TTS 失败不致命：字幕仍在
             print(f"[freetalk] TTS 合成失败：{str(exc)[:300]}", flush=True)
             await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
@@ -3245,7 +3252,8 @@ async def freetalk_stream(
     # 开场：回放近期字幕；首次进入让老师先开口（按记忆个性化开场）。
     # 翻译模式：无历史无开场（每句独立同传，界面从空白开始）。
     history = [] if translate_mode else db.list_freetalk_messages(user.id, limit=30)
-    await _sj({"type": "state", "messages": [{"speaker": m["speaker"], "text": m["content"]} for m in history]})
+    await _sj({"type": "state", "messages": [
+        {"speaker": m["speaker"], "text": m["content"], "tone": m.get("tone", "")} for m in history]})
 
     # 场景感知（仅对话模式）：用户自己生成但还没练过的场景 → 注入私教提示词，供其口语中主动邀练；
     # scene_ctx = 场景剧本上下文（连接生命周期内有效；实时通道侧还会写进其 Redis 上下文）。
@@ -3316,10 +3324,12 @@ async def freetalk_stream(
         if result:
             opening = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()
         if result and opening:
-            db.add_freetalk_message(user.id, "ai", opening)
+            opening_tone = result.get("tone", "")
+            db.add_freetalk_message(user.id, "ai", opening, tone=opening_tone)
             # translation = 中文翻译，客户端按「中文提示」开关决定是否展示；AI 只朗读英文
-            await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", "")})
-            tts_task = asyncio.create_task(_send_tts(opening))
+            await _sj({"type": "ai_text", "text": opening, "translation": result.get("reply_zh", ""),
+                       "tone": opening_tone})
+            tts_task = asyncio.create_task(_send_tts(opening, opening_tone))
 
     # B 类对话·实时通道（本地语音服务器/OpenAI Realtime）：配置了 conv_realtime_base_url 就走流式通道——
     # 音频帧边收边转发、上下文由语音服务器持有（Redis 5 分钟滑动，主动退出立即清理）；
@@ -3381,7 +3391,8 @@ async def freetalk_stream(
         if reply:
             if not translate_mode:
                 db.add_freetalk_message(user.id, "ai", reply)
-            await _sj({"type": "ai_text", "text": reply, "translation": reply_zh})
+            # 实时通道语气是模型即兴的、没有可保存的标签：tone 留空，重播时按平语气重新合成
+            await _sj({"type": "ai_text", "text": reply, "translation": reply_zh, "tone": ""})
             if wav:
                 await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
                 for i in range(0, len(wav), 16384):
@@ -3439,9 +3450,10 @@ async def freetalk_stream(
             # 输出端兜底：模型生成了涉政内容 → 不下发不朗读，直接中断
             await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
             return False
-        db.add_freetalk_message(user.id, "ai", reply)
-        await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", "")})
-        tts_task = asyncio.create_task(_send_tts(reply))
+        reply_tone = result.get("tone", "")
+        db.add_freetalk_message(user.id, "ai", reply, tone=reply_tone)
+        await _sj({"type": "ai_text", "text": reply, "translation": result.get("reply_zh", ""), "tone": reply_tone})
+        tts_task = asyncio.create_task(_send_tts(reply, reply_tone))
         turns_since_memory += 1
         if turns_since_memory >= 6:
             turns_since_memory = 0
@@ -3523,7 +3535,7 @@ async def freetalk_stream(
                     if reply:
                         if not translate_mode:
                             db.add_freetalk_message(user.id, "ai", reply)
-                        await _sj({"type": "ai_text", "text": reply, "translation": translation_out})
+                        await _sj({"type": "ai_text", "text": reply, "translation": translation_out, "tone": ""})
                         if wav:
                             await _sj({"type": "ai_audio_begin", "content_type": "audio/wav"})
                             for i in range(0, len(wav), 16384):

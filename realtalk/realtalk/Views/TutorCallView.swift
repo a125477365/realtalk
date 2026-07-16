@@ -11,6 +11,7 @@ struct TutorCallView: View {
     @ObservedObject var stream: RoleplayStreamManager
 
     @State private var elapsed = 0
+    @State private var guidanceItem: AppModel.HomeChatItem?   // 用户句「发音指导」浮层
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     /// 当前活跃声音电平：用户说话取麦克风电平，老师说话取播放电平。
@@ -43,6 +44,9 @@ struct TutorCallView: View {
         }
         .onAppear { model.startTutor() }
         .onReceive(timer) { _ in if model.homeConnected { elapsed += 1 } }
+        .sheet(item: $guidanceItem) { item in
+            GuidanceDetailSheet(item: item)
+        }
     }
 
     /// 按当前所选音色判定老师性别（决定显示男/女 3D 人物）。
@@ -125,7 +129,7 @@ struct TutorCallView: View {
     private var subtitles: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(recentLines) { item in
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .top, spacing: 8) {
                         Circle()
                             .fill(item.kind == .user ? RTTheme.accent : RTTheme.success)
@@ -135,12 +139,45 @@ struct TutorCallView: View {
                             .font(.system(size: 17 * model.fontScale, weight: .medium))
                             .foregroundStyle(.white)
                     }
-                    if model.showChineseHint, item.translation.isEmpty == false {
+                    if item.showTranslation, item.translating {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini).tint(.white)
+                            Text("正在翻译…").font(.system(size: 13 * model.fontScale)).foregroundStyle(.white.opacity(0.6))
+                        }
+                        .padding(.leading, 15)
+                    } else if item.translation.isEmpty == false, model.showChineseHint || item.showTranslation {
                         Text(item.translation)
                             .font(.system(size: 14 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.65))
                             .padding(.leading, 15)
                     }
+                    // 行内小操作（暂停/任意时刻可点）：AI 句=重播+译；用户句=发音指导
+                    HStack(spacing: 18) {
+                        if item.kind == .ai {
+                            Button { model.speakText(item.text, tone: item.tone) } label: {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.8))
+                            }
+                            .accessibilityLabel("重新播放这一句")
+                            Button { model.toggleItemTranslation(item.id) } label: {
+                                Text("译")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .padding(.horizontal, 6).padding(.vertical, 1)
+                                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(.white.opacity(0.4), lineWidth: 1))
+                            }
+                        } else {
+                            Button { guidanceItem = item } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "waveform.and.magnifyingglass").font(.system(size: 12))
+                                    Text("发音指导").font(.system(size: 12 * model.fontScale, weight: .medium))
+                                }
+                                .foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                    }
+                    .padding(.leading, 15)
                 }
             }
         }
