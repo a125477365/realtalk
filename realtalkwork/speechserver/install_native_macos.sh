@@ -108,5 +108,11 @@ PLIST
 launchctl unload "$HOME/Library/LaunchAgents/com.realtalk.speech.plist" 2>/dev/null || true
 launchctl load "$HOME/Library/LaunchAgents/com.realtalk.speech.plist"
 
+# 6) 可选：实时通道 s2s（私教沉浸式全双工）。设 SPEECH_WITH_S2S=1 时一并装。
+if [ "${SPEECH_WITH_S2S:-0}" = "1" ]; then
+  bash "$SRC_DIR/install_s2s_macos.sh"
+fi
+
 echo "✅ 安装完成并已设为开机自启。日志：$ROOT/speech.log"
 echo "   本机地址：http://$(ipconfig getifaddr en0 2>/dev/null || echo 127.0.0.1):9100/v1"
+echo "   实时通道(私教沉浸式)需额外装 s2s：bash $SRC_DIR/install_s2s_macos.sh"

@@ -1,8 +1,12 @@
-"""Make speech-to-speech 0.2.10 use its installed qwentts.cpp GGML runtime on CPU.
+"""Make speech-to-speech 0.2.10 use its installed qwentts.cpp GGML runtime on CPU / Apple Metal.
 
 Upstream exposes faster-qwen3-tts but does not yet forward its backend option from
 the CLI.  Keeping this small compatibility shim local avoids the CUDA-only torch
 path and makes the selected Q4 model work on CPU.  CUDA keeps the upstream path.
+
+qwentts.cpp 的 ggml 后端在 macOS 原生构建时启用了 Metal（见 install_native_macos.sh
+的 -DGGML_METAL=ON）：backend="ggml" 会自动选到 Apple GPU。所以 SPEECH_DEVICE=metal
+时同样走这套 ggml 桥接（而不是 CUDA-only 的 torch 路径），s2s 的 TTS 也吃 GPU。
 """
 from __future__ import annotations
 
@@ -11,7 +15,9 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 
-if os.getenv("SPEECH_S2S_PROCESS") == "1" and os.getenv("SPEECH_DEVICE", "cpu").lower() == "cpu":
+# cpu = Docker/旧至强；metal = macOS 原生 Apple GPU。两者都用 qwentts.cpp 的 ggml 后端，
+# 只有 cuda 保留 upstream 的 torch 路径。
+if os.getenv("SPEECH_S2S_PROCESS") == "1" and os.getenv("SPEECH_DEVICE", "cpu").lower() in ("cpu", "metal"):
     from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
 
     def _setup_qwentts_cpp(self, model_name, dtype, attn_implementation):
