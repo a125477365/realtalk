@@ -3405,8 +3405,10 @@ async def freetalk_stream(
                 asyncio.create_task(update_freetalk_memory(user.id))
         return True
 
-    async def _stepwise_turn(recognized: str, rec_words: list[dict], rec_dur: float) -> bool:
-        """分步管线一轮（语音转写后/文字输入共用；翻译模式除外）。返回 False = 涉敏感需中断整个会话。"""
+    async def _stepwise_turn(recognized: str, rec_words: list[dict], rec_dur: float,
+                             already_echoed: bool = False) -> bool:
+        """分步管线一轮（语音转写后/文字输入共用；翻译模式除外）。返回 False = 涉敏感需中断整个会话。
+        already_echoed=True：语音路径已在 ASR 完成时立刻回显过 user_text（不必等 LLM），这里不再重发。"""
         nonlocal scene_ctx, turns_since_memory, tts_task
         try:
             result = await generate_freetalk_reply(
@@ -3441,8 +3443,9 @@ async def freetalk_stream(
         # 用户回显：中文统一简体(user_display)；user_translation 为对应翻译(中文说→英文/英文说→中文)
         user_display = result.get("user_display", "").strip() or recognized
         db.add_freetalk_message(user.id, "user", user_display)
-        await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", ""),
-                   "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
+        if not already_echoed:
+            await _sj({"type": "user_text", "text": user_display, "translation": result.get("user_translation", ""),
+                       "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
         reply = SCENE_MARKER_STRIP_RE.sub("", result["reply_en"]).strip()   # 残留标记绝不上字幕/朗读
         if not reply:
             return True
@@ -3701,6 +3704,10 @@ async def freetalk_stream(
                 await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
                 user_ended = True
                 break
+            # 识别一完成立刻回显「你说的话」（含词级发音/语速）——不等 LLM 慢慢想回复；
+            # 本地 CPU 模型一轮要几分钟，此前用户几分钟都看不到自己刚才说了什么
+            await _sj({"type": "user_text", "text": recognized, "translation": "",
+                       "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
             if translate_mode:
                 # ---- 实时翻译（分步管线）：转写 → 同传 → 念译文；不存历史不沉淀记忆 ----
                 try:
@@ -3709,12 +3716,10 @@ async def freetalk_stream(
                     print(f"[freetalk] 翻译(语音) LLM 调用失败：{str(exc)[:300]}", flush=True)
                     await _sj({"type": "notice", "detail": "AI 老师有点忙，请稍后再试"})
                     continue
-                await _sj({"type": "user_text", "text": recognized, "translation": "",
-                           "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
                 await _sj({"type": "ai_text", "text": translated, "translation": ""})
                 tts_task = asyncio.create_task(_send_tts(translated))
                 continue
-            if not await _stepwise_turn(recognized, rec_words, rec_dur):
+            if not await _stepwise_turn(recognized, rec_words, rec_dur, already_echoed=True):
                 user_ended = True
                 break
     except WebSocketDisconnect:
