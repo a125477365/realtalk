@@ -72,6 +72,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     private let bargeNeeded = 3   // 连续 N 个 tick 高能量才算抢话，避免误触
 
     // 播放 AI 音频
+    private var aiLevelTimer: Timer?      // AI 播放电平计量（独立于麦克风循环：手动模式引擎关着也要有动画）
     private var aiPlayer: AVAudioPlayer?
     private var aiQueue: [Data] = []
     private var incomingAudio = Data()
@@ -156,6 +157,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         preroll.removeAll()
         aiPlayer?.stop(); aiPlayer = nil
         aiQueue.removeAll()
+        stopAiLevelTimer()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         isAISpeaking = false
@@ -203,6 +205,15 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         engine.prepare()
         try? engine.start()
         engineRunning = true
+    }
+
+    /// 只停录音引擎、释放麦克风（WS 保持连接）：手动模式空闲时系统录音灯必须熄灭。
+    private func stopEngine() {
+        guard engineRunning else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engineRunning = false
+        audioLevel = 0
     }
 
     private func resetUtterance(sendReset: Bool) {
@@ -325,20 +336,22 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         if engineRunning == false { startRecording() }
     }
 
-    /// 取消本句（说话条左侧 X）：丢弃已上传的帧，不提交、不评分。
+    /// 取消本句（说话条左侧 X）：丢弃已上传的帧，不提交、不评分；随即释放麦克风。
     func cancelManualUtterance() {
         guard manualCommit, manualRecording else { return }
         manualRecording = false
         resetUtterance(sendReset: true)   // 通知后端清掉本轮已积累的帧
+        stopEngine()                      // 手动模式空闲不占麦克风（系统录音灯熄灭）
     }
 
-    /// 点按结束：提交本句（跳过 VAD 噪音门槛——用户明确点了发送）。
+    /// 点按结束：提交本句（跳过 VAD 噪音门槛——用户明确点了发送）；随即释放麦克风。
     func endManualUtterance() {
         guard manualCommit, manualRecording else { return }
         manualRecording = false
         suppressAiAudio = false
         sendJSON(["type": "commit", "format": "pcm16", "sample_rate": 16000, "guidance_mode": guidanceMode])
         onCommitted?()
+        stopEngine()                      // 手动模式空闲不占麦克风（系统录音灯熄灭）
     }
 
     /// 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
@@ -393,14 +406,33 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         if aiPlayer == nil { playNextAI() }
     }
 
+    private func startAiLevelTimer() {
+        aiLevelTimer?.invalidate()
+        aiLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if let p = self.aiPlayer, p.isPlaying {
+                    p.updateMeters()
+                    self.aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
+                }
+            }
+        }
+    }
+
+    private func stopAiLevelTimer() {
+        aiLevelTimer?.invalidate()
+        aiLevelTimer = nil
+    }
+
     private func playNextAI() {
         guard aiQueue.isEmpty == false else {
             let wasSpeaking = isAISpeaking
             isAISpeaking = false
             aiAudioLevel = 0
-            // 关键：AI 刚说完 → 立刻重开一段干净录音。否则录音文件里带着 AI 从扬声器放出的整段声音，
-            // 转写会把 AI 的话混进用户的话（字幕里用户气泡出现 AI 台词）。
-            if wasSpeaking, active, isConnected { startRecording() }
+            stopAiLevelTimer()
+            // 关键：AI 刚说完 → 沉浸式立刻重开一段干净录音（否则 AI 外放混进转写）。
+            // 手动模式不重开——用户没按说话就不占麦克风（系统录音灯熄灭）。
+            if wasSpeaking, active, isConnected, manualCommit == false { startRecording() }
             return
         }
         let data = aiQueue.removeFirst()
@@ -409,6 +441,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         p.isMeteringEnabled = true
         aiPlayer = p
         isAISpeaking = true
+        startAiLevelTimer()
         p.play()
     }
 
@@ -466,7 +499,9 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                                                text: $0["text"] as? String ?? "",
                                                tone: $0["tone"] as? String ?? "") })
             }
-            startRecording()
+            // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统录音灯却常亮；
+            // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
+            if manualCommit == false { startRecording() }
         case "user_text":
             if let t = obj["text"] as? String {
                 let words = (obj["words"] as? [[String: Any]] ?? []).compactMap { w -> WordScore? in

@@ -215,6 +215,14 @@ class RoleplayStreamClient(private val context: Context) {
         }
     }
 
+    /** 只停录音、释放麦克风（WS 保持连接）：手动模式空闲时系统麦克风指示必须熄灭。 */
+    private fun stopEngine() {
+        captureJob?.cancel(); captureJob = null
+        runCatching { audioRecord?.stop() }; runCatching { audioRecord?.release() }; audioRecord = null
+        runCatching { echoCanceler?.release() }; echoCanceler = null
+        onUserLevel?.invoke(0f)
+    }
+
     private fun resetUtterance(sendReset: Boolean) {
         heardSpeech = false
         streamingUtterance = false
@@ -306,6 +314,15 @@ class RoleplayStreamClient(private val context: Context) {
                 "guidance_mode" to guidanceMode)).toString())
         }
         scope.launch { onCommitted?.invoke() }
+        stopEngine()   // 手动模式空闲不占麦克风（系统指示熄灭）
+    }
+
+    /** 取消本句（说话条左侧 X）：丢弃已上传的帧，不提交；随即释放麦克风。 */
+    fun cancelManualUtterance() {
+        if (!manualCommit || !manualRecording) return
+        manualRecording = false
+        resetUtterance(sendReset = true)
+        stopEngine()
     }
 
     /** 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。 */
@@ -368,9 +385,9 @@ class RoleplayStreamClient(private val context: Context) {
         if (data == null) {
             val wasSpeaking = aiSpeaking
             aiSpeaking = false; onAiSpeaking?.invoke(false); onAiLevel?.invoke(0f)
-            // 关键：AI 刚说完 → 立刻重开一段干净录音。否则录音文件里带着 AI 从扬声器放出的整段声音，
-            // 转写会把 AI 的话混进用户的话（字幕里用户气泡出现 AI 台词）。
-            if (wasSpeaking && active && connected) startRecording()
+            // 关键：AI 刚说完 → 沉浸式立刻重开一段干净录音（否则 AI 外放混进转写）。
+            // 手动模式不重开——用户没按说话就不占麦克风。
+            if (wasSpeaking && active && connected && !manualCommit) startRecording()
             return
         }
         val f = File(context.cacheDir, "rt-ai-${UUID.randomUUID()}.mp3")
@@ -427,7 +444,9 @@ class RoleplayStreamClient(private val context: Context) {
                     }
                     onFreeTalkHistory?.invoke(items)
                 }
-                startRecording()
+                // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统麦克风指示却常亮；
+                // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
+                if (!manualCommit) startRecording()
             }
             "user_text" -> {
                 val words = obj.optJSONArray("words")?.let { arr ->
