@@ -25,6 +25,7 @@ if [ "${1:-}" = "--daemon" ]; then
     > "$ROOT/speech.log" 2>&1 &
   echo "已后台启动（日志 $ROOT/speech.log）。本机地址：http://$(ipconfig getifaddr en0 2>/dev/null || echo 127.0.0.1):$SPEECH_PORT/v1"
 else
-  exec "$ROOT/bin/micromamba" run -n speech \
+  # 前台运行（LaunchAgent 走这里）：同样用 caffeinate 防休眠
+  exec caffeinate -is "$ROOT/bin/micromamba" run -n speech \
     uvicorn server:app --host 0.0.0.0 --port "$SPEECH_PORT"
 fi
