@@ -41,6 +41,12 @@ struct ContentView: View {
                         try? await Task.sleep(nanoseconds: 500_000_000)
                     }
                     model.toggleHomeTalk()
+                } else if let i = uiArgs.firstIndex(of: "--uiverify-sendtext"), i + 1 < uiArgs.count {
+                    // 键盘发送链路验证：等连接（最多 15s，连不上也照发——验证离线本地回显）
+                    for _ in 0..<30 where model.homeConnected == false {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                    model.sendHomeText(uiArgs[i + 1])
                 }
             }
             #endif

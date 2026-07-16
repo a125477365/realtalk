@@ -158,6 +158,7 @@ class RoleplayStreamClient(private val context: Context) {
         active = false
         connected = false
         paused = false
+        pendingTypedText = null
         reconnectJob?.cancel(); reconnectJob = null
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "bye")).toString()) }
         runCatching { webSocket?.close(1000, null) }
@@ -325,11 +326,19 @@ class RoleplayStreamClient(private val context: Context) {
         stopEngine()
     }
 
-    /** 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。 */
+    /** 未连接时排队的键盘文字：连上（state 事件）后自动补发，杜绝「重连瞬间发送直接丢失」。 */
+    private var pendingTypedText: String? = null
+
+    /** 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
+     *  未连接则先排队，连上自动补发（onCommitted 在真正发出时才触发）。 */
     fun sendText(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         manualRecording = false
+        if (!connected) {
+            pendingTypedText = trimmed
+            return
+        }
         resetUtterance(sendReset = true)
         suppressAiAudio = false
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "text", "text" to trimmed)).toString()) }
@@ -447,6 +456,13 @@ class RoleplayStreamClient(private val context: Context) {
                 // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统麦克风指示却常亮；
                 // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
                 if (!manualCommit) startRecording()
+                // 断线期间排队的键盘文字：连上立刻补发
+                pendingTypedText?.let { queued ->
+                    pendingTypedText = null
+                    suppressAiAudio = false
+                    runCatching { webSocket?.send(JSONObject(mapOf("type" to "text", "text" to queued)).toString()) }
+                    onCommitted?.invoke()
+                }
             }
             "user_text" -> {
                 val words = obj.optJSONArray("words")?.let { arr ->

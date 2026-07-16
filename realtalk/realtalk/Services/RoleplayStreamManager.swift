@@ -147,6 +147,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         active = false
         isConnected = false
         isPaused = false
+        pendingTypedText = nil
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
         if engineRunning {
@@ -354,11 +355,19 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         stopEngine()                      // 手动模式空闲不占麦克风（系统录音灯熄灭）
     }
 
+    /// 未连接时排队的键盘文字：连上（state 事件）后自动补发，杜绝「重连瞬间发送直接丢失」。
+    private var pendingTypedText: String?
+
     /// 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
+    /// 未连接则先排队，连上自动补发（onCommitted 在真正发出时才触发）。
     func sendText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else { return }
         if manualRecording { manualRecording = false }   // 丢弃未完成的录音轮
+        guard isConnected else {
+            pendingTypedText = trimmed
+            return
+        }
         resetUtterance(sendReset: true)
         suppressAiAudio = false
         sendJSON(["type": "text", "text": trimmed])
@@ -502,6 +511,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统录音灯却常亮；
             // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
             if manualCommit == false { startRecording() }
+            // 断线期间排队的键盘文字：连上立刻补发
+            if let queued = pendingTypedText {
+                pendingTypedText = nil
+                suppressAiAudio = false
+                sendJSON(["type": "text", "text": queued])
+                onCommitted?()
+            }
         case "user_text":
             if let t = obj["text"] as? String {
                 let words = (obj["words"] as? [[String: Any]] ?? []).compactMap { w -> WordScore? in

@@ -98,6 +98,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val showTranslation: Boolean = false, // 卡内「译」按钮切换
         val translating: Boolean = false,     // 按需翻译请求进行中
         val tone: String = "",                // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
+        val localEcho: Boolean = false,       // 键盘发送的本地回显：发出瞬间先上屏，服务端回显到达后原位合并
     )
 
     val homeItems = MutableStateFlow<List<HomeChatItem>>(emptyList())
@@ -165,16 +166,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         freeStream.manualCommit = !liveTurn && (!showTutor.value || !tutorImmersive.value)
         freeStream.onFreeTalkHistory = { items ->
             homeConnected.value = true
-            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
+            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈。
+            // 尚未被服务端确认的本地回显气泡要保留在末尾（重连不吞用户刚发的话）
+            val pendingEcho = homeItems.value.filter { it.localEcho }
             homeItems.value = items.map {
                 HomeChatItem(kind = if (it.first == "user") HomeKind.USER else HomeKind.AI, text = it.second, tone = it.third)
-            }
+            } + pendingEcho
             homeStatus.value = ""
             setHomeWorking(false)
         }
         freeStream.onCommitted = { setHomeWorking(true); homeManualRecording.value = false }
         freeStream.onUserText = { t, tr, words, wpm ->
-            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
+            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡
+            val idx = homeItems.value.indexOfLast { it.kind == HomeKind.USER && it.localEcho }
+            if (idx >= 0) {
+                homeItems.value = homeItems.value.mapIndexed { i, item ->
+                    if (i == idx) item.copy(text = t, translation = tr, words = words, wpm = wpm, localEcho = false) else item
+                }
+            } else {
+                homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
+            }
         }
         freeStream.onAIText = { t, tr, tone ->
             setHomeWorking(false)
@@ -274,7 +285,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (homeSceneStrict.value) {
             sendStrictTyped(trimmed)
         } else {
-            if (!homeConnected.value || !freeStream.isConnected) startHomeChat(homeSceneId, homeSceneName.value)
+            if (!homeConnected.value || !freeStream.isConnected) {
+                // 先重连（会清屏），再补本地回显并把文字排队——连上自动发出
+                startHomeChat(homeSceneId, homeSceneName.value)
+            }
+            // 发出瞬间本地立即上屏（网络异常也看得见自己说了什么）；服务端回显到达后原位合并
+            homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = trimmed, localEcho = true)
             freeStream.sendText(trimmed)
         }
     }
@@ -350,6 +366,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun sendStrictTyped(text: String) {
         val token = auth.token ?: return
         val rp = roleplay ?: return
+        // 本地回显：失败时也要让用户看到自己发了什么（成功后 applyStrictState 整体重建覆盖）
+        homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = text, localEcho = true)
         setHomeWorking(true)
         viewModelScope.launch {
             try {

@@ -153,6 +153,8 @@ final class AppModel: ObservableObject {
         var masked: Bool = false      // AI 台词默认打码（先听后看），点击文字才显示
         var showTranslation: Bool = false   // 卡内「译」按钮切换
         var translating: Bool = false       // 按需翻译请求进行中
+        /// 键盘发送的本地回显：发出瞬间先上屏（网络异常也可见），服务端回显到达后原位合并
+        var localEcho: Bool = false
         var tone: String = ""               // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
     }
 
@@ -216,15 +218,28 @@ final class AppModel: ObservableObject {
         freeStream.liveMode = liveTurn
         freeStream.manualCommit = liveTurn == false && (showTutor == false || tutorImmersive == false)
         freeStream.onFreeTalkHistory = { [weak self] items in
-            self?.homeConnected = true
-            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈
-            self?.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text, tone: $0.tone) }
-            self?.homeStatus = ""
-            self?.setHomeWorking(false)
+            guard let self else { return }
+            self.homeConnected = true
+            // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈。
+            // 尚未被服务端确认的本地回显气泡要保留在末尾（重连不吞用户刚发的话）
+            let pendingEcho = self.homeItems.filter { $0.localEcho }
+            self.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text, tone: $0.tone) } + pendingEcho
+            self.homeStatus = ""
+            self.setHomeWorking(false)
         }
         freeStream.onCommitted = { [weak self] in self?.setHomeWorking(true) }
         freeStream.onUserText = { [weak self] t, tr, words, wpm in
-            self?.homeItems.append(HomeChatItem(kind: .user, text: t, translation: tr, words: words, wpm: wpm))
+            guard let self else { return }
+            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡
+            if let i = self.homeItems.lastIndex(where: { $0.kind == .user && $0.localEcho }) {
+                self.homeItems[i].text = t
+                self.homeItems[i].translation = tr
+                self.homeItems[i].words = words
+                self.homeItems[i].wpm = wpm
+                self.homeItems[i].localEcho = false
+            } else {
+                self.homeItems.append(HomeChatItem(kind: .user, text: t, translation: tr, words: words, wpm: wpm))
+            }
         }
         freeStream.onAIText = { [weak self] t, tr, tone in
             guard let self else { return }
@@ -397,8 +412,11 @@ final class AppModel: ObservableObject {
             sendStrictTyped(trimmed)
         } else {
             if homeConnected == false || freeStream.isConnected == false {
+                // 先重连（会清屏），再补本地回显并把文字排队——连上自动发出
                 startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName)
             }
+            // 发出瞬间本地立即上屏（网络异常也看得见自己说了什么）；服务端回显到达后原位合并
+            homeItems.append(HomeChatItem(kind: .user, text: trimmed, localEcho: true))
             freeStream.sendText(trimmed)
         }
     }
@@ -470,6 +488,8 @@ final class AppModel: ObservableObject {
     /// 严格场景的键盘输入：走 roleplay REST，一样返回整轮状态。
     private func sendStrictTyped(_ text: String) {
         guard let token = auth.token, let rp = roleplay else { return }
+        // 本地回显：失败时也要让用户看到自己发了什么（成功后 applyStrictState 整体重建覆盖）
+        homeItems.append(HomeChatItem(kind: .user, text: text, localEcho: true))
         setHomeWorking(true)
         Task { @MainActor in
             do {
