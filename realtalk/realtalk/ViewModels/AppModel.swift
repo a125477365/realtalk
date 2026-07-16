@@ -230,8 +230,22 @@ final class AppModel: ObservableObject {
         freeStream.onCommitted = { [weak self] in self?.setHomeWorking(true) }
         freeStream.onUserText = { [weak self] t, tr, words, wpm in
             guard let self else { return }
-            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡
-            if let i = self.homeItems.lastIndex(where: { $0.kind == .user && $0.localEcho }) {
+            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡。
+            // 连发多条时按「文本匹配优先，其次先进先出」合并——服务端排队逐条处理、回包有序，
+            // 绝不能取最后一条（会把第一条的规整结果盖到第二条气泡上，内容互换）。
+            func normalized(_ s: String) -> String {
+                s.lowercased().filter { $0.isLetter || $0.isNumber }
+            }
+            let pending = self.homeItems.indices.filter { self.homeItems[$0].kind == .user && self.homeItems[$0].localEcho }
+            let target: Int?
+            if let match = pending.first(where: { normalized(self.homeItems[$0].text) == normalized(t) }) {
+                target = match                       // 文本一致：就是这条
+            } else if pending.count == 1 {
+                target = pending[0]                  // 只有一条待确认：服务端做了规整（繁→简等），仍是这条
+            } else {
+                target = nil                         // 多条待确认且都对不上：不猜，按新气泡追加
+            }
+            if let i = target {
                 self.homeItems[i].text = t
                 self.homeItems[i].translation = tr
                 self.homeItems[i].words = words

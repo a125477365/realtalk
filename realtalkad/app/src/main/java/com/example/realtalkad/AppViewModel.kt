@@ -177,8 +177,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         freeStream.onCommitted = { setHomeWorking(true); homeManualRecording.value = false }
         freeStream.onUserText = { t, tr, words, wpm ->
-            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡
-            val idx = homeItems.value.indexOfLast { it.kind == HomeKind.USER && it.localEcho }
+            // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡。
+            // 连发多条时按「文本匹配优先，其次先进先出」合并——服务端排队逐条处理、回包有序，
+            // 绝不能取最后一条（会把第一条的规整结果盖到第二条气泡上，内容互换）。
+            fun normalized(v: String) = v.lowercase().filter { it.isLetterOrDigit() }
+            val pending = homeItems.value.withIndex().filter { it.value.kind == HomeKind.USER && it.value.localEcho }
+            val idx = pending.firstOrNull { normalized(it.value.text) == normalized(t) }?.index
+                ?: pending.singleOrNull()?.index ?: -1
             if (idx >= 0) {
                 homeItems.value = homeItems.value.mapIndexed { i, item ->
                     if (i == idx) item.copy(text = t, translation = tr, words = words, wpm = wpm, localEcho = false) else item

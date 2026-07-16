@@ -147,7 +147,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         active = false
         isConnected = false
         isPaused = false
-        pendingTypedText = nil
+        pendingTypedTexts = []
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
         if engineRunning {
@@ -355,8 +355,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         stopEngine()                      // 手动模式空闲不占麦克风（系统录音灯熄灭）
     }
 
-    /// 未连接时排队的键盘文字：连上（state 事件）后自动补发，杜绝「重连瞬间发送直接丢失」。
-    private var pendingTypedText: String?
+    /// 未连接时排队的键盘文字（数组：断网连发多条都不丢）：连上（state 事件）后按序补发。
+    private var pendingTypedTexts: [String] = []
 
     /// 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
     /// 未连接则先排队，连上自动补发（onCommitted 在真正发出时才触发）。
@@ -365,7 +365,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         guard trimmed.isEmpty == false else { return }
         if manualRecording { manualRecording = false }   // 丢弃未完成的录音轮
         guard isConnected else {
-            pendingTypedText = trimmed
+            pendingTypedTexts.append(trimmed)
             return
         }
         resetUtterance(sendReset: true)
@@ -511,11 +511,12 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统录音灯却常亮；
             // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
             if manualCommit == false { startRecording() }
-            // 断线期间排队的键盘文字：连上立刻补发
-            if let queued = pendingTypedText {
-                pendingTypedText = nil
+            // 断线期间排队的键盘文字：连上按序全部补发（后端排队逐条处理，回包有序）
+            if pendingTypedTexts.isEmpty == false {
+                let queued = pendingTypedTexts
+                pendingTypedTexts = []
                 suppressAiAudio = false
-                sendJSON(["type": "text", "text": queued])
+                for text in queued { sendJSON(["type": "text", "text": text]) }
                 onCommitted?()
             }
         case "user_text":

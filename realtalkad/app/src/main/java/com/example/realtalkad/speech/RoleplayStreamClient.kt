@@ -158,7 +158,7 @@ class RoleplayStreamClient(private val context: Context) {
         active = false
         connected = false
         paused = false
-        pendingTypedText = null
+        pendingTypedTexts.clear()
         reconnectJob?.cancel(); reconnectJob = null
         runCatching { webSocket?.send(JSONObject(mapOf("type" to "bye")).toString()) }
         runCatching { webSocket?.close(1000, null) }
@@ -326,8 +326,8 @@ class RoleplayStreamClient(private val context: Context) {
         stopEngine()
     }
 
-    /** 未连接时排队的键盘文字：连上（state 事件）后自动补发，杜绝「重连瞬间发送直接丢失」。 */
-    private var pendingTypedText: String? = null
+    /** 未连接时排队的键盘文字（列表：断网连发多条都不丢）：连上（state 事件）后按序补发。 */
+    private val pendingTypedTexts = ArrayDeque<String>()
 
     /** 键盘手工输入：文字直接发后端（跳过 ASR），走同一轮对话/翻译逻辑。
      *  未连接则先排队，连上自动补发（onCommitted 在真正发出时才触发）。 */
@@ -336,7 +336,7 @@ class RoleplayStreamClient(private val context: Context) {
         if (trimmed.isEmpty()) return
         manualRecording = false
         if (!connected) {
-            pendingTypedText = trimmed
+            pendingTypedTexts.addLast(trimmed)
             return
         }
         resetUtterance(sendReset = true)
@@ -456,11 +456,13 @@ class RoleplayStreamClient(private val context: Context) {
                 // 手动模式（点击说话）不自动开麦——否则用户没按说话、系统麦克风指示却常亮；
                 // 沉浸式/实时模式需要持续听（VAD/服务端判停）才在连上后开麦
                 if (!manualCommit) startRecording()
-                // 断线期间排队的键盘文字：连上立刻补发
-                pendingTypedText?.let { queued ->
-                    pendingTypedText = null
+                // 断线期间排队的键盘文字：连上按序全部补发（后端排队逐条处理，回包有序）
+                if (pendingTypedTexts.isNotEmpty()) {
                     suppressAiAudio = false
-                    runCatching { webSocket?.send(JSONObject(mapOf("type" to "text", "text" to queued)).toString()) }
+                    while (pendingTypedTexts.isNotEmpty()) {
+                        val queued = pendingTypedTexts.removeFirst()
+                        runCatching { webSocket?.send(JSONObject(mapOf("type" to "text", "text" to queued)).toString()) }
+                    }
                     onCommitted?.invoke()
                 }
             }
