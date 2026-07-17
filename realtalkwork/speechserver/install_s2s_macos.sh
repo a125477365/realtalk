@@ -16,12 +16,14 @@ log(){ echo "[$(date '+%H:%M:%S')] $*"; }
 
 [ -x "$MB" ] || { echo "先运行 install_native_macos.sh"; exit 1; }
 
-# torch/torchaudio(Apple MPS 轮子) + speech-to-speech(实时编排) + faster-qwen3-tts(ggml TTS 桥接)
-# 大依赖(torch/mlx-audio/lingua 等约数百 MB)：弱网多次重试
-log "安装 speech-to-speech 依赖（torch + speech-to-speech==0.2.10 + faster-qwen3-tts）…"
-for attempt in 1 2 3 4 5; do
+# speech-to-speech(实时编排) + 它在 Darwin 自带的 MLX(Apple GPU 原生) TTS/LLM。
+# 关键：macOS 上【不装】faster-qwen3-tts——它要 transformers<5，会和 s2s 要的
+# transformers==5.6.2 撞车（ResolutionImpossible）。Mac 走 s2s 原生 MLX 路径，
+# 不需要那个为 Linux/CPU 准备的 ggml 桥接。大依赖(torch/mlx/lingua 数百 MB)多次重试。
+log "安装 speech-to-speech==0.2.10（Mac 自带 MLX 路径，不装 faster-qwen3-tts）…"
+for attempt in 1 2 3 4 5 6; do
   "$MB" run -n speech pip install --retries 10 --timeout 120 -i "$PIP_MIRROR" \
-    torch torchaudio "speech-to-speech[faster-whisper]==0.2.10" faster-qwen3-tts websockets \
+    "speech-to-speech[faster-whisper]==0.2.10" websockets \
     && { log "pip 安装成功"; break; }
   log "第 $attempt 次失败，重试…"; sleep 5
 done

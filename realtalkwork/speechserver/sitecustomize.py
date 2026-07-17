@@ -1,12 +1,12 @@
-"""Make speech-to-speech 0.2.10 use its installed qwentts.cpp GGML runtime on CPU / Apple Metal.
+"""Make speech-to-speech 0.2.10 use its installed qwentts.cpp GGML runtime on CPU.
 
 Upstream exposes faster-qwen3-tts but does not yet forward its backend option from
 the CLI.  Keeping this small compatibility shim local avoids the CUDA-only torch
 path and makes the selected Q4 model work on CPU.  CUDA keeps the upstream path.
 
-qwentts.cpp 的 ggml 后端在 macOS 原生构建时启用了 Metal（见 install_native_macos.sh
-的 -DGGML_METAL=ON）：backend="ggml" 会自动选到 Apple GPU。所以 SPEECH_DEVICE=metal
-时同样走这套 ggml 桥接（而不是 CUDA-only 的 torch 路径），s2s 的 TTS 也吃 GPU。
+仅 CPU（Docker/旧至强）走这套 ggml 桥接。macOS 原生（SPEECH_DEVICE=metal）不激活它——
+speech-to-speech 0.2.10 在 Darwin 自带 MLX(Apple GPU 原生) 的 Qwen3-TTS，直接用更合适，
+且 faster-qwen3-tts 要 transformers<5 会和 s2s 要的 transformers==5.6.2 撞车。
 """
 from __future__ import annotations
 
@@ -15,9 +15,7 @@ from pathlib import Path
 from urllib.request import urlretrieve
 
 
-# cpu = Docker/旧至强；metal = macOS 原生 Apple GPU。两者都用 qwentts.cpp 的 ggml 后端，
-# 只有 cuda 保留 upstream 的 torch 路径。
-if os.getenv("SPEECH_S2S_PROCESS") == "1" and os.getenv("SPEECH_DEVICE", "cpu").lower() in ("cpu", "metal"):
+if os.getenv("SPEECH_S2S_PROCESS") == "1" and os.getenv("SPEECH_DEVICE", "cpu").lower() == "cpu":
     from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
 
     def _setup_qwentts_cpp(self, model_name, dtype, attn_implementation):
