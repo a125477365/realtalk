@@ -8,8 +8,9 @@
 # 分工：
 #   - STT: faster-whisper（CTranslate2 无 Metal → CPU int8，ASR 本就够快）
 #   - LLM: responses-api → 回调聚合器 :9100/v1 的同一个 llama.cpp(Metal)，不重复加载 LLM
-#   - TTS: qwen3（Mac 自动 MLX，默认 mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit，
-#          首次启动自动下载；Apple GPU 合成）
+#   - TTS: qwen3（Mac 自动 MLX，0.6B-CustomVoice-8bit：与 REST 的 0.6B CustomVoice
+#          同规格→音色一致。模型放本地目录（install 脚本 resolve 直链下载），
+#          不走 huggingface_hub——镜像的元数据请求不稳，是反复踩过的坑）
 #
 # 由 run_native_macos.sh 在后台拉起，监听 ws://127.0.0.1:8765/v1/realtime；
 # 聚合器(server.py, SPEECH_REALTIME_ENGINE=s2s)把 :9100/v1/realtime 桥接到它。
@@ -36,7 +37,7 @@ exec "$ROOT/bin/micromamba" run -n speech speech-to-speech \
   --responses_api_api_key "${SPEECH_S2S_LLM_API_KEY:-local}" \
   --responses_api_stream \
   --tts qwen3 \
-  --qwen3_tts_model_name "${SPEECH_S2S_MLX_TTS_MODEL:-mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit}" \
+  --qwen3_tts_model_name "${SPEECH_S2S_MLX_TTS_MODEL:-$MODELS_DIR/mlx-qwen3-tts-0.6b-customvoice-8bit}" \
   --qwen3_tts_speaker "${SPEECH_TTS_SPEAKER:-Aiden}" \
   --qwen3_tts_language "${SPEECH_S2S_TTS_LANGUAGE:-auto}" \
   --enable_live_transcription \

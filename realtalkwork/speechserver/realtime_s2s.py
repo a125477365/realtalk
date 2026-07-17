@@ -18,7 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 
 S2S_URL = os.getenv("SPEECH_S2S_REALTIME_URL", "ws://127.0.0.1:8765/v1/realtime")
-COMMIT_SILENCE_MS = max(128, int(os.getenv("SPEECH_S2S_COMMIT_SILENCE_MS", "750")))
+COMMIT_SILENCE_MS = max(128, int(os.getenv("SPEECH_S2S_COMMIT_SILENCE_MS", "1200")))   # 需 ≥ VAD 判停静音阈值
 
 
 def _translate_session_update(event: dict[str, Any]) -> dict[str, Any]:
@@ -77,9 +77,23 @@ async def handle_session(client: WebSocket) -> None:
     await client.accept()
     public_session_id = client.query_params.get("session") or "s2s"
     try:
-        async with websockets.connect(S2S_URL, max_size=None, ping_interval=20, ping_timeout=20) as upstream:
-            # 先给调用方建立完成信号；S2S 的原始 session 配置不泄漏到兼容 API。
+        # 上一个会话断开后 S2S 释放管线有 ~150ms 延迟；紧接着的重连（App 切沉浸/常规、
+        # 退出立刻再进）会撞上 session_limit_reached。短暂重试把释放竞态吸收掉。
+        upstream = None
+        initial: dict[str, Any] = {}
+        for attempt in range(6):
+            upstream = await websockets.connect(S2S_URL, max_size=None, ping_interval=20, ping_timeout=20)
             initial = json.loads(await asyncio.wait_for(upstream.recv(), timeout=15))
+            if not (initial.get("type") == "error"
+                    and (initial.get("error") or {}).get("type") == "session_limit_reached"):
+                break
+            await upstream.close()
+            upstream = None
+            await asyncio.sleep(0.5)
+        if upstream is None:
+            raise RuntimeError("speech-to-speech 管线繁忙（session_limit_reached），请稍后重试")
+        async with upstream:
+            # 先给调用方建立完成信号；S2S 的原始 session 配置不泄漏到兼容 API。
             await client.send_text(json.dumps(_translate_server_event(initial, public_session_id), ensure_ascii=False))
 
             async def to_upstream() -> None:
@@ -103,19 +117,23 @@ async def handle_session(client: WebSocket) -> None:
                         await upstream.send(json.dumps({"type": "response.cancel"}))
                         continue
                     if kind == "input_audio_buffer.commit":
-                        # S2S 的 VAD 以静音判句，历史客户端的 commit 是立即断流；补一小段静音让
-                        # 最后一个词可靠落盘，再把 commit 交给它做缓冲校验。
+                        # S2S 没有 commit 事件（事件表只有 append/session.update/item.create/
+                        # response.create/cancel），转发会被拒 unknown_or_invalid_event。
+                        # 它的轮次判定只认 VAD 静音：把 commit 翻译成「垫一段足够长的静音」，
+                        # 让服务端 VAD 判停后自动产出转写事件（客户端等的
+                        # conversation.item.input_audio_transcription.completed 会照常到达）。
                         silence = b"\x00\x00" * (16000 * COMMIT_SILENCE_MS // 1000)
                         await upstream.send(json.dumps({
                             "type": "input_audio_buffer.append",
                             "audio": base64.b64encode(silence).decode("ascii"),
                         }))
-                        await upstream.send(json.dumps({"type": "input_audio_buffer.commit"}))
                         continue
                     if kind == "conversation.item.create":
-                        # RealTalk 的旧播种协议把所有历史文本标作 input_text；S2S 的
-                        # OpenAI GA schema 要求 assistant 历史使用 output_text。
+                        # RealTalk 的旧播种协议把所有历史文本标作 input_text，且 item 不带 type；
+                        # S2S 的 OpenAI GA schema 要求 item.type="message"（必填，缺了直接
+                        # ValidationError→unknown_or_invalid_event），assistant 历史用 output_text。
                         item = dict(event.get("item") or {})
+                        item.setdefault("type", "message")
                         if item.get("role") == "assistant":
                             content = []
                             for part in item.get("content") or []:
