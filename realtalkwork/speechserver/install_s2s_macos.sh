@@ -16,11 +16,12 @@ log(){ echo "[$(date '+%H:%M:%S')] $*"; }
 
 [ -x "$MB" ] || { echo "先运行 install_native_macos.sh"; exit 1; }
 
-# speech-to-speech(实时编排) + 它在 Darwin 自带的 MLX(Apple GPU 原生) TTS/LLM。
-# 关键：macOS 上【不装】faster-qwen3-tts——它要 transformers<5，会和 s2s 要的
-# transformers==5.6.2 撞车（ResolutionImpossible）。Mac 走 s2s 原生 MLX 路径，
-# 不需要那个为 Linux/CPU 准备的 ggml 桥接。大依赖(torch/mlx/lingua 数百 MB)多次重试。
-log "安装 speech-to-speech==0.2.10（Mac 自带 MLX 路径，不装 faster-qwen3-tts）…"
+# speech-to-speech（实时编排器——它「自带」的 ASR/TTS 只是包装代码，底层与 REST 用
+# 同一批引擎库和同一批模型文件；LLM 则回调聚合器共用同一实例，全系统权重各只一份）。
+# 注意安装顺序：先装 s2s 本体（带上 transformers==5.6.2），faster-qwen3-tts 在下面
+# 单独 --no-deps 安装（其 transformers<5 声明与 s2s 冲突，但 ggml 路径实测不用
+# transformers）。大依赖(torch/lingua 数百 MB)多次重试。
+log "安装 speech-to-speech==0.2.10…"
 for attempt in 1 2 3 4 5 6; do
   "$MB" run -n speech pip install --retries 10 --timeout 120 -i "$PIP_MIRROR" \
     "speech-to-speech[faster-whisper]==0.2.10" websockets \
