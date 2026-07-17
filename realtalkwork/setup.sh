@@ -93,14 +93,20 @@ check_local_postgres_auth() {
   if ! grep -qE '^COMPOSE_PROFILES=.*backend-db' .env; then
     return 0
   fi
+  # 库在容器内监听的端口：bridge 固定 5432；host 模式直接绑对外端口（.env 的 POSTGRES_PORT）
+  local pg_port=5432
+  if grep -qE '^COMPOSE_FILE=.*docker-compose\.host\.yml' .env; then
+    pg_port="$(sed -n 's/^POSTGRES_PORT=//p' .env | tail -n 1 | tr -d '[:space:]')"
+    pg_port="${pg_port:-5433}"
+  fi
   say "校验内置 PostgreSQL 连接与密码…"
   for _ in $(seq 1 60); do
     docker compose exec -T postgres \
-      pg_isready -U "${POSTGRES_USER:-realtalk}" >/dev/null 2>&1 && break
+      pg_isready -U "${POSTGRES_USER:-realtalk}" -p "$pg_port" >/dev/null 2>&1 && break
     sleep 1
   done
   if docker compose exec -T postgres \
-    sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT 1"' \
+    sh -c "PGPASSWORD=\"\$POSTGRES_PASSWORD\" psql -h 127.0.0.1 -p $pg_port -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atqc 'SELECT 1'" \
     2>/dev/null | grep -qx '1'; then
     say "${GREEN}✔ 内置 PostgreSQL 密码验证通过${RESET}"
     return 0
@@ -173,7 +179,30 @@ $DEPLOY_BACKEND || $DEPLOY_ADMIN || $DEPLOY_WEB || $DEPLOY_SPEECH || $DEPLOY_RED
 PROFILES=()
 ENV_LINES=("# ===== 由 setup.sh 生成（$(date '+%Y-%m-%d %H:%M:%S')）=====")
 ENV_LINES+=("COMPOSE_NETWORK_NAME=realtalk" "COMPOSE_SUBNET=172.28.0.0/16")
-note "容器内部网络固定为 172.28.0.0/16；对外服务仍通过宿主机端口映射访问。"
+
+# ---- 网络模式（单一决策点）----
+# 这里的选择决定后面各步写进 .env 的「本机服务」连接串形态：
+#   bridge → 服务名（postgres:5432 / redis:6379 / api:8000，容器 DNS 解析）
+#   host   → 127.0.0.1:对外端口（host 模式没有容器 DNS 与端口映射）
+# 远程服务的连接串两种模式通用（本就填真实 IP，不受影响）。
+# docker-compose.host.yml 只负责 network_mode 与端口绑定，不改写任何地址。
+HOST_NET=false
+HOST_NET_OLD="no"
+[[ "${PREVIOUS_ENV[COMPOSE_FILE]:-}" == *docker-compose.host.yml* ]] && HOST_NET_OLD="yes"
+echo
+note "网络模式：bridge=默认（容器私网+端口映射）；host=容器直接用宿主网络栈。"
+note "软路由/OpenWrt(iStoreOS) 常拦「docker→lan」转发——容器上得了外网、却到不了局域网"
+note "其它主机（如局域网里的语音服务器）。这种环境请选 host 绕过转发限制。"
+ask "使用 host 网络模式？(yes/no)" "$HOST_NET_OLD"
+if [ "$REPLY_VALUE" = "yes" ]; then
+  HOST_NET=true
+  ENV_LINES+=("COMPOSE_FILE=docker-compose.yml:docker-compose.host.yml" "COMPOSE_PATH_SEPARATOR=:")
+  note "host 模式：各服务直接绑定各自对外端口，同机服务间走 127.0.0.1。"
+else
+  note "容器内部网络固定为 172.28.0.0/16；对外服务仍通过宿主机端口映射访问。"
+fi
+# COMPOSE_FILE 由本步全权管理：切回 bridge 时不得从旧 .env 残留 host 配置
+unset "PREVIOUS_ENV[COMPOSE_FILE]" "PREVIOUS_ENV[COMPOSE_PATH_SEPARATOR]" 2>/dev/null || true
 
 API_UPSTREAM_DEFAULT="http://api:8000"
 
@@ -245,14 +274,23 @@ if $DEPLOY_PG; then
   ENV_LINES+=("POSTGRES_PORT=$PG_PORT_VAL")
 
   # 写入完整连接串（compose 不支持嵌套变量插值，且需与内置库密码一致）；
-  # 同机后端直接走内部 service 名 postgres:5432。
+  # 地址形态由前面的网络模式决定：bridge=服务名 postgres:5432，host=127.0.0.1:对外端口。
+  if $HOST_NET; then
+    PG_ADDR="127.0.0.1:${PG_PORT_VAL}"
+  else
+    PG_ADDR="postgres:5432"
+  fi
   ENV_LINES+=(
     "POSTGRES_USER=realtalk"
     "POSTGRES_PASSWORD=$PG_PW"
     "POSTGRES_DB=realtalk"
-    "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@postgres:5432/realtalk?sslmode=disable"
+    "DATABASE_URL=postgresql+psycopg://realtalk:${PG_PW}@${PG_ADDR}/realtalk?sslmode=disable"
   )
-  note "同机后端始终连接 postgres:5432；日志会显示其解析后的 172.28.x 容器内网 IP，这是正常现象。"
+  if $HOST_NET; then
+    note "host 模式：同机后端连接 ${PG_ADDR}（数据库直接绑定该宿主端口）。"
+  else
+    note "同机后端始终连接 postgres:5432；日志会显示其解析后的 172.28.x 容器内网 IP，这是正常现象。"
+  fi
 fi
 
 # ============ 第 3 步：Redis（菜单选 5：本机内置 Redis，可独立部署） ============
@@ -270,7 +308,12 @@ if $DEPLOY_REDIS; then
   ask_config REDIS_PORT "Redis 对外端口" "6380"
   REDIS_PORT_VAL="$REPLY_VALUE"
   ENV_LINES+=("REDIS_PORT=$REDIS_PORT_VAL")
-  ENV_LINES+=("REDIS_URL=redis://redis:6379/0")   # 同机后端走内部 service 名 redis:6379
+  # 地址形态由网络模式决定：bridge=服务名 redis:6379，host=127.0.0.1:对外端口
+  if $HOST_NET; then
+    ENV_LINES+=("REDIS_URL=redis://127.0.0.1:${REDIS_PORT_VAL}/0")
+  else
+    ENV_LINES+=("REDIS_URL=redis://redis:6379/0")   # 同机后端走内部 service 名 redis:6379
+  fi
 fi
 
 # ============ 第 4 步：后端参数 ============
@@ -281,10 +324,14 @@ if $DEPLOY_BACKEND; then
   ask_config API_PORT "API 对外端口" "8000"
   ENV_LINES+=("API_PORT=$REPLY_VALUE")
   API_PORT="$REPLY_VALUE"
+  # host 模式下同机前端走 127.0.0.1:API_PORT（无容器 DNS）；bridge 保持服务名 api:8000
+  if $HOST_NET; then
+    API_UPSTREAM_DEFAULT="http://127.0.0.1:${API_PORT}"
+  fi
 
   # 数据库连接：本机装了 PostgreSQL(菜单6) 则连接串已由第2步写好；否则填远程库地址。
   if $PG_DEPLOYED_LOCAL; then
-    note "数据库随菜单 6 在本机部署，连接串已配置（内部地址 postgres:5432）。"
+    note "数据库随菜单 6 在本机部署，连接串已按网络模式配置（bridge=postgres:5432 / host=127.0.0.1:对外端口）。"
   else
     echo
     note "本机未部署 PostgreSQL(菜单 6)：填写远程数据库连接串。"
@@ -296,7 +343,7 @@ if $DEPLOY_BACKEND; then
 
   # Redis 连接：本机装了 Redis(菜单5) 则连接串已由第3步写好；否则填远程 Redis 地址。
   if $REDIS_DEPLOYED_LOCAL; then
-    note "Redis 随菜单 5 在本机部署，连接串已配置（内部地址 redis:6379）。"
+    note "Redis 随菜单 5 在本机部署，连接串已按网络模式配置（bridge=redis:6379 / host=127.0.0.1:对外端口）。"
   else
     echo
     note "对话采集分块暂存必须使用 Redis（多活部署下本地文件会导致 chunk 落在不同机器上无法汇总）。"
@@ -618,8 +665,13 @@ if $DEPLOY_SPEECH; then
   # 不要求为了语音服务额外部署 Redis（项目的采集分块/后端 Redis 需求仍按前面菜单处理）。
   if [ "$SPEECH_RT_ENGINE" = "legacy" ]; then
     if $DEPLOY_REDIS; then
-      note "legacy 实时上下文走内部 Redis redis:6379/1（与后端 /0 库隔离）。"
-      ENV_LINES+=("SPEECH_REDIS_URL=redis://redis:6379/1")
+      if $HOST_NET; then
+        note "legacy 实时上下文走本机 Redis 127.0.0.1:${REDIS_PORT_VAL}/1（与后端 /0 库隔离）。"
+        ENV_LINES+=("SPEECH_REDIS_URL=redis://127.0.0.1:${REDIS_PORT_VAL}/1")
+      else
+        note "legacy 实时上下文走内部 Redis redis:6379/1（与后端 /0 库隔离）。"
+        ENV_LINES+=("SPEECH_REDIS_URL=redis://redis:6379/1")
+      fi
     else
       note "legacy 模式需远程 Redis（建议 /1 库与后端 /0 隔离）。"
       ask_config SPEECH_REDIS_URL "语音服务器 Redis 连接串 SPEECH_REDIS_URL" ""

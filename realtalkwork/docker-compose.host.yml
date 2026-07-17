@@ -1,39 +1,28 @@
 # RealTalk · 宿主机网络模式（host networking）覆盖层
 # =============================================================================
 # 什么时候用：部署在软路由 / OpenWrt(iStoreOS) 之类会 REJECT「docker 区域 → lan 区域」
-# 转发的环境里，容器需要直接访问局域网其它主机（典型：本机语音服务器 Mac 192.168.6.90）。
+# 转发的环境里，容器需要直接访问局域网其它主机（典型：局域网里的语音服务器）。
 # 这类系统默认只放行 docker→wan（能上外网），却拦 docker→lan（到不了同网段设备），
 # 表现就是容器里 curl 局域网 IP 瞬时 “All connection attempts failed”，而宿主机自己却通。
 # host 模式让容器与宿主共用网络栈，出局域网不再经「转发」链，因此天然绕过该限制。
 #
-# host 模式的两个副作用，本文件已逐一处理：
-#   1) 没有端口映射（ports 被忽略）——各服务「直接绑定」宿主端口，绑的就是原来的对外端口：
-#        postgres 5433 / redis 6380 / api 8000 / speech 9100 / admin 8001 / web 8002
-#      （redis 特意用 6380 而非默认 6379，避开宿主可能已有的 Redis。）
-#   2) 没有容器 DNS（postgres/redis/api 这些服务名不可用）——服务之间一律改用 127.0.0.1。
-#      DATABASE_URL / REDIS_URL / API_UPSTREAM 由 .env 里的账号密码 + 端口「零件」重新拼成
-#      127.0.0.1 版本，覆盖 .env 里那份 bridge 版（environment 优先级高于 env_file），
-#      所以切 host 模式不用改 .env。
+# 职责边界（单一决策点原则）：
+#   本文件只管两件事——network_mode: host + 各服务直接绑定原对外端口：
+#     postgres 5433 / redis 6380 / api 8000 / speech 9100 / admin 8001 / web 8002
+#   （redis 用 6380、pg 用 5433 而非默认端口，避开宿主可能已有的同类服务。）
+#   服务之间「连谁、连哪个地址」不归它管——那由 setup.sh 在生成 .env 时一次性决定：
+#     本机服务 → 127.0.0.1:对外端口（host 模式没有容器 DNS，服务名不可用）
+#     远程服务 → 真实 IP/域名（与 bridge 模式写法相同，不受网络模式影响）
+#   即 DATABASE_URL / REDIS_URL / SPEECH_REDIS_URL / API_UPSTREAM 全部原样取自 .env，
+#   本文件一律不改写。手动维护 .env 时按 .env.example 中 host 模式示例填写即可。
 #
-# 用法（在 docker-compose.yml 之外再叠加本文件即可）：
-#   COMPOSE_PROFILES=backend,backend-db,backend-redis,speech,admin,web \
-#     docker compose -f docker-compose.yml -f docker-compose.host.yml up -d --build
-#   # 也可写进 .env：COMPOSE_FILE=docker-compose.yml:docker-compose.host.yml
-#   #                COMPOSE_PATH_SEPARATOR=:   之后照常 docker compose up -d 即可。
+# 启用方式：运行 bash setup.sh 在「网络模式」一步选 host（会自动写入下面两行并按
+# host 形态生成全部连接串）；或手动在 .env 加：
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.host.yml
+#   COMPOSE_PATH_SEPARATOR=:
+# 之后照常 docker compose up -d --build（无需 -f）。
 #
-# 本地 vs 远程（多机部署）——为什么默认是 127.0.0.1，以及怎么改：
-#   127.0.0.1 只是「同机部署」这一最常见情形的默认值（host 模式的典型用法：一台机器上的
-#   若干服务，因软路由拦转发而需要 host 网络）。你现在 .3 上 6 个服务全在一台机，就该用
-#   127.0.0.1。若某个服务部署到「另一台机」，把它的主机名变量指过去即可（无需改这里）：
-#     DB_HOST     数据库所在机 IP（默认 127.0.0.1）     → 影响 api 连库
-#     REDIS_HOST  Redis 所在机 IP（默认 127.0.0.1）      → 影响 api / speech 连 Redis
-#     API_HOST    api 所在机 IP（默认 127.0.0.1）        → 影响 admin / web 前端连后端
-#   同时记得：远程那台不要再开它的内置 profile（backend-db/backend-redis），本机也别开。
-#   例：库和 Redis 都在 10.0.0.9 →  .env 里加 DB_HOST=10.0.0.9  REDIS_HOST=10.0.0.9
-#   （这些变量只拼「标准 LAN 连接串」；若远程库要 TLS/sslmode=require 之类非标准 URL，
-#    那类服务通常走公网、不受 docker→lan 限制，直接用基础 bridge 编排 + .env 全量 URL 即可。）
-#
-# 说明：host 模式下 docker 会忽略下方各服务保留的 ports 映射，`up` 时打印一行
+# 说明：host 模式下 docker 会忽略各服务保留的 ports 映射，`up` 时打印一行
 # “Published ports are discarded when using host network mode” 属正常提示，可忽略
 # （之所以不删 ports，是为兼容旧版 compose——删除需 !reset，依赖 compose ≥ v2.24）。
 # =============================================================================
@@ -56,27 +45,21 @@ services:
   api:
     network_mode: host
     environment:
-      # 服务名 → DB_HOST/REDIS_HOST（默认 127.0.0.1，远程库/Redis 时改指对方 IP）；
-      # 账号密码/库名/端口沿用 .env 里 setup.sh 写好的零件
-      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@${DB_HOST:-127.0.0.1}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-realtalk}?sslmode=disable"
-      REDIS_URL: "redis://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6380}/0"
       # 让 uvicorn 直接绑定对外端口（bridge 模式下此变量不设→仍是容器内 8000，经端口映射对外）
       API_BIND_PORT: "${API_PORT:-8000}"
 
   speech:
     network_mode: host
     environment:
-      # speech 容器用 REDIS_URL 这个键存实时上下文（bridge 版是 SPEECH_REDIS_URL→redis:6379/1）
-      REDIS_URL: "redis://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6380}/1"
+      # server.py 按 SPEECH_PORT 绑定端口（bridge 下不传→容器内固定 9100，经端口映射对外）
+      SPEECH_PORT: "${SPEECH_PORT:-9100}"
 
   admin-frontend:
     network_mode: host
     environment:
-      API_UPSTREAM: "http://${API_HOST:-127.0.0.1}:${API_PORT:-8000}"
       NGINX_PORT: "${ADMIN_PORT:-8001}"   # nginx 直接监听 8001（host 模式没有 80→8001 的映射）
 
   web-frontend:
     network_mode: host
     environment:
-      API_UPSTREAM: "http://${API_HOST:-127.0.0.1}:${API_PORT:-8000}"
       NGINX_PORT: "${WEB_PORT:-8002}"
