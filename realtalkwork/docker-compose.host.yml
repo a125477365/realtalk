@@ -21,9 +21,17 @@
 #   # 也可写进 .env：COMPOSE_FILE=docker-compose.yml:docker-compose.host.yml
 #   #                COMPOSE_PATH_SEPARATOR=:   之后照常 docker compose up -d 即可。
 #
-# 前提：本文件假设用「内置」postgres/redis（backend-db / backend-redis profile）。
-# 若用外部数据库/Redis，请勿用它改写 DATABASE_URL/REDIS_URL——把 .env 里的连接串直接
-# 写成可达的 IP:端口即可（外部服务本就走 IP，不受 host/bridge 影响）。
+# 本地 vs 远程（多机部署）——为什么默认是 127.0.0.1，以及怎么改：
+#   127.0.0.1 只是「同机部署」这一最常见情形的默认值（host 模式的典型用法：一台机器上的
+#   若干服务，因软路由拦转发而需要 host 网络）。你现在 .3 上 6 个服务全在一台机，就该用
+#   127.0.0.1。若某个服务部署到「另一台机」，把它的主机名变量指过去即可（无需改这里）：
+#     DB_HOST     数据库所在机 IP（默认 127.0.0.1）     → 影响 api 连库
+#     REDIS_HOST  Redis 所在机 IP（默认 127.0.0.1）      → 影响 api / speech 连 Redis
+#     API_HOST    api 所在机 IP（默认 127.0.0.1）        → 影响 admin / web 前端连后端
+#   同时记得：远程那台不要再开它的内置 profile（backend-db/backend-redis），本机也别开。
+#   例：库和 Redis 都在 10.0.0.9 →  .env 里加 DB_HOST=10.0.0.9  REDIS_HOST=10.0.0.9
+#   （这些变量只拼「标准 LAN 连接串」；若远程库要 TLS/sslmode=require 之类非标准 URL，
+#    那类服务通常走公网、不受 docker→lan 限制，直接用基础 bridge 编排 + .env 全量 URL 即可。）
 #
 # 说明：host 模式下 docker 会忽略下方各服务保留的 ports 映射，`up` 时打印一行
 # “Published ports are discarded when using host network mode” 属正常提示，可忽略
@@ -48,9 +56,10 @@ services:
   api:
     network_mode: host
     environment:
-      # 服务名 → 127.0.0.1；账号密码/库名/端口沿用 .env 里 setup.sh 写好的零件
-      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@127.0.0.1:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-realtalk}?sslmode=disable"
-      REDIS_URL: "redis://127.0.0.1:${REDIS_PORT:-6380}/0"
+      # 服务名 → DB_HOST/REDIS_HOST（默认 127.0.0.1，远程库/Redis 时改指对方 IP）；
+      # 账号密码/库名/端口沿用 .env 里 setup.sh 写好的零件
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-realtalk}:${POSTGRES_PASSWORD:-realtalk}@${DB_HOST:-127.0.0.1}:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-realtalk}?sslmode=disable"
+      REDIS_URL: "redis://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6380}/0"
       # 让 uvicorn 直接绑定对外端口（bridge 模式下此变量不设→仍是容器内 8000，经端口映射对外）
       API_BIND_PORT: "${API_PORT:-8000}"
 
@@ -58,16 +67,16 @@ services:
     network_mode: host
     environment:
       # speech 容器用 REDIS_URL 这个键存实时上下文（bridge 版是 SPEECH_REDIS_URL→redis:6379/1）
-      REDIS_URL: "redis://127.0.0.1:${REDIS_PORT:-6380}/1"
+      REDIS_URL: "redis://${REDIS_HOST:-127.0.0.1}:${REDIS_PORT:-6380}/1"
 
   admin-frontend:
     network_mode: host
     environment:
-      API_UPSTREAM: "http://127.0.0.1:${API_PORT:-8000}"
+      API_UPSTREAM: "http://${API_HOST:-127.0.0.1}:${API_PORT:-8000}"
       NGINX_PORT: "${ADMIN_PORT:-8001}"   # nginx 直接监听 8001（host 模式没有 80→8001 的映射）
 
   web-frontend:
     network_mode: host
     environment:
-      API_UPSTREAM: "http://127.0.0.1:${API_PORT:-8000}"
+      API_UPSTREAM: "http://${API_HOST:-127.0.0.1}:${API_PORT:-8000}"
       NGINX_PORT: "${WEB_PORT:-8002}"
