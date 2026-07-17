@@ -850,7 +850,11 @@ async def test_ai_connection() -> dict[str, Any]:
         hint = ""
         if config.provider == "zhipu":
             hint = "；智谱 GLM 新平台请使用 https://api.z.ai/api/paas/v4"
-        return {"ok": False, "message": f"连接失败：{exc}{hint}"}
+        elif _is_local_base(config.base_url):
+            hint = ("；目标是内网地址——请确认 API 服务器(容器/虚机)能路由到它："
+                    "在 API 服务器上执行 curl " + config.base_url.rstrip("/") + "/../health 排查"
+                    "（VMware 虚机注意网卡桥接模式与软路由的内网隔离设置）")
+        return {"ok": False, "message": f"连接失败（目标 {config.base_url}）：{exc}{hint}"}
     except httpx.TimeoutException:
         timeout_seconds = int(timeout_seconds_for_kind(config, "connection_test"))
         return {"ok": False, "message": f"连接测试超时（{timeout_seconds}s）：请检查模型服务是否可用，或稍后重试"}

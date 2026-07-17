@@ -3380,7 +3380,7 @@ async def freetalk_stream(
             else:
                 inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
             await upstream.send({"type": "conversation.item.create", "item": {
-                "role": "system", "content": [{"type": "input_text", "text": inject}],
+                "type": "message", "role": "system", "content": [{"type": "input_text", "text": inject}],
             }})
             reply, reply_zh, wav = await upstream.create_response(timeout=120)
         reply = SCENE_MARKER_STRIP_RE.sub("", reply or "").strip()   # 残留标记绝不上字幕/朗读
@@ -3509,6 +3509,12 @@ async def freetalk_stream(
                 elif kind == "input_audio_buffer.speech_stopped":
                     await _sj({"type": "listening", "speaking": False})
                 elif kind == "response.done":
+                    if ((ev.get("response") or {}).get("status")) == "cancelled":
+                        # OpenAI GA：被打断的回复以 status=cancelled 的 response.done 收尾
+                        # （本地 s2s 另发 response.cancelled 事件）——同样立即停播丢残余
+                        await _sj({"type": "ai_interrupted"})
+                        text, translation, pcm = "", "", bytearray()
+                        continue
                     raw = text
                     text, translation_out = "", translation
                     translation = ""
@@ -3522,7 +3528,7 @@ async def freetalk_stream(
                         else:
                             inject = "(That scenario no longer exists. Apologize in one short sentence and continue the normal chat.)"
                         await upstream.send({"type": "conversation.item.create", "item": {
-                            "role": "system", "content": [{"type": "input_text", "text": inject}],
+                            "type": "message", "role": "system", "content": [{"type": "input_text", "text": inject}],
                         }})
                         await upstream.send({"type": "response.create"})
                         pcm = bytearray()
@@ -3618,7 +3624,7 @@ async def freetalk_stream(
                 if upstream is not None:
                     try:
                         await upstream.send({"type": "conversation.item.create", "item": {
-                            "role": "user", "content": [{"type": "input_text", "text": typed}],
+                            "type": "message", "role": "user", "content": [{"type": "input_text", "text": typed}],
                         }})
                         if not translate_mode:
                             db.add_freetalk_message(user.id, "user", typed)

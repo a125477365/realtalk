@@ -144,3 +144,30 @@ wscat -c "$BASE/realtime?session=abc&language=en"
 - 默认 s2s 运行时不自行持久会话：API 后端在每次新连接时从数据库播种私教指令与近期历史，断线可恢复；`legacy` 模式才使用 Redis（`spx:ctx:<session>`，5 分钟滑动 TTL）。
 - ASR/LLM/TTS 各自并发信号量排队，防止把节点打挂；模型目录可多副本共享（只读加载）；
 - k8s：`deploy/k8s/speech-server.yaml`（Deployment+Service+PVC），探针已带 `start-period`（首启要下载模型）。
+
+## 多用户并发与扩容
+
+单节点并发旋钮（全部 env，两种部署方式通用）：
+
+| 旋钮 | 默认 | 说明 |
+|---|---|---|
+| `SPEECH_ASR_CONCURRENCY` | 3 | REST 转写并发，超出排队 |
+| `SPEECH_TTS_CONCURRENCY` | 6 | REST 合成并发，超出排队 |
+| `SPEECH_LLM_CONCURRENCY` | **1（勿改）** | 进程内 llama.cpp 非线程安全；要并发 LLM 用下行 |
+| `SPEECH_LLM_BASE_URL` | 空 | 指向外部 llama-server/vLLM → LLM 真并发（连续批处理） |
+| `SPEECH_S2S_PIPELINES` | 1 | **实时通道并发路数**＝同时进行的私教沉浸式会话数；每路各载一份 ASR+TTS（约 +1.5GB），满了新连接收 session_limit_reached，App 自动降级点按 |
+| API 容器 `WEB_CONCURRENCY` | 4 | FastAPI worker 数（api 服务本身天然多用户并发） |
+
+多服务器/多显卡横向扩容（无需改代码）：
+
+```
+App/API 后端 ──> nginx (least_conn + WS 升级透传)
+                   ├─> 语音服务器A :9100（Docker+CUDA 或 原生 Metal）
+                   ├─> 语音服务器B :9100
+                   └─> ...
+```
+
+- 管理台「B·对话语音模型」填 nginx 地址即可；REST 无状态可任意分发；
+  /v1/realtime 按连接粘滞（一条 WS 全程一台机器），nginx 默认行为即满足。
+- GPU 进容器：NVIDIA 显卡用 `DEVICE=cuda` 构建 + nvidia-container-toolkit（Dockerfile 已支持）；
+  Apple Silicon 的 GPU 无法映射进容器 → 用 install_native_macos.sh 原生部署（同一份代码）。

@@ -109,15 +109,52 @@ class ConvRealtimeSession:
         await self.ws.send(json.dumps(obj, ensure_ascii=False))
 
     async def seed(self, instructions: str, history: list[dict[str, str]]) -> None:
-        """新会话播种：人设+记忆 → instructions；近期历史逐条注入（服务端按预算裁剪并存 Redis）。"""
-        await self.send({"type": "session.update", "session": {"instructions": instructions}})
+        """新会话播种：人设+记忆 → instructions；近期历史逐条注入（服务端按预算裁剪并存 Redis）。
+        OpenAI GA 严格 schema：session.update 需带 type=realtime；item 需带 type=message，
+        assistant 历史的内容块必须是 output_text（input_text 会被 400 拒）。本地通道两者都兼容。"""
+        session_patch: dict = {"instructions": instructions}
+        if self.is_openai:
+            session_patch["type"] = "realtime"
+        await self.send({"type": "session.update", "session": session_patch})
         for item in history:
+            is_user = item.get("speaker") == "user"
+            content_type = "input_text" if (is_user or not self.is_openai) else "output_text"
             await self.send({"type": "conversation.item.create", "item": {
-                "role": "user" if item.get("speaker") == "user" else "assistant",
-                "content": [{"type": "input_text", "text": item.get("content", "")}],
+                "type": "message",
+                "role": "user" if is_user else "assistant",
+                "content": [{"type": content_type, "text": item.get("content", "")}],
             }})
 
+    def _resample_16k_to_24k(self, chunk: bytes) -> bytes:
+        """PCM16 mono 16k→24k：OpenAI Realtime 只接受 24kHz，App 上行是 16kHz。
+        优先 audioop(ratecv 带状态防爆音)；Python≥3.13 没有 audioop 时用线性插值兜底。"""
+        try:
+            import audioop
+
+            converted, self._ratecv_state = audioop.ratecv(chunk, 2, 1, 16000, 24000, self._ratecv_state)
+            return converted
+        except ImportError:
+            import array
+
+            src = array.array("h")
+            src.frombytes(chunk)
+            n = len(src)
+            if n == 0:
+                return b""
+            out = array.array("h", bytes(0))
+            for i in range(n * 3 // 2):   # 每 2 个输入样本产出 3 个输出样本
+                pos = i * 2 / 3
+                lo = int(pos)
+                hi = min(lo + 1, n - 1)
+                frac = pos - lo
+                out.append(int(src[lo] * (1 - frac) + src[hi] * frac))
+            return out.tobytes()
+
+    _ratecv_state = None   # audioop.ratecv 的重采样连续性状态（每会话独立）
+
     async def append_audio(self, chunk: bytes) -> None:
+        if self.is_openai:
+            chunk = self._resample_16k_to_24k(chunk)
         await self.send({"type": "input_audio_buffer.append", "audio": base64.b64encode(chunk).decode()})
 
     async def commit_and_transcribe(self, timeout: float, audio_format: str = "pcm16", sample_rate: int = 16000) -> str:
@@ -129,7 +166,10 @@ class ConvRealtimeSession:
         self, timeout: float, audio_format: str = "pcm16", sample_rate: int = 16000
     ) -> tuple[str, list[dict], float]:
         """同 commit_and_transcribe，另返回词级详情与音频时长（本地语音服务器提供；OpenAI 无词级则为空）。"""
-        await self.send({"type": "input_audio_buffer.commit", "format": audio_format, "sample_rate": sample_rate})
+        if self.is_openai:
+            await self.send({"type": "input_audio_buffer.commit"})   # GA 对未知字段严格
+        else:
+            await self.send({"type": "input_audio_buffer.commit", "format": audio_format, "sample_rate": sample_rate})
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=timeout))
             if ev.get("type") == "conversation.item.input_audio_transcription.completed":
