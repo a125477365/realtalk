@@ -207,6 +207,32 @@ class ConvRealtimeSession:
                 except Exception:  # noqa: BLE001
                     pass
             elif kind == "response.done":
+                if pcm or self.is_openai:
+                    # OpenAI GA：done 严格最后（音频必在其前），无需等待
+                    return text, translation, (_pcm_to_wav(bytes(pcm), rate) if pcm else None)
+                # 本地 s2s：TTS 与 LLM 并行流式，多路并发抢 GPU 时 TTS 会慢于文本 →
+                # response.done 可能先于音频尾流到达（单路空闲时音频总在 done 前到齐，
+                # 双路并发实测必现空音频）。done 后宽限排水：最多等 8s 首个 delta，
+                # 收到后以 1.2s 无新事件视为流尾。等不到则返回 None，由上层 REST TTS 兜底。
+                loop = asyncio.get_event_loop()
+                deadline = loop.time() + 8.0
+                try:
+                    while True:
+                        wait = 1.2 if pcm else max(0.1, deadline - loop.time())
+                        ev2 = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=wait))
+                        k2 = ev2.get("type")
+                        if k2 in ("response.audio.delta", "response.output_audio.delta"):
+                            rate = int(ev2.get("sample_rate") or rate)
+                            try:
+                                pcm.extend(base64.b64decode(ev2.get("delta", "")))
+                            except Exception:  # noqa: BLE001
+                                pass
+                        elif k2 in ("response.audio.done", "response.output_audio.done"):
+                            break
+                        elif not pcm and loop.time() >= deadline:
+                            break
+                except asyncio.TimeoutError:
+                    pass
                 return text, translation, (_pcm_to_wav(bytes(pcm), rate) if pcm else None)
             elif kind == "error":
                 raise RuntimeError(str(ev.get("message") or ev.get("error") or "实时通道推理失败")[:200])

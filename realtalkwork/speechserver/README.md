@@ -155,7 +155,7 @@ wscat -c "$BASE/realtime?session=abc&language=en"
 | `SPEECH_TTS_CONCURRENCY` | 6 | REST 合成并发，超出排队 |
 | `SPEECH_LLM_CONCURRENCY` | **1（勿改）** | 进程内 llama.cpp 非线程安全；要并发 LLM 用下行 |
 | `SPEECH_LLM_BASE_URL` | 空 | 指向外部 llama-server/vLLM → LLM 真并发（连续批处理） |
-| `SPEECH_S2S_PIPELINES` | 1 | **实时通道并发路数**＝同时进行的私教沉浸式会话数；每路各载一份 ASR+TTS（约 +1.5GB），满了新连接收 session_limit_reached，App 自动降级点按 |
+| `SPEECH_S2S_PIPELINES` | 1 | **实时通道并发路数**＝同时进行的私教沉浸式会话数；每路各载一份 ASR+TTS（约 +1.5GB），满了新连接收 session_limit_reached，App 自动降级点按。注：ggml TTS 非线程安全，sitecustomize 会把跨管线的 TTS 合成串行化（VAD/ASR/LLM 仍并行）——否则 Metal 并发编码直接崩进程 |
 | API 容器 `WEB_CONCURRENCY` | 4 | FastAPI worker 数（api 服务本身天然多用户并发） |
 
 多服务器/多显卡横向扩容（无需改代码）：

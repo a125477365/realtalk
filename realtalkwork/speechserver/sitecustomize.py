@@ -20,7 +20,24 @@ from urllib.request import urlretrieve
 
 
 if os.getenv("SPEECH_S2S_PROCESS") == "1" and os.getenv("SPEECH_DEVICE", "cpu").lower() in ("cpu", "metal"):
+    import threading
+
     from speech_to_speech.TTS.qwen3_tts_handler import Qwen3TTSHandler
+
+    # ggml 的 TTS 上下文不可跨线程并发推理：SPEECH_S2S_PIPELINES>1 时两条管线各持一个
+    # TTS 实例、各在自己的线程里跑，Metal 上同时编码会触发驱动断言
+    # “A command encoder is already encoding to this command buffer” → 整个 s2s 进程崩溃
+    # （双路并发实测必现；CPU ggml 同样非线程安全，只是症状不同）。
+    # 全局锁把「整轮 TTS 生成」跨管线串行：VAD/ASR/LLM 照常并行，仅两路恰好同时合成时
+    # 后到的排队（对话场景两人同刻说完话的窗口很小，代价可忽略）。
+    _TTS_GPU_LOCK = threading.Lock()
+    _orig_tts_process = Qwen3TTSHandler.process
+
+    def _serialized_process(self, tts_input):
+        with _TTS_GPU_LOCK:
+            yield from _orig_tts_process(self, tts_input)
+
+    Qwen3TTSHandler.process = _serialized_process
 
     def _setup_qwentts_cpp(self, model_name, dtype, attn_implementation):
         from faster_qwen3_tts import FasterQwen3TTS

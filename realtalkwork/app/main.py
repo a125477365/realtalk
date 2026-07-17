@@ -3398,6 +3398,10 @@ async def freetalk_stream(
                 for i in range(0, len(wav), 16384):
                     await _sb(wav[i:i + 16384])
                 await _sj({"type": "ai_audio_end"})
+            else:
+                # 实时通道高负载时音频可能缺失（s2s 的 TTS 尾流慢于 response.done，
+                # create_response 宽限排水后仍可能拿不到）→ REST TTS 兜底，保证有字必有声
+                await _send_tts(reply, "")
         if not translate_mode:
             turns_since_memory += 1
             if turns_since_memory >= 6:
