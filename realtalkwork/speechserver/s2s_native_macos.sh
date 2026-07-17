@@ -8,9 +8,9 @@
 # 分工：
 #   - STT: faster-whisper（CTranslate2 无 Metal → CPU int8，ASR 本就够快）
 #   - LLM: responses-api → 回调聚合器 :9100/v1 的同一个 llama.cpp(Metal)，不重复加载 LLM
-#   - TTS: qwen3（Mac 自动 MLX，0.6B-CustomVoice-8bit：与 REST 的 0.6B CustomVoice
-#          同规格→音色一致。模型放本地目录（install 脚本 resolve 直链下载），
-#          不走 huggingface_hub——镜像的元数据请求不稳，是反复踩过的坑）
+#   - TTS: qwen3 经 sitecustomize.py 桥接到 qwentts.cpp(ggml/Metal)——与 REST 的
+#          /audio/speech 读同一目录同一套 GGUF 权重（models/qwen3-tts-gguf，Q4_K_M），
+#          两进程各自加载进内存（与 ASR 的共用方式一致）
 #
 # 由 run_native_macos.sh 在后台拉起，监听 ws://127.0.0.1:8765/v1/realtime；
 # 聚合器(server.py, SPEECH_REALTIME_ENGINE=s2s)把 :9100/v1/realtime 桥接到它。
@@ -21,6 +21,11 @@ export MAMBA_ROOT_PREFIX="$ROOT/mamba"
 export MODELS_DIR="${MODELS_DIR:-$ROOT/models}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HOME="${HF_HOME:-$MODELS_DIR/huggingface}"
+export SPEECH_S2S_PROCESS=1                       # 激活 sitecustomize 的 ggml 桥接
+export SPEECH_DEVICE="${SPEECH_DEVICE:-metal}"    # 桥接按 cpu/metal 生效
+# sitecustomize.py 与本脚本同目录：进 PYTHONPATH 才会被 Python 自动导入
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="${DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 exec "$ROOT/bin/micromamba" run -n speech speech-to-speech \
   --mode realtime \
@@ -37,7 +42,7 @@ exec "$ROOT/bin/micromamba" run -n speech speech-to-speech \
   --responses_api_api_key "${SPEECH_S2S_LLM_API_KEY:-local}" \
   --responses_api_stream \
   --tts qwen3 \
-  --qwen3_tts_model_name "${SPEECH_S2S_MLX_TTS_MODEL:-$MODELS_DIR/mlx-qwen3-tts-0.6b-customvoice-8bit}" \
+  --qwen3_tts_model_name "${SPEECH_TTS_MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice}" \
   --qwen3_tts_speaker "${SPEECH_TTS_SPEAKER:-Aiden}" \
   --qwen3_tts_language "${SPEECH_S2S_TTS_LANGUAGE:-auto}" \
   --enable_live_transcription \

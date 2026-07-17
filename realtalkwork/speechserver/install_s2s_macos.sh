@@ -36,25 +36,18 @@ for pkg in ("punkt_tab", "averaged_perceptron_tagger_eng"):
     except Exception as e: print("nltk", pkg, "FAIL", str(e)[:80])
 PY
 
-log "校验可导入…"
-"$MB" run -n speech python -c "import torch, speech_to_speech, mlx_audio; print('OK torch', torch.__version__)"
-
-# MLX 版 Qwen3-TTS 0.6B-CustomVoice-8bit（与 REST 的 0.6B 音色一致）。
-# resolve 直链逐文件下载到本地目录——不走 huggingface_hub（镜像元数据请求不稳，反复踩过的坑）。
-log "下载 MLX Qwen3-TTS 模型（resolve 直链，断点续传）…"
-MLX_DIR="$ROOT/models/mlx-qwen3-tts-0.6b-customvoice-8bit"
-mkdir -p "$MLX_DIR/speech_tokenizer"
-MLX_BASE="${HF_ENDPOINT:-https://hf-mirror.com}/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit/resolve/main"
-for f in config.json generation_config.json merges.txt model.safetensors model.safetensors.index.json \
-         preprocessor_config.json tokenizer_config.json vocab.json \
-         speech_tokenizer/config.json speech_tokenizer/configuration.json \
-         speech_tokenizer/model.safetensors speech_tokenizer/preprocessor_config.json; do
-  [ -s "$MLX_DIR/$f" ] || for a in 1 2 3 4 5 6; do
-    curl -Ls --retry 8 --retry-all-errors -C - -o "$MLX_DIR/$f" "$MLX_BASE/$f" && [ -s "$MLX_DIR/$f" ] && break
-    sleep 3
-  done
+# TTS 统一：s2s 与 REST 共用同一套 GGUF 权重（models/qwen3-tts-gguf，install_native_macos.sh
+# 已下载），经 sitecustomize 桥接用 qwentts.cpp(Metal) 加载——不需要单独的 MLX 模型。
+# faster-qwen3-tts 必须 --no-deps：它声明 transformers<5 与 s2s 的 ==5.6.2 冲突，
+# 但 ggml 路径运行时不用 transformers（实测），绕开声明即可。
+log "安装 faster-qwen3-tts（--no-deps，ggml 桥接用）…"
+for attempt in 1 2 3; do
+  "$MB" run -n speech pip install --no-deps --retries 10 -i "$PIP_MIRROR" faster-qwen3-tts && break
+  sleep 3
 done
-log "MLX 模型就绪：$MLX_DIR"
+
+log "校验可导入…"
+"$MB" run -n speech python -c "import torch, speech_to_speech, faster_qwen3_tts; print('OK torch', torch.__version__)"
 
 # 同步给 launchd 用的代码副本（launchd 读不了 ~/Documents）
 mkdir -p "$ROOT/app"
