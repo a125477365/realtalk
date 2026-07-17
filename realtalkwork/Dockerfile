@@ -31,5 +31,7 @@ EXPOSE 8000
 
 # WEB_CONCURRENCY 控制 worker 进程数（建议 = CPU 核数）。CMD 作为参数传给入口脚本，
 # 用 sh -c 让 ${WEB_CONCURRENCY} 在降权后展开。
+# API_BIND_PORT 默认 8000（bridge 模式：容器内固定 8000，对外靠端口映射）；host 模式下由
+# docker-compose.host.yml 置为对外端口 ${API_PORT}，让 uvicorn 直接绑定宿主端口。
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --workers ${WEB_CONCURRENCY:-4}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${API_BIND_PORT:-8000} --proxy-headers --workers ${WEB_CONCURRENCY:-4}"]
