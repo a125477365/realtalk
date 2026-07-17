@@ -17,6 +17,19 @@
 set -uo pipefail
 
 ROOT="${REALTALK_SPEECH_HOME:-$HOME/realtalk-speech}"
+
+# 节点配置文件 $ROOT/speech.env：与 run_native_macos.sh 同一套读取逻辑（只补未设置的变量，
+# 已导出的优先）。通常本脚本由 run 脚本拉起、env 已就绪；这里兜底支持单独运行本脚本。
+if [ -f "$ROOT/speech.env" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in ''|\#*) continue ;; esac
+    _key="${_line%%=*}"
+    case "$_key" in *[!A-Za-z0-9_]*|'') continue ;; esac
+    [ -n "${!_key:-}" ] || export "$_key=${_line#*=}"
+  done < "$ROOT/speech.env"
+  unset _line _key
+fi
+
 export MAMBA_ROOT_PREFIX="$ROOT/mamba"
 export MODELS_DIR="${MODELS_DIR:-$ROOT/models}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"

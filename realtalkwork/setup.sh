@@ -647,6 +647,14 @@ if $DEPLOY_SPEECH; then
   ask_config SPEECH_LLM_REPO "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
   ask_config SPEECH_LLM_FILE "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
   ask_config SPEECH_REALTIME_ENGINE "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
+  if [ "$SPEECH_RT_ENGINE" = "s2s" ]; then
+    note "全双工并发路数 = 同时几个用户进行「私教沉浸式」实时通话（每路常驻约 +1.5GB 内存，"
+    note "共享本机同一块 GPU——路数越多每路延迟越高）。满员时新用户自动降级点按对话，不报错。"
+    note "单机多卡请勿靠加大此值扩容：应每张卡跑一个 speech 实例（CUDA_VISIBLE_DEVICES 各指一张卡、"
+    note "端口错开），前面挂 nginx least_conn 分发——见 speechserver/README.md「多用户并发与扩容」。"
+    ask_config SPEECH_S2S_PIPELINES "实时全双工并发路数" "1"
+    ENV_LINES+=("SPEECH_S2S_PIPELINES=$REPLY_VALUE")
+  fi
   note "CPU 推荐 0.6B Qwen3-TTS：比 1.7B 更省内存、首包更快；需要更细腻音色可改 1.7B（CPU 会更慢）。"
   ask_config SPEECH_TTS_MODEL "统一 Qwen3-TTS 模型（REST 与 realtime 共用配置）" "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"; ENV_LINES+=("SPEECH_TTS_MODEL=$REPLY_VALUE")
   ask_config SPEECH_TTS_SPEAKER "统一 Qwen3-TTS 默认音色（中文推荐 Vivian，英文推荐 Aiden）" "Aiden"; ENV_LINES+=("SPEECH_TTS_SPEAKER=$REPLY_VALUE")

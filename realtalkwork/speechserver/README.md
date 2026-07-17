@@ -171,3 +171,23 @@ App/API 后端 ──> nginx (least_conn + WS 升级透传)
   /v1/realtime 按连接粘滞（一条 WS 全程一台机器），nginx 默认行为即满足。
 - GPU 进容器：NVIDIA 显卡用 `DEVICE=cuda` 构建 + nvidia-container-toolkit（Dockerfile 已支持）；
   Apple Silicon 的 GPU 无法映射进容器 → 用 install_native_macos.sh 原生部署（同一份代码）。
+
+在哪配置 `SPEECH_S2S_PIPELINES`：
+
+- **容器部署**：`bash setup.sh` 第 7 步（语音服务器参数）会询问「实时全双工并发路数」，写入 `.env`。
+- **原生 macOS**：`~/realtalk-speech/speech.env`（install_native_macos.sh 自动生成模板），
+  改完 `launchctl unload/load` 重启生效。
+- 不做自动设定：合适的值取决于内存/显存余量与你能接受的每路延迟（每路 +1.5GB、共享同一 GPU），
+  属于容量决策；默认 1 保守安全。
+
+单机多卡（重要）：`SPEECH_S2S_PIPELINES` 只是**同一进程内**的多路管线，全部路共享**同一块** GPU——
+它不会把负载摊到第二张卡上。多卡的正确姿势是「每张卡一个实例」再用 nginx 汇聚（与多服务器同构）：
+
+```bash
+# 卡0 / 卡1 各跑一个 speech 容器，端口错开（同一镜像同一模型目录，权重各载一份）
+docker run -d --gpus '"device=0"' -e SPEECH_DEVICE=cuda -e SPEECH_S2S_PIPELINES=2 \
+  -p 9100:9100 -v ./speech-models:/models realtalk-speech
+docker run -d --gpus '"device=1"' -e SPEECH_DEVICE=cuda -e SPEECH_S2S_PIPELINES=2 \
+  -p 9101:9100 -v ./speech-models:/models realtalk-speech
+# nginx least_conn → 9100/9101，管理台填 nginx 地址
+```

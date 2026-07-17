@@ -8,6 +8,21 @@
 set -uo pipefail
 
 ROOT="${REALTALK_SPEECH_HOME:-$HOME/realtalk-speech}"
+
+# 节点配置文件（原生部署的「.env」）：$ROOT/speech.env，KEY=VALUE 一行一个（不要加引号）。
+# LaunchAgent 启动时环境是空的，这里是原生部署改并发路数/端口/模型等唯一推荐入口——
+# 改完 launchctl unload/load 重启即生效，不用碰 plist。
+# 只补「尚未设置」的变量：命令行 SPEECH_X=… bash run_native_macos.sh 临时覆盖仍然优先。
+if [ -f "$ROOT/speech.env" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in ''|\#*) continue ;; esac
+    _key="${_line%%=*}"
+    case "$_key" in *[!A-Za-z0-9_]*|'') continue ;; esac
+    [ -n "${!_key:-}" ] || export "$_key=${_line#*=}"
+  done < "$ROOT/speech.env"
+  unset _line _key
+fi
+
 export MAMBA_ROOT_PREFIX="$ROOT/mamba"
 export MODELS_DIR="${MODELS_DIR:-$ROOT/models}"
 export SPEECH_DEVICE="${SPEECH_DEVICE:-metal}"

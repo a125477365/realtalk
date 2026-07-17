@@ -86,6 +86,30 @@ done
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$ROOT/app"
 cp -f "$SRC_DIR"/*.py "$SRC_DIR/run_native_macos.sh" "$ROOT/app/"
+
+# 节点配置文件（原生部署的「.env」，run/s2s 脚本自动读取；已存在则不覆盖用户的改动）。
+# 改完 launchctl unload/load 重启生效。与 setup.sh 容器部署的 .env 同名参数含义一致。
+if [ ! -f "$ROOT/speech.env" ]; then
+  cat > "$ROOT/speech.env" <<'SPEECHENV'
+# RealTalk 语音服务器 · 原生部署节点配置（KEY=VALUE，不要加引号；#开头为注释）
+# 改完执行：launchctl unload ~/Library/LaunchAgents/com.realtalk.speech.plist && \
+#           launchctl load  ~/Library/LaunchAgents/com.realtalk.speech.plist
+
+# 实时全双工并发路数 = 同时几个用户进行「私教沉浸式」通话。
+# 每路常驻约 +1.5GB 内存，共享同一块 GPU（路数越多每路延迟越高）；
+# 满员时新用户自动降级点按对话，不报错。16GB 内存建议 ≤3。
+SPEECH_S2S_PIPELINES=1
+
+# 其它常用（默认值见 run_native_macos.sh / s2s_native_macos.sh，按需取消注释）：
+# SPEECH_PORT=9100
+# SPEECH_ASR_MODEL=small
+# SPEECH_TTS_SPEAKER=Aiden
+# SPEECH_TTS_QUANT=Q4_K_M
+# SPEECH_ASR_CONCURRENCY=3
+# SPEECH_TTS_CONCURRENCY=6
+SPEECHENV
+  log "已生成节点配置 $ROOT/speech.env（并发路数等在此调整）"
+fi
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$HOME/Library/LaunchAgents/com.realtalk.speech.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
