@@ -127,31 +127,29 @@ struct TutorCallView: View {
     // MARK: 字幕（最近两条 + 中文翻译）
 
     private var subtitles: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // #1：用户字幕靠右、AI 字幕靠左（此前全部靠左，分不清谁说的）。
+        VStack(spacing: 12) {
             ForEach(recentLines) { item in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .top, spacing: 8) {
-                        Circle()
-                            .fill(item.kind == .user ? RTTheme.accent : RTTheme.success)
-                            .frame(width: 7, height: 7)
-                            .padding(.top, 7)
-                        Text(item.text)
-                            .font(.system(size: 17 * model.fontScale, weight: .medium))
-                            .foregroundStyle(.white)
-                    }
+                let isUser = item.kind == .user
+                VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                    Text(item.text)
+                        .font(.system(size: 17 * model.fontScale, weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(isUser ? .trailing : .leading)
+                        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
                     if item.showTranslation, item.translating {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini).tint(.white)
                             Text("正在翻译…").font(.system(size: 13 * model.fontScale)).foregroundStyle(.white.opacity(0.6))
                         }
-                        .padding(.leading, 15)
                     } else if item.translation.isEmpty == false, model.showChineseHint || item.showTranslation {
                         Text(item.translation)
                             .font(.system(size: 14 * model.fontScale))
                             .foregroundStyle(.white.opacity(0.65))
-                            .padding(.leading, 15)
+                            .multilineTextAlignment(isUser ? .trailing : .leading)
+                            .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
                     }
-                    // 行内小操作（暂停/任意时刻可点）：AI 句=重播+译；用户句=发音指导
+                    // 行内小操作：AI 句=重播+译（靠左）；用户句=发音指导（靠右）
                     HStack(spacing: 18) {
                         if item.kind == .ai {
                             Button { model.speakText(item.text, tone: item.tone) } label: {
@@ -177,11 +175,11 @@ struct TutorCallView: View {
                             }
                         }
                     }
-                    .padding(.leading, 15)
+                    .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 26)
         .padding(.top, 14)
         .animation(.easeOut(duration: 0.2), value: model.homeItems.count)
