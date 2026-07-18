@@ -419,9 +419,13 @@ _FREETALK_TUTOR_POLICY = (
     "Rules: "
     "1) English learning ONLY: free conversation practice, grammar/vocabulary explanations, pronunciation tips, "
     "or scene practice (from the user's own scenarios or improvised on request). "
-    "2) You SPEAK English only. Use Chinese in your spoken reply ONLY when it is truly necessary to explain a word or "
-    "grammar the user asked about (e.g. user asks what 'eye' means → you may say: \"'eye' means 眼睛.\"). The user may "
-    "speak English OR Chinese — always understand both. Keep every reply SHORT (2-4 sentences, it will be read aloud), "
+    "2) Default to speaking English, BUT you MUST switch to spoken Chinese whenever the user is ASKING FOR HELP "
+    "understanding something — the meaning of an English word/phrase, a grammar point, or when they seem confused. "
+    "In those cases SAY the Chinese explanation ALOUD (it will be spoken, not just shown as subtitle). "
+    "Example: user asks \"what does apple mean\" or \"apple 是什么意思\" → you SAY aloud: \"apple 的意思是苹果\", "
+    "then optionally add its English pronunciation. Do NOT answer a meaning question with only the English word or its "
+    "pronunciation. The user may speak English OR Chinese — always understand both. Keep every reply SHORT (2-4 "
+    "sentences, it will be read aloud), "
     "then ask a question or give a prompt that keeps the user speaking. Gently correct important mistakes in passing "
     "(one per turn): grammar, word choice, or likely pronunciation issues visible in the ASR text. "
     "3) TEACH LIKE A REAL TUTOR: use the user's profile (age group, occupation/social role, English level, learning "
@@ -441,7 +445,9 @@ _FREETALK_SCENE_POLICY = (
     "B. When the user AGREES to practice a listed scenario, reply with EXACTLY the marker ⟦SCENE:<scene_id>⟧ and NOTHING "
     "else. The system will hand you the full scene script and you continue from there.\n"
     "C. Once the script arrives, ask (in English) which role the user wants to play and whether to follow the script "
-    "STRICTLY or practice FREELY. You play the other role.\n"
+    "STRICTLY or practice FREELY — ask this ONCE ONLY. On the user's next reply, no matter what they say (even if "
+    "unclear or misheard by ASR), commit to an interpretation, assign roles yourself if needed, and START the scene. "
+    "NEVER repeat the role/mode question. You play the other role.\n"
     "D. STRICT mode: go line by line. Speak your role's lines in English; in the subtitle-only Chinese segment tell the "
     "user which line to say next, e.g. 提示：接下来你说「今天的皇堡很不错」(The Whopper is great today). If their attempt "
     "is far off, put a brief Chinese correction in the subtitle segment and ask them (short spoken English) to try again; "
@@ -970,17 +976,15 @@ JSON schema:
 3. english 要像英语母语国家真实口语，不要中式直译。
 4. expressions 提取 4-8 个高频可迁移表达。
 """
-    content = await _chat_completion(
+    scenario = await _generate_scenario_json_with_retry(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.25,
         kind="scenario",
         user_id=user_id,
         config=config,
     )
-    scenario = ScenarioResponse.model_validate(_extract_json(content))
     # 输出端兜底：即使模型无视提示词，也再过滤一遍政治/敏感内容（与通用场景同款）
     return _scrub_sensitive_scenario(_repair_scenario(scenario, atomic_lines))
 
@@ -1165,14 +1169,80 @@ user_said 是「用户自己说的整理版」（用于字幕），与 correctio
     return _repair_roleplay_evaluation(evaluation, target_line, user_text)
 
 
+async def _generate_scenario_json_with_retry(
+    messages: list[dict[str, str]],
+    kind: str,
+    user_id: str | None,
+    config: "AIRuntimeConfig | None",
+    temps: tuple[float, ...] = (0.3, 0.0),
+) -> "ScenarioResponse":
+    """场景生成专用：低温多次尝试解析+校验（#5/#6：弱模型偶发坏 JSON/缺字段）。
+    第一次略带温度求自然，失败则降到 0 求确定性，仍失败抛最后一个异常由上层记录。"""
+    last_exc: Exception | None = None
+    for temp in temps:
+        content = await _chat_completion(messages, temperature=temp, kind=kind, user_id=user_id, config=config)
+        try:
+            return ScenarioResponse.model_validate(_extract_json(content))
+        except Exception as exc:  # noqa: BLE001 — json/pydantic 均可能；下一温度重试
+            last_exc = exc
+            print(f"[scenario] 生成解析失败(temp={temp})，重试：{str(exc)[:160]}", flush=True)
+    raise last_exc if last_exc else RuntimeError("场景生成失败")
+
+
+def _repair_truncated_json(s: str) -> str | None:
+    """修复弱模型常见的坏 JSON（#5/#6：本地小模型生成大 JSON 常在中途截断或多逗号）：
+    截到最后一个完整对象 `}`，去掉尾随逗号，再按未闭合的 { [ 补齐 } ]。修不了返回 None。"""
+    last = s.rfind("}")
+    if last == -1:
+        return None
+    s = s[: last + 1]
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+    s = re.sub(r",\s*$", "", s.rstrip())
+    closers = "".join("]" if b == "[" else "}" for b in reversed(stack))
+    return s + closers
+
+
 def _extract_json(content: str) -> dict[str, Any]:
+    # 去掉可能的 ```json 代码围栏
+    cleaned = re.sub(r"^\s*```(?:json)?|```\s*$", "", content.strip(), flags=re.M).strip()
     try:
-        return json.loads(content)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", content, flags=re.S)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+        pass
+    match = re.search(r"\{.*\}", cleaned, flags=re.S)
+    candidate = match.group(0) if match else cleaned
+    # 依次尝试：原样 → 去尾随逗号 → 截断修复
+    for attempt in (candidate,
+                    re.sub(r",(\s*[}\]])", r"\1", candidate),
+                    _repair_truncated_json(candidate)):
+        if not attempt:
+            continue
+        try:
+            return json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+    return json.loads(candidate)   # 都失败 → 抛出原始错误，由上层重试/记录
 
 
 def _fallback_learning(items: list[TranscriptItem]) -> LearningResponse:
@@ -1475,17 +1545,16 @@ JSON schema:
 }}
 要求：english 像英语母语国家真实口语；expressions 提取 3-5 个高频可迁移表达。
 """
-    content = await _chat_completion(
+    scenario = await _generate_scenario_json_with_retry(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.6,
         kind="preset_scenario",
         user_id=user_id,
         config=config,
+        temps=(0.5, 0.0),
     )
-    scenario = ScenarioResponse.model_validate(_extract_json(content))
     return _sanitize_preset_scenario(scenario, group_title, sub_title)
 
 
@@ -1511,13 +1580,25 @@ def _speaker_role_id(speaker: str, roles: list, role_ids: set) -> str | None:
 
 def _aligned_target_roles(lines: list, roles: list, role_ids: set) -> list[str]:
     """为每句返回应使用的 target_role：优先按 speaker 名字纠正，其次用模型原值(合法则用，否则 self)。
-    崩塌保护：若按 speaker 对齐后所有句子被压成同一角色（speaker 标注异常），退回模型原始 target_role。"""
+    崩塌保护：若按 speaker/原值都把所有句子压成同一角色（弱模型常把每句都标 self，#6：只有"我"、
+    没有 AI 台词），则强制在 self / counterpart 间交替——多数服务场景由对方(counterpart)先开口，
+    故从 counterpart 起。交替是启发式兜底，好过"整段全是用户台词、AI 无话可说"。"""
     orig = [(line.target_role if line.target_role in role_ids else "self") for line in lines]
     aligned = [
         (_speaker_role_id(line.speaker, roles, role_ids) or orig[i])
         for i, line in enumerate(lines)
     ]
-    return aligned if len(set(aligned)) >= 2 else orig
+    if len(set(aligned)) >= 2:
+        return aligned
+    if len(set(orig)) >= 2:
+        return orig
+    # 两种来源都塌成单一角色 → 交替兜底，保证对话是双向的
+    self_id = "self" if "self" in role_ids else next(iter(role_ids), None)
+    others = [rid for rid in role_ids if rid != self_id]
+    counterpart_id = "counterpart" if "counterpart" in role_ids else (others[0] if others else self_id)
+    if counterpart_id == self_id:
+        return orig   # 只有一个角色，无从交替
+    return [counterpart_id if i % 2 == 0 else self_id for i in range(len(lines))]
 
 
 def _sanitize_preset_scenario(

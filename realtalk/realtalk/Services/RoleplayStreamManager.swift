@@ -85,7 +85,6 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// WS 已连上且收到 state（对外可见：点说话按钮时若已掉线由上层整体重连）
     @Published private(set) var isConnected = false
     private var reconnectAttempts = 0
-    private let maxReconnect = 5
     private var reconnectTask: Task<Void, Never>?
 
     func start(streamURL: URL, guidanceMode: String) {
@@ -106,18 +105,16 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         receiveLoop()
     }
 
+    /// 断线重连：只要用户还在会话里（active）就无限重连，永不放弃、永不 stop——
+    /// 用户体验优先于"报错让用户手动重试"（#1：以前 5 次失败后 stop() 导致再也连不上）。
+    /// 退避封顶 8s；每次都提示"重连中"，连上（state 事件）后自动清零并"已重连"。
     private func scheduleReconnect() {
         guard active else { return }
         task?.cancel(with: .abnormalClosure, reason: nil)
         task = nil
         reconnectAttempts += 1
-        if reconnectAttempts > maxReconnect {
-            onError?("网络已断开，请重试")
-            stop()
-            return
-        }
         onStatus?("网络不稳，正在重连…")
-        let delay = min(8.0, pow(2.0, Double(reconnectAttempts - 1)))   // 1,2,4,8,8 秒退避
+        let delay = min(8.0, pow(2.0, Double(min(reconnectAttempts - 1, 3))))   // 1,2,4,8,8… 秒退避封顶
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

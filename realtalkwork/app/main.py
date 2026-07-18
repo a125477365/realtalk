@@ -3042,8 +3042,12 @@ async def roleplay_stream(
     # 通道故障自动回退分步管线（整段音频在 commit 时转写），沉浸式不中断。
     rp_upstream = None
     rp_upstream_started = 0.0
+    # 严格剧本对练只用实时通道做「流式 ASR」，台词/评分都在分步逻辑。但 s2s 管线数量有限且
+    # 注入剧本多轮后易卡死（#9：严格模式说几句后一直"连接中"，而闲聊/私教正常）——为可靠性与
+    # 保住闲聊/私教的管线额度，严格对练统一走 REST 转写（commit 时整段识别，稳定）。
+    # 需要时把下面 False 改回 bool(_rp_rt_url) 即恢复流式 ASR。
     _rp_rt_url = resolve_conv_realtime_url()
-    if _rp_rt_url:
+    if False and _rp_rt_url:  # noqa: SIM223 — 见上：严格对练禁用 s2s 流式 ASR
         try:
             rp_upstream = await ConvRealtimeSession(_rp_rt_url, f"rp-{session_id}", voice=voice).connect()
             rp_upstream_started = _time.monotonic()
@@ -3267,7 +3271,11 @@ async def freetalk_stream(
             scene_ctx = format_scene_context(picked)
             scene_opening = (
                 "(The user picked this scene from the scenario list to practice FREELY (protocol E). "
-                "Greet in one short sentence, ask which role they want to play, then start improvising the scene.)"
+                "Greet in one short sentence and ask which role they want to play — ask this ONCE ONLY. "
+                "On the user's VERY NEXT message, no matter what they say (even if unclear or misheard), "
+                "immediately assign roles — take your best guess at the role they want, or just pick sensible "
+                "roles yourself — and START improvising the scene's first line. NEVER ask the role question a "
+                "second time. Do NOT ask whether to practice strictly or freely; it is already FREE.)"
             )
         else:
             await _sj({"type": "notice", "detail": "这个场景不在了，我们换个话题吧"})
@@ -3341,7 +3349,14 @@ async def freetalk_stream(
     upstream = None
     upstream_started = 0.0
     rt_url = resolve_conv_realtime_url()
-    if rt_url:
+    # 场景练习（选场景进入，scene_ctx 已就绪）强制走分步管线，不用实时 s2s 通道：
+    #   #9：s2s 管线上下文有限，注入大段剧本 + 多轮角色扮演后会卡死（"一直连接中"），而闲聊/私教正常；
+    #   #7：分步管线用 REST TTS 按用户所选音色合成，音色全程一致（实时通道会出现两种声音）。
+    # 分步管线每轮携带完整历史+剧本，更适合结构化剧本对练。（对练更看重正确性而非极致低延迟。）
+    scene_practice = scene_ctx is not None
+    if scene_practice:
+        want_live = False
+    if rt_url and not scene_practice:
         try:
             # 独立会话 id：翻译模式(ftr)/场景自由练(fts)不与私教闲聊(ft)共用/污染语音服务器侧上下文
             sess_prefix = "ftr" if translate_mode else ("fts" if scene_ctx else "ft")
