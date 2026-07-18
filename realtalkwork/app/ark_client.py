@@ -620,15 +620,21 @@ async def generate_refinements(user_text: str, user_id: str | None = None) -> li
 
 async def generate_translation(user_text: str, user_id: str | None = None) -> str:
     """实时翻译一轮（分步管线路径用）：英→简中 / 中→英，只回译文。
-    模型不可用直接抛错（#9 无兜底）。计费与文字模型一致(kind=chat)。"""
+    弱模型用"自动判向"的同传提示词经常原样回句/改写不翻译（实测），因此这里先按 CJK 比例
+    判定方向，再用强制单向提示词，逼模型真正翻译。模型不可用直接抛错（#9 无兜底）。"""
     config = resolve_ai_config()
     if not config.enabled:
         raise RuntimeError("AI 模型未配置：请在管理台「系统设置 → 模型」中配置")
+    cjk = sum(1 for c in user_text if "一" <= c <= "鿿")
+    letters = sum(1 for c in user_text if c.isascii() and c.isalpha())
+    if cjk >= letters:   # 主要是中文 → 译成英文
+        system = ("You are a translator. Translate the user's Chinese sentence into natural, idiomatic English. "
+                  "Output ONLY the English translation — no Chinese, no pinyin, no explanations, no quotes.")
+    else:                # 主要是英文 → 译成简体中文
+        system = ("你是翻译器。把用户给出的英文句子翻译成自然的简体中文。"
+                  "只输出中文译文本身，禁止输出任何英文单词、拼音、解释或引号。")
     content = await _chat_completion(
-        [
-            {"role": "system", "content": translate_instructions()},
-            {"role": "user", "content": user_text},
-        ],
+        [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
         temperature=0.2,
         kind="chat",
         user_id=user_id,
