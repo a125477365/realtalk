@@ -40,6 +40,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     var manualCommit = false
     /// 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。
     var autoPlayAI = true
+    /// 播放语速（客户端倍速：语音服务器不支持 speed 参数）。0.5~2.0，1.0=正常。
+    var playbackRate: Float = 1.0 {
+        didSet { if let p = aiPlayer { p.enableRate = true; p.rate = playbackRate } }
+    }
 
     /// live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端；
     /// 本地不做静音提交、不做语音抢话。由连接参数请求、后端 live_mode 事件最终确认。
@@ -445,6 +449,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         guard let p = try? AVAudioPlayer(data: data) else { playNextAI(); return }
         p.delegate = self
         p.isMeteringEnabled = true
+        p.enableRate = true
+        p.rate = playbackRate
         aiPlayer = p
         isAISpeaking = true
         startAiLevelTimer()

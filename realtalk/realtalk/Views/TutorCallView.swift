@@ -12,6 +12,7 @@ struct TutorCallView: View {
 
     @State private var elapsed = 0
     @State private var guidanceItem: AppModel.HomeChatItem?   // 用户句「发音指导」浮层
+    @State private var showVoiceSheet = false                 // 音色/语速底部子面板
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     /// 当前活跃声音电平：用户说话取麦克风电平，老师说话取播放电平。
@@ -46,6 +47,9 @@ struct TutorCallView: View {
         .onReceive(timer) { _ in if model.homeConnected { elapsed += 1 } }
         .sheet(item: $guidanceItem) { item in
             GuidanceDetailSheet(item: item)
+        }
+        .sheet(isPresented: $showVoiceSheet) {
+            VoiceSpeedSheet().environmentObject(model)
         }
     }
 
@@ -250,27 +254,29 @@ struct TutorCallView: View {
 
     // MARK: 底部一排：音色胶囊（中）+ 退出 X（右）
 
+    /// 胶囊文案：当前音色 +（非正常语速时）倍速标记。
+    private var voicePillLabel: String {
+        let v = model.ttsCurrentVoice.isEmpty ? "音色" : model.ttsCurrentVoice
+        let s = model.playbackSpeed
+        return abs(s - 1.0) < 0.01 ? v : "\(v) · \(speedTag(s))"
+    }
+
+    private func speedTag(_ s: Double) -> String {
+        if abs(s - 0.5) < 0.01 { return "0.5×" }
+        if abs(s - 1.5) < 0.01 { return "1.5×" }
+        if abs(s - 2.0) < 0.01 { return "2×" }
+        return "1×"
+    }
+
     private var bottomBar: some View {
         ZStack {
-            // 音色选择：随选随换（入库后按当前形态重连即刻生效）
-            Menu {
-                ForEach(model.ttsVoices, id: \.self) { v in
-                    Button {
-                        model.changeTutorVoice(v)
-                    } label: {
-                        if v == model.ttsCurrentVoice {
-                            Label(v, systemImage: "checkmark")
-                        } else {
-                            Text(v)
-                        }
-                    }
-                }
-            } label: {
+            // 音色 + 语速：点开底部子面板选择（选项较多，改为子界面）
+            Button { showVoiceSheet = true } label: {
                 HStack(spacing: 6) {
-                    Text(model.ttsCurrentVoice.isEmpty ? "音色" : model.ttsCurrentVoice)
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 13, weight: .semibold))
+                    Text(voicePillLabel)
                         .font(.system(size: 16 * model.fontScale, weight: .medium))
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
                 }
                 .foregroundStyle(.white.opacity(0.9))
                 .padding(.horizontal, 22).padding(.vertical, 13)

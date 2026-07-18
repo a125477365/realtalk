@@ -20,6 +20,7 @@ struct ChatHomeView: View {
     @State private var guidanceItem: AppModel.HomeChatItem?
     @State private var showingAttach = false        // 底部「+」附加功能面板
     @State private var showingUpload = false        // 上传语音文件生成场景
+    @State private var showingVoiceSheet = false    // 音色/语速子面板
     @FocusState private var draftFocused: Bool
 
     var body: some View {
@@ -37,6 +38,9 @@ struct ChatHomeView: View {
             .alert(item: $model.failureAlert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
             }
+            .alert(item: $model.infoAlert) { alert in
+                Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("好的")))
+            }
             .sheet(isPresented: $model.showScenePicker) {
                 ScenarioPickerView()
             }
@@ -49,13 +53,17 @@ struct ChatHomeView: View {
             }
             // 底部「+」：上拉附加功能（采集/上传/选场景/自由聊/实时翻译）
             .sheet(isPresented: $showingAttach) {
-                AttachmentSheet(showingUpload: $showingUpload)
+                AttachmentSheet(showingUpload: $showingUpload, showingVoiceSheet: $showingVoiceSheet)
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showingUpload) {
                 UploadRecordingView()
             }
+            .sheet(isPresented: $showingVoiceSheet) {
+                VoiceSpeedSheet().environmentObject(model)
+            }
+            .task { await model.loadTtsVoices() }   // 主界面也需要音色列表（音色/语速面板用）
             // 私教通话（全屏，Claude 语音式界面）
             .fullScreenCover(isPresented: $model.showTutor) {
                 TutorCallView(stream: freeStream)
@@ -353,16 +361,29 @@ struct ChatHomeView: View {
         .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
     }
 
-    /// 中文提示卡（严格场景：下一句该说什么）。
+    /// 中文提示卡（严格场景：下一句该说什么）。中文提示明示；英文答案默认打码，点击才显示
+    /// （#8：先按中文自己组织，卡住了再点开看英文答案，而不是直接给答案）。
     private func hintCard(_ item: AppModel.HomeChatItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(item.text)
                 .font(.system(size: 14 * model.fontScale, weight: .medium))
                 .foregroundStyle(RTTheme.accent)
             if item.translation.isEmpty == false {
-                Text(item.translation)
-                    .font(.system(size: 12 * model.fontScale))
-                    .foregroundStyle(RTTheme.textSecondary)
+                ZStack(alignment: .leading) {
+                    Text(item.translation)
+                        .font(.system(size: 13 * model.fontScale))
+                        .foregroundStyle(RTTheme.textPrimary)
+                        .blur(radius: item.masked ? 6 : 0)
+                        .animation(.easeOut(duration: 0.22), value: item.masked)
+                    if item.masked {
+                        Text("🙈 英文答案已隐藏 · 点击显示")
+                            .font(.system(size: 11 * model.fontScale, weight: .medium))
+                            .foregroundStyle(RTTheme.textSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { model.toggleItemMasked(item.id) }
             }
         }
         .padding(12)
@@ -534,6 +555,7 @@ struct AttachmentSheet: View {
     @EnvironmentObject private var speech: SpeechCaptureManager
     @Environment(\.dismiss) private var dismiss
     @Binding var showingUpload: Bool
+    @Binding var showingVoiceSheet: Bool
 
     var body: some View {
         ZStack {
@@ -581,6 +603,16 @@ struct AttachmentSheet: View {
                         dismiss()
                         model.tutorMode = "translate"
                         model.showTutor = true
+                    }
+                    divider
+                    attachRow(
+                        icon: "slider.horizontal.3",
+                        tint: RTTheme.accent,
+                        title: "音色 / 语速",
+                        subtitle: "选择 AI 朗读的人物音色与说话速度"
+                    ) {
+                        dismiss()
+                        showingVoiceSheet = true
                     }
                 }
                 .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
@@ -657,32 +689,42 @@ struct RecordingOverlayView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
+            LinearGradient(colors: [Color(red: 0.10, green: 0.11, blue: 0.18),
+                                    Color(red: 0.05, green: 0.05, blue: 0.08)],
+                           startPoint: .top, endPoint: .bottom).ignoresSafeArea()
             VStack(spacing: 0) {
+                // 顶部 REC 徽标（闪烁红点）
+                HStack(spacing: 7) {
+                    Circle().fill(Color.red).frame(width: 9, height: 9).opacity(pulse ? 1 : 0.25)
+                    Text("REC · 采集中").font(.system(size: 13, weight: .bold)).foregroundStyle(.white.opacity(0.9))
+                }
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(.white.opacity(0.08), in: Capsule())
+                .padding(.top, 60)
                 Spacer()
-                // 红色呼吸录音指示
+                // 多层呼吸圆环录音指示
                 ZStack {
-                    Circle()
-                        .fill(Color.red.opacity(0.18))
-                        .frame(width: pulse ? 168 : 128, height: pulse ? 168 : 128)
-                    Circle()
-                        .fill(Color.red.opacity(0.30))
-                        .frame(width: 112, height: 112)
+                    Circle().stroke(Color.red.opacity(0.15), lineWidth: 2)
+                        .frame(width: pulse ? 220 : 170, height: pulse ? 220 : 170)
+                    Circle().fill(Color.red.opacity(0.15))
+                        .frame(width: pulse ? 176 : 136, height: pulse ? 176 : 136)
+                    Circle().fill(Color.red.opacity(0.32))
+                        .frame(width: 116, height: 116)
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 42, weight: .semibold))
+                        .font(.system(size: 44, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulse)
                 .onAppear { pulse = true }
 
                 Text(timeString)
-                    .font(.system(size: 34, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 40, weight: .bold).monospacedDigit())
                     .foregroundStyle(.white)
-                    .padding(.top, 26)
-                Text("正在录音，停止后自动生成练习场景")
-                    .font(.system(size: 16 * model.fontScale, weight: .medium))
+                    .padding(.top, 30)
+                Text("已采集 \(model.pendingCaptureCount) 句 · 停止后自动生成练习场景")
+                    .font(.system(size: 15 * model.fontScale, weight: .medium))
                     .foregroundStyle(.white.opacity(0.85))
-                    .padding(.top, 10)
+                    .padding(.top, 12)
                 Text("可以切到其他 App，录音会在后台继续")
                     .font(.system(size: 13 * model.fontScale))
                     .foregroundStyle(.white.opacity(0.5))

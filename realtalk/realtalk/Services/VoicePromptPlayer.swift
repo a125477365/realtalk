@@ -9,6 +9,10 @@ import Foundation
 final class VoicePromptPlayer: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
     @Published private(set) var audioLevel: Double = 0
+    /// 播放语速（客户端倍速：语音服务器不支持 speed 参数）。0.5~2.0，1.0=正常。
+    var playbackRate: Float = 1.0 {
+        didSet { if let p = player { p.enableRate = true; p.rate = playbackRate } }
+    }
 
     /// 由 AppModel 注入：给定(文本, 情绪标签, 是否走缓存)返回后端合成音频（调 /tts/speak）。cache=false 用于指导性内容（不入 Redis）。
     var audioProvider: ((String, String, Bool) async -> Data?)?
@@ -92,6 +96,8 @@ final class VoicePromptPlayer: NSObject, ObservableObject {
             let p = try AVAudioPlayer(data: data)
             p.delegate = self
             p.isMeteringEnabled = true
+            p.enableRate = true
+            p.rate = playbackRate
             player = p
             return p.play()
         } catch {

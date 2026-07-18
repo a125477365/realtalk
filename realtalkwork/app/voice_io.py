@@ -24,6 +24,63 @@ from .settings import settings
 QWEN3_CUSTOM_VOICES = ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"]
 OPENAI_REALTIME_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]
 
+# 音色元数据：性别 + 支持语言。用途：(a) App 展示性别/语言标签；(b) 所选音色不支持某语言时，
+# 自动换成「同性别、支持该语言」的音色播放，避免英文女声、中文男声这种性别错配。
+# Qwen3-TTS 是多语模型，自定义音色均按中英双语处理；OpenAI 音色以英文为主（中文质量差，按 en-only）。
+# 若某音色实际中文效果不佳，把它的 langs 改成 ["en"] 即可（会自动回退到双语音色读中文）。
+VOICE_META: dict[str, dict[str, Any]] = {
+    "Vivian": {"gender": "female", "langs": ["zh", "en"], "gentle": True},
+    "Serena": {"gender": "female", "langs": ["zh", "en"], "gentle": True},
+    "Ono_Anna": {"gender": "female", "langs": ["zh", "en"]},
+    "Sohee": {"gender": "female", "langs": ["zh", "en"]},
+    "Aiden": {"gender": "male", "langs": ["zh", "en"]},
+    "Dylan": {"gender": "male", "langs": ["zh", "en"]},
+    "Eric": {"gender": "male", "langs": ["zh", "en"]},
+    "Ryan": {"gender": "male", "langs": ["zh", "en"]},
+    "Uncle_Fu": {"gender": "male", "langs": ["zh", "en"]},
+    "coral": {"gender": "female", "langs": ["en"]},
+    "shimmer": {"gender": "female", "langs": ["en"]},
+    "sage": {"gender": "female", "langs": ["en"]},
+    "marin": {"gender": "female", "langs": ["en"]},
+    "alloy": {"gender": "male", "langs": ["en"]},
+    "ash": {"gender": "male", "langs": ["en"]},
+    "ballad": {"gender": "male", "langs": ["en"]},
+    "echo": {"gender": "male", "langs": ["en"]},
+    "verse": {"gender": "male", "langs": ["en"]},
+    "cedar": {"gender": "male", "langs": ["en"]},
+}
+# 默认音色：中英双语、温柔女声（新用户未选择时使用）。
+DEFAULT_BILINGUAL_FEMALE = "Vivian"
+
+
+def voice_gender(voice: str) -> str:
+    return (VOICE_META.get(voice) or {}).get("gender", "female")
+
+
+def voice_langs(voice: str) -> list[str]:
+    meta = VOICE_META.get(voice)
+    return list(meta["langs"]) if meta else ["zh", "en"]   # 未知音色不做语言限制
+
+
+def _is_mostly_chinese(text: str) -> bool:
+    cjk = sum(1 for c in text if "一" <= c <= "鿿")
+    letters = sum(1 for c in text if c.isascii() and c.isalpha())
+    return cjk > 0 and cjk >= letters
+
+
+def pick_voice_for_text(voice: str, text: str) -> str:
+    """所选音色不支持该文本语言（主要指中文）时，换成同性别、支持该语言的音色（限当前可选目录）。
+    双语音色（如本地 Qwen）永远直接使用所选音色；仅英文音色遇到中文时才回退。"""
+    if not _is_mostly_chinese(text) or "zh" in voice_langs(voice):
+        return voice
+    gender = voice_gender(voice)
+    catalog = available_voices()
+    same_gender = [v for v in catalog if "zh" in voice_langs(v) and voice_gender(v) == gender]
+    if same_gender:
+        return same_gender[0]
+    any_zh = [v for v in catalog if "zh" in voice_langs(v)]
+    return any_zh[0] if any_zh else voice
+
 
 def provider_voice_defaults(base_url: str) -> tuple[list[str], str]:
     """返回当前语音服务的推荐音色目录；自定义服务由管理员自行发布。"""
@@ -292,6 +349,7 @@ async def synthesize(text: str, voice: str | None = None, use_cache: bool = True
         raise RuntimeError("待合成文本为空")
     config = resolve_tts_config()
     voice = normalize_voice(voice)
+    voice = pick_voice_for_text(voice, text)   # 中文文本 + 英文专用音色 → 换同性别中文音色
     fmt = (config["format"] or "mp3").lower()
 
     is_cloud_ready = bool(config["base_url"] and config["api_key"])

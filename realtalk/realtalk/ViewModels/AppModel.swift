@@ -523,8 +523,9 @@ final class AppModel: ObservableObject {
     /// 台词气泡（AI 台词默认打码，点击文字才显示；用户点开过的保持显示）→
     /// 指导卡（评语/纠正）→ 中文提示（下一句该说什么）。
     func applyStrictState(_ state: RoleplayStateResponse) {
-        // 每轮整体重建列表：把用户已手动揭示的 AI 台词记下来，重建后保持揭示状态
+        // 每轮整体重建列表：把用户已手动揭示的 AI 台词 / 提示英文答案记下来，重建后保持揭示状态
         let revealed = Set(homeItems.filter { $0.kind == .ai && $0.masked == false }.map(\.text))
+        let revealedHints = Set(homeItems.filter { $0.kind == .hint && $0.masked == false }.map(\.text))
         var items: [HomeChatItem] = []
         for msg in state.messages {
             items.append(HomeChatItem(
@@ -534,16 +535,19 @@ final class AppModel: ObservableObject {
                 masked: msg.speaker == "ai" && revealed.contains(msg.content) == false
             ))
         }
-        // 指导卡：本句没通过 → 评语 + 发音未命中词
+        // #8 顺序：先出「下一句该说什么」的中文提示（英文答案默认打码，点击才显示——不点也知道说什么），
+        // 指导（对刚才那句的纠正）紧随其后显示在提示下方，符合"提示→尝试→纠正"的先后顺序。
+        if state.completed == false, let next = state.nextLine {
+            let hintText = "提示：接下来你说「\(next.sourceText)」"
+            items.append(HomeChatItem(kind: .hint, text: hintText, translation: next.english,
+                                      masked: revealedHints.contains(hintText) == false))
+        }
+        // 指导卡：本句没通过 → 评语 + 发音未命中词（显示在提示下方）
         if state.latestAccepted == false, let fb = state.latestFeedback, fb.isEmpty == false {
             var text = fb
             let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
             if missed.isEmpty == false { text += "\n发音再注意：\(missed.joined(separator: "、"))" }
             items.append(HomeChatItem(kind: .guidance, text: text))
-        }
-        // 中文提示：下一句该说的话（严格按剧本：中文在前、英文小字参考）
-        if state.completed == false, let next = state.nextLine {
-            items.append(HomeChatItem(kind: .hint, text: "提示：接下来你说「\(next.sourceText)」", translation: next.english))
         }
         if state.completed {
             items.append(HomeChatItem(kind: .guidance, text: "🎉 场景对话完成！综合得分 \(Int(state.score * 100))"))
@@ -720,13 +724,35 @@ final class AppModel: ObservableObject {
     @Published var ttsVoices: [String] = []
     @Published var ttsCurrentVoice = ""
     @Published var ttsConfigured = false
+    /// AI 朗读语速（客户端倍速；语音服务器不支持 speed 参数）。1.0=正常，可选 0.5/1.5/2.0。
+    @Published var playbackSpeed: Double = 1.0 {
+        didSet {
+            defaults.set(playbackSpeed, forKey: DefaultsKey.playbackSpeed)
+            applyPlaybackSpeed()
+        }
+    }
+
+    private func applyPlaybackSpeed() {
+        let r = Float(playbackSpeed)
+        voice.playbackRate = r
+        stream.playbackRate = r
+        freeStream.playbackRate = r
+    }
     /// 中断流程的系统/模型/额度异常：弹失败提示框（不像 statusMessage 只在主界面显示）。
     @Published var failureAlert: FailureAlert?
+    /// 成功/信息提示框（如"采集上传成功、场景生成中"）——比 statusMessage 更显眼，用户不会漏看。
+    @Published var infoAlert: FailureAlert?
 
     struct FailureAlert: Identifiable {
         let id = UUID()
         let title: String
         let message: String
+    }
+
+    /// 弹出信息提示框（成功类）。
+    func presentInfo(_ message: String, title: String = "提示") {
+        infoAlert = FailureAlert(title: title, message: message)
+        statusMessage = message
     }
 
     /// 处理中（等待后台）：用于全局禁用其它操作按钮，避免在生成/对练中误触发新请求。
@@ -775,6 +801,7 @@ final class AppModel: ObservableObject {
         static let reminderWindows = "realtalk.reminderWindows"
         static let reminderTimes = "realtalk.reminderTimes"
         static let autoPlayAI = "realtalk.autoPlayAI"
+        static let playbackSpeed = "realtalk.playbackSpeed"
     }
 
     init() {
@@ -814,6 +841,9 @@ final class AppModel: ObservableObject {
         // init 阶段属性观察器不触发，手动同步一次到两条流
         freeStream.autoPlayAI = autoPlayAI
         stream.autoPlayAI = autoPlayAI
+        let savedSpeed = defaults.double(forKey: DefaultsKey.playbackSpeed)
+        if savedSpeed > 0 { playbackSpeed = min(max(savedSpeed, 0.5), 2.0) }
+        applyPlaybackSpeed()   // init 阶段 didSet 不触发，手动同步语速到两条流 + 重播
 
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
@@ -1137,6 +1167,9 @@ final class AppModel: ObservableObject {
         transcripts.pendingUpload.reduce(0) { $0 + $1.text.count }
     }
 
+    /// 采集录音页展示：已采集句数（录音全屏页每秒刷新时读取）。
+    var pendingCaptureCount: Int { transcripts.pendingUpload.count }
+
     // MARK: 非会员每日采集时长限额（客户端本地强制；后端不感知采集过程）
 
     private var isNonMember: Bool { auth.user?.effectiveTier == "free" }
@@ -1331,7 +1364,11 @@ final class AppModel: ObservableObject {
             let response = try await api.uploadCaptureSegments(pending, token: token)
             transcripts.markUploaded(ids: pending.map(\.id))
             // 异步生成：上传成功即可，无需等待场景；生成完成后会出现在场景列表
-            statusMessage = "上传成功，场景生成中，稍后在列表查看"
+            if notifyFailure {   // 用户手动停止采集 → 明确弹框告知"上传成功、生成中"（此前静默回主界面无任何提示）
+                presentInfo("已上传 \(response.acceptedItems) 句对话，正在生成练习场景，稍后在场景列表查看。", title: "上传成功")
+            } else {
+                statusMessage = "上传成功，场景生成中，稍后在列表查看"
+            }
             return response.acceptedItems
         } catch {
             if notifyFailure {
