@@ -3280,14 +3280,15 @@ async def freetalk_stream(
         else:
             await _sj({"type": "notice", "detail": "这个场景不在了，我们换个话题吧"})
 
-    # 开场（先于实时通道连接：开场词入库后 seed 的历史才完整）：
-    # 首次进入=自我介绍+入门了解；老学员=按记忆问候；有未练场景时顺口邀练一个。
+    # 开场：只在【scene 场景进入】或【全新用户(无任何历史)】时生成一次——
+    # 否则每次(重)连都生成新开场白，用户会看到"一直重复问候/问角色"（实测反馈）。
+    # 老学员进来直接看历史字幕、开口即聊，不再自动寒暄、也不主动推销未练场景。
     user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
-    if not translate_mode and (not history or unpracticed or scene_opening):
+    if not translate_mode and (scene_opening or not history):
         memory = db.get_user_memory(user.id)
         if scene_opening:
             opening_prompt = scene_opening
-        elif not history and not memory.strip():
+        elif not memory.strip():
             # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
             # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
             opening_prompt = (
@@ -3296,14 +3297,8 @@ async def freetalk_stream(
                 "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
                 "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
             )
-        elif unpracticed:
-            opening_prompt = (
-                "(The user just opened the tutor session. Greet them briefly using what you remember. There are "
-                "unpracticed scenarios in the list — casually offer ONE of them per protocol A, or start an easy "
-                "conversation if offering feels unnatural.)"
-            )
         else:
-            opening_prompt = "(The user just opened the tutor session. Greet them briefly using what you remember, and start an easy conversation.)"
+            opening_prompt = "(The user just opened the tutor session. Greet them warmly in ONE short sentence using what you remember, then ask one simple open question to get them talking. Do NOT offer scenario practice.)"
         try:
             result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id,
                                                    scenarios=unpracticed, scene_context=scene_ctx)
@@ -3356,7 +3351,14 @@ async def freetalk_stream(
     scene_practice = scene_ctx is not None
     if scene_practice:
         want_live = False
-    if rt_url and not scene_practice:
+    # 只有「沉浸式全双工(live)」才用 s2s 实时通道；点按式(主界面 + 常规私教)、翻译、场景练习
+    # 一律走分步管线。原因（用户实测「牛头不对马嘴 + 每句换人声」）：
+    #   ①一致性：s2s 断线重连丢失人设播种 → 回退成通用助手("How can I assist")、答非所问；
+    #     分步管线每轮都重新带上完整人设+历史，永远连贯、重连无副作用。
+    #   ②同一音色：s2s 轮次音频有时来自 s2s 自带说话人、有时空音频回退 REST → 听着像换人；
+    #     分步管线永远用 REST TTS + 用户所选音色，全程同一个人声。
+    #   ③稳定性：点按式不需要 s2s 的低延迟，去掉易断的上游 WS，客户端 WS 更稳（缓解"网络异常"）。
+    if rt_url and want_live:
         try:
             # 独立会话 id：翻译模式(ftr)/场景自由练(fts)不与私教闲聊(ft)共用/污染语音服务器侧上下文
             sess_prefix = "ftr" if translate_mode else ("fts" if scene_ctx else "ft")
