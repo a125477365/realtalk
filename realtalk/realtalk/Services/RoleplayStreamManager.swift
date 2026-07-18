@@ -118,7 +118,8 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         task = nil
         reconnectAttempts += 1
         onStatus?("网络不稳，正在重连…")
-        let delay = min(8.0, pow(2.0, Double(min(reconnectAttempts - 1, 3))))   // 1,2,4,8,8… 秒退避封顶
+        // 首次断开【立即】重连（不让用户干等）；连续失败才指数退避，封顶 5s。
+        let delay: Double = reconnectAttempts <= 2 ? 0.2 : min(5.0, pow(2.0, Double(min(reconnectAttempts - 2, 3))))
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

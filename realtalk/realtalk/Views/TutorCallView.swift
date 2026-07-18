@@ -20,15 +20,39 @@ struct TutorCallView: View {
         stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel
     }
 
+    private var isTranslate: Bool { model.tutorMode == "translate" }
+
+    /// 实时翻译界面的顶部占位（替代头像）：一个大的 A⇄中 图形，表明这是同传界面。
+    private var translateHeader: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                Circle().fill(.white.opacity(0.08)).frame(width: 120, height: 120)
+                HStack(spacing: 4) {
+                    Text("A").font(.system(size: 34, weight: .bold))
+                    Image(systemName: "arrow.left.arrow.right").font(.system(size: 20, weight: .semibold))
+                    Text("中").font(.system(size: 34, weight: .bold))
+                }
+                .foregroundStyle(.white)
+            }
+            Text("实时翻译 · 说中出英 / 说英出中")
+                .font(.system(size: 14 * model.fontScale))
+                .foregroundStyle(.white.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     var body: some View {
         ZStack {
             Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
             bottomGlow
             VStack(spacing: 0) {
                 header
-                // 头像固定在顶部：不随字幕滚动。字幕在其下方固定区域，剩余空间由下方 Spacer 吸收。
-                avatar
-                    .padding(.top, 6)
+                // 实时翻译界面不显示头像（只做同传）；私教对话显示头像。
+                if isTranslate {
+                    translateHeader.padding(.top, 10)
+                } else {
+                    avatar.padding(.top, 6)
+                }
                 statusLine
                     .padding(.top, 12)
                 subtitles
@@ -87,13 +111,18 @@ struct TutorCallView: View {
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(.white.opacity(0.10), in: Capsule())
             Spacer()
-            if model.tutorMode == "translate" {
-                Text("实时翻译")
-                    .font(.system(size: 13 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(.white.opacity(0.10), in: Capsule())
+            // 右上角「A中」实时翻译开关：亮起=当前在翻译模式，点按在 对话/翻译 间切换。
+            Button { model.toggleTutorTranslate() } label: {
+                HStack(spacing: 3) {
+                    Text("A").font(.system(size: 15 * model.fontScale, weight: .bold))
+                    Image(systemName: "arrow.left.arrow.right").font(.system(size: 11, weight: .semibold))
+                    Text("中").font(.system(size: 15 * model.fontScale, weight: .bold))
+                }
+                .foregroundStyle(isTranslate ? Color(red: 0.07, green: 0.08, blue: 0.10) : .white.opacity(0.9))
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(isTranslate ? AnyShapeStyle(.white) : AnyShapeStyle(.white.opacity(0.10)), in: Capsule())
             }
+            .accessibilityLabel(isTranslate ? "退出实时翻译" : "开启实时翻译")
         }
         .padding(.horizontal, 18)
         .padding(.top, 10)
@@ -153,7 +182,7 @@ struct TutorCallView: View {
                             .multilineTextAlignment(isUser ? .trailing : .leading)
                             .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
                     }
-                    // 行内小操作：AI 句=重播+译（靠左）；用户句=发音指导（靠右）
+                    // 行内小操作：AI 句=重播(+译)；用户句=发音指导。实时翻译模式不需要指导/译。
                     HStack(spacing: 18) {
                         if item.kind == .ai {
                             Button { model.speakText(item.text, tone: item.tone) } label: {
@@ -162,14 +191,16 @@ struct TutorCallView: View {
                                     .foregroundStyle(.white.opacity(0.8))
                             }
                             .accessibilityLabel("重新播放这一句")
-                            Button { model.toggleItemTranslation(item.id) } label: {
-                                Text("译")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .padding(.horizontal, 6).padding(.vertical, 1)
-                                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(.white.opacity(0.4), lineWidth: 1))
+                            if isTranslate == false {
+                                Button { model.toggleItemTranslation(item.id) } label: {
+                                    Text("译")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .padding(.horizontal, 6).padding(.vertical, 1)
+                                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(.white.opacity(0.4), lineWidth: 1))
+                                }
                             }
-                        } else {
+                        } else if isTranslate == false {
                             Button { guidanceItem = item } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "waveform.and.magnifyingglass").font(.system(size: 12))

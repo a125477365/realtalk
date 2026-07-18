@@ -595,14 +595,13 @@ struct AttachmentSheet: View {
                     }
                     divider
                     attachRow(
-                        icon: "globe",
+                        icon: "arrow.left.arrow.right",
                         tint: RTTheme.accent,
-                        title: "实时翻译",
-                        subtitle: "说中文出英文、说英文出中文，逐句同传"
+                        title: "实时翻译（A⇄中）",
+                        subtitle: "只翻译不作答：说中出英、说英出中，逐句同传并朗读"
                     ) {
                         dismiss()
-                        model.tutorMode = "translate"
-                        model.showTutor = true
+                        model.enterTranslate()
                     }
                     divider
                     attachRow(

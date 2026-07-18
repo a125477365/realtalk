@@ -223,7 +223,11 @@ final class AppModel: ObservableObject {
             // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈。
             // 尚未被服务端确认的本地回显气泡要保留在末尾（重连不吞用户刚发的话）
             let pendingEcho = self.homeItems.filter { $0.localEcho }
-            self.homeItems = items.map { HomeChatItem(kind: $0.speaker == "user" ? .user : .ai, text: $0.text, tone: $0.tone) } + pendingEcho
+            // #四：历史里的 AI 台词按「上次是否揭示」恢复打码状态（默认打码，先听后看）
+            self.homeItems = items.map { m in
+                HomeChatItem(kind: m.speaker == "user" ? .user : .ai, text: m.text,
+                             masked: m.speaker == "ai" && self.isAIRevealed(m.text) == false, tone: m.tone)
+            } + pendingEcho
             self.homeStatus = ""
             self.setHomeWorking(false)
         }
@@ -258,8 +262,9 @@ final class AppModel: ObservableObject {
         freeStream.onAIText = { [weak self] t, tr, tone in
             guard let self else { return }
             self.setHomeWorking(false)
-            // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
-            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr, masked: true, tone: tone))
+            // AI 台词默认打码（先听后看），点击文字才显示；已揭示过的同句保持揭示（#四）
+            self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr,
+                                               masked: self.isAIRevealed(t) == false, tone: tone))
         }
         // 收到的 AI 语音按句存本地（微信式）：重播按钮零等待、不再重新合成；键含情绪标签
         freeStream.onAIAudio = { text, tone, data in VoiceCacheStore.shared.put(data, for: text, tone: tone) }
@@ -281,10 +286,13 @@ final class AppModel: ObservableObject {
         setHomeWorking(false)
     }
 
-    /// 点击打码的 AI 台词：显示/再次隐藏文字（先听后看，手动揭示）。
+    /// 点击打码的 AI 台词：显示/再次隐藏文字（先听后看，手动揭示）。揭示状态持久化（#四）。
     func toggleItemMasked(_ id: UUID) {
         guard let i = homeItems.firstIndex(where: { $0.id == id }) else { return }
         homeItems[i].masked.toggle()
+        if homeItems[i].kind == .ai {
+            setAIRevealed(homeItems[i].text, homeItems[i].masked == false)
+        }
     }
 
     /// 卡内「译」按钮：切换该条消息的中文翻译显示；没带翻译时按需调后端翻一次并缓存在该条上。
@@ -386,6 +394,23 @@ final class AppModel: ObservableObject {
             await setTtsVoice(v)
             reconnectTutor()
         }
+    }
+
+    /// 从主界面「+」进入实时翻译：清场景 + 翻译模式 + 打开私教式全屏界面。
+    func enterTranslate() {
+        homeSceneId = nil; homeSceneName = nil
+        tutorMode = "translate"
+        showTutor = true
+    }
+
+    /// 私教右上角「A中」实时翻译开关：在 私教对话 / 实时翻译 之间切换（清场景、翻译走点按 turn-based）。
+    func toggleTutorTranslate() {
+        if freeStream.manualRecording { freeStream.endManualUtterance() }
+        tutorMode = (tutorMode == "translate") ? "chat" : "translate"
+        homeSceneId = nil; homeSceneName = nil
+        freeStream.stop()
+        startHomeChat(sceneId: nil, sceneName: nil,
+                      liveTurn: tutorMode != "translate" && tutorImmersive)
     }
 
     /// 退出私教（电源键）：回主界面（点按 turn-based）；翻译模式退出时切回普通对话流。
@@ -802,6 +827,17 @@ final class AppModel: ObservableObject {
         static let reminderTimes = "realtalk.reminderTimes"
         static let autoPlayAI = "realtalk.autoPlayAI"
         static let playbackSpeed = "realtalk.playbackSpeed"
+        static let revealedAITexts = "realtalk.revealedAITexts"
+    }
+
+    // #四：AI 台词「已揭示」文本集合——打码/揭示状态跨重连与 App 重启保持（否则重进全变揭示）。
+    private var revealedAITexts: Set<String> = []
+    private func loadRevealed() { revealedAITexts = Set(defaults.stringArray(forKey: DefaultsKey.revealedAITexts) ?? []) }
+    func isAIRevealed(_ text: String) -> Bool { revealedAITexts.contains(text) }
+    private func setAIRevealed(_ text: String, _ revealed: Bool) {
+        if revealed { revealedAITexts.insert(text) } else { revealedAITexts.remove(text) }
+        if revealedAITexts.count > 800 { revealedAITexts = [] }   // 防无限增长：超限清空重来
+        defaults.set(Array(revealedAITexts), forKey: DefaultsKey.revealedAITexts)
     }
 
     init() {
@@ -844,6 +880,7 @@ final class AppModel: ObservableObject {
         let savedSpeed = defaults.double(forKey: DefaultsKey.playbackSpeed)
         if savedSpeed > 0 { playbackSpeed = min(max(savedSpeed, 0.5), 2.0) }
         applyPlaybackSpeed()   // init 阶段 didSet 不触发，手动同步语速到两条流 + 重播
+        loadRevealed()          // #四：恢复 AI 台词打码/揭示状态
 
         speech.onSegment = { [weak self] text, date in
             self?.transcripts.addSegment(text: text, at: date)
