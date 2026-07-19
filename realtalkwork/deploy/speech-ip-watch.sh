@@ -18,8 +18,11 @@ ADMIN_USER="${RT_ADMIN_USER:-admin}"
 ADMIN_PW="${RT_ADMIN_PW:-admin123456}"
 
 # 语音服务器可能有多台：Mac(device=metal，快)和本机 .3(device=cpu，慢兜底)。优先用 metal。
-# 1) 当前配置地址若还是 metal 且在线 → 秒退（常态，一条 curl）。
-cur=$(curl -s -m3 "$B/admin/api/settings/tts" 2>/dev/null | sed -n 's/.*"base_url":"http:\/\/\([0-9.]*\):9100.*/\1/p')
+# 先登录管理台（读配置/写配置都要鉴权，否则读不到当前地址会每分钟误判为"需更新"刷日志）。
+curl -s -m5 -c "$JAR" -X POST "$B/admin/login" -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PW\"}" >/dev/null 2>&1
+# 1) 当前配置地址若还是 metal 且在线 → 秒退（常态）。
+cur=$(curl -s -m3 -b "$JAR" "$B/admin/api/settings/tts" 2>/dev/null | sed -n 's/.*"base_url":"http:\/\/\([0-9.]*\):9100.*/\1/p')
 if [ -n "$cur" ]; then
   curdev=$(curl -fs -m3 "http://$cur:9100/health" 2>/dev/null | sed -n 's/.*"device":"\([a-z]*\)".*/\1/p')
   [ "$curdev" = "metal" ] && exit 0   # 已指向在线的 Mac，无需动
@@ -43,8 +46,6 @@ found=$(awk '$2=="metal"{print $1; exit}' /tmp/rt_found 2>/dev/null)
 
 # 3) 更新后端配置到新 IP（模型中心 / A·场景ASR / 通用ASR / B·对话语音模型）
 NEW="http://$found:9100/v1"
-curl -s -m5 -c "$JAR" -X POST "$B/admin/login" -H 'Content-Type: application/json' \
-  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PW\"}" >/dev/null 2>&1
 curl -s -m10 -b "$JAR" -X POST "$B/admin/api/settings/model" -H 'Content-Type: application/json' \
   -d "{\"provider\":\"custom\",\"base_url\":\"$NEW\",\"api_key\":\"local-metal\",\"model\":\"local\"}" >/dev/null 2>&1
 curl -s -m10 -b "$JAR" -X POST "$B/admin/api/settings/asr" -H 'Content-Type: application/json' \
