@@ -168,7 +168,9 @@ final class AppModel: ObservableObject {
     private(set) var homeSceneId: String? = nil
     @Published var showTutor = false            // 私教模式（全屏私教通话界面）
     @Published var showScenePicker = false      // 场景选择二级页
-    @Published var tutorImmersive = true        // 私教：沉浸式(自动) / 常规式(点击说话)
+    // 私教默认【点按式】(稳、走分步管线)。沉浸式全双工走 s2s 实时通道，对模型速度要求高：
+    // 配 7B(每轮5~7s)时全双工既慢又只有1路管线容易卡；等以后换快的小模型再默认沉浸式。
+    @Published var tutorImmersive = false       // 私教：沉浸式(自动) / 常规式(点击说话)
     @Published var tutorMode = "chat"           // 私教：chat / translate
     /// 顶栏喇叭：是否自动播放 AI 语音（关＝只看字幕，卡内波形按钮仍可单句重听）。
     @Published var autoPlayAI = true {

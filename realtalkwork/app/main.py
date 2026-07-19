@@ -3300,9 +3300,9 @@ async def freetalk_stream(
             # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题。
             # 用简单【英语】提问并附一句括号中文提示，答案会经记忆机制沉淀，供后续针对性指导。
             opening_prompt = (
-                "(Brand-new student, no profile yet. In ENGLISH, introduce yourself in one short sentence as their "
-                "personal English tutor, then ask ONE simple intake question (their English level or learning goal). "
-                "Speak English; you may add a short Chinese hint in parentheses. Keep it to 1-2 sentences total.)"
+                "(Brand-new student. In ENGLISH, introduce yourself warmly in ONE short sentence as their personal "
+                "English tutor, then invite them to chat about anything they like to get started — do NOT interrogate "
+                "them with profile questions. You may add a short Chinese hint in parentheses. 1-2 sentences total.)"
             )
         else:
             # 每天首次回归：一句英文问候 + 一个跟用户相关的开放问题。绝不重复自我介绍、不整段说中文。
