@@ -3206,6 +3206,7 @@ async def freetalk_stream(
     mode: str = Query("chat"),
     scene_id: str = Query(""),
     live: int = Query(0),
+    greet: int = Query(0),   # 1=本次连接需要开场寒暄（客户端每天首次进入才置1；重连不置）
 ) -> None:
     """自由对话（一对一语音英语老师）：与沉浸式同构（音频帧+commit → 后端 ASR → 文字大模型 → TTS 推回），
     但不绑场景、无指导区：老师回复(含纠正/讲解)直接进字幕并朗读。带用户记忆(DB)与近期历史上下文。
@@ -3287,25 +3288,29 @@ async def freetalk_stream(
         else:
             await _sj({"type": "notice", "detail": "这个场景不在了，我们换个话题吧"})
 
-    # 开场：只在【scene 场景进入】或【全新用户(无任何历史)】时生成一次——
-    # 否则每次(重)连都生成新开场白，用户会看到"一直重复问候/问角色"（实测反馈）。
-    # 老学员进来直接看历史字幕、开口即聊，不再自动寒暄、也不主动推销未练场景。
+    # 开场：只在【scene 场景进入】或【客户端明确要求寒暄(每天首次进入)】时生成一次——
+    # 否则每次(重)连都生成新开场白，用户会看到"一直重复问候/自我介绍"（实测反馈，问题一）。
+    # 客户端每天首开才带 greet=1；重连/当天再进都不带，进来直接看历史字幕、开口即聊。
     user_ended = False   # 用户主动结束(bye) → 通知语音服务器立即清理上下文
-    if not translate_mode and (scene_opening or not history):
+    if not translate_mode and (scene_opening or greet):
         memory = db.get_user_memory(user.id)
         if scene_opening:
             opening_prompt = scene_opening
-        elif not memory.strip():
-            # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题，
-            # 用简单英语提问并附一句中文提示，答案会经记忆机制沉淀，供后续针对性指导。
+        elif not memory.strip() and not history:
+            # 全新学员：私教先做入门了解（年龄段/学历职业/英语水平与目标），一次只问一个问题。
+            # 用简单【英语】提问并附一句括号中文提示，答案会经记忆机制沉淀，供后续针对性指导。
             opening_prompt = (
-                "(Brand-new student, no profile yet. Introduce yourself in one short sentence as their personal "
-                "English tutor. Then start a quick intake: you need their age range, education/occupation, current "
-                "English level and learning goal. Ask ONE question at a time in very simple English, and append a "
-                "short Chinese hint in parentheses so beginners understand. Start with the first question now.)"
+                "(Brand-new student, no profile yet. In ENGLISH, introduce yourself in one short sentence as their "
+                "personal English tutor, then ask ONE simple intake question (their English level or learning goal). "
+                "Speak English; you may add a short Chinese hint in parentheses. Keep it to 1-2 sentences total.)"
             )
         else:
-            opening_prompt = "(The user just opened the tutor session. Greet them warmly in ONE short sentence using what you remember, then ask one simple open question to get them talking. Do NOT offer scenario practice.)"
+            # 每天首次回归：一句英文问候 + 一个跟用户相关的开放问题。绝不重复自我介绍、不整段说中文。
+            opening_prompt = (
+                "(Returning user's first visit today. In ENGLISH only, greet them in ONE short friendly sentence and "
+                "ask ONE open question to get them talking (ideally tied to what you remember about them). Do NOT "
+                "re-introduce yourself, do NOT speak Chinese, do NOT offer scenario practice.)"
+            )
         try:
             result = await generate_freetalk_reply(opening_prompt, memory, history, user_id=user.id,
                                                    scenarios=unpracticed, scene_context=scene_ctx)

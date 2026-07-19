@@ -202,9 +202,22 @@ final class AppModel: ObservableObject {
 
     /// 进入/重连常规主界面聊天（sceneId 非空=自由场景对话；nil=自由闲聊；
     /// liveTurn=true → GPT-Live 式全双工，仅私教沉浸式/实时翻译用）。
+    /// 每天首次进入闲聊才寒暄一次（问题一：以前每次进/每次重连都自我介绍，堆一屏）。
+    /// 有副作用：返回 true 的同时把"今天已寒暄"记下，之后当天不再寒暄。
+    private func shouldGreetToday() -> Bool {
+        let key = "realtalk.lastGreetDay"
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        let today = f.string(from: Date())
+        if defaults.string(forKey: key) == today { return false }
+        defaults.set(today, forKey: key)
+        return true
+    }
+
     func startHomeChat(sceneId: String? = nil, sceneName: String? = nil, liveTurn: Bool = false) {
+        // 场景由 scene_opening 驱动开场；翻译不寒暄；闲聊每天首次才寒暄一次
+        let greet = (sceneId ?? "").isEmpty && tutorMode == "chat" && shouldGreetToday()
         guard let token = auth.token,
-              let url = api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "", live: liveTurn) else {
+              let url = api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "", live: liveTurn, greet: greet) else {
             presentFailure("请先登录", title: "无法开始对话")
             return
         }

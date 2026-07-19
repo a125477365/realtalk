@@ -101,12 +101,39 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         connectWS()   // 录音在收到 state 事件后开始（首连/重连都走这条路径）
     }
 
+    private var pingTimer: Timer?
+
     private func connectWS() {
         guard active, let streamURL else { return }
         let session = URLSession(configuration: .default)
         task = session.webSocketTask(with: streamURL)
         task?.resume()
         receiveLoop()
+        startPing()
+    }
+
+    /// WS 心跳：每 12s 发一次 ping，避免空闲连接被 NAT/路由/代理静默掐断
+    /// （问题四：开始能连、几十秒不说话就"连接中断"——正是空闲超时）。ping 失败即触发重连。
+    private func startPing() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.active, let task = self.task else { return }
+                task.sendPing { [weak self] error in
+                    guard error != nil else { return }
+                    Task { @MainActor in
+                        guard let self, self.active, self.isConnected else { return }
+                        self.isConnected = false
+                        self.scheduleReconnect()
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopPing() {
+        pingTimer?.invalidate()
+        pingTimer = nil
     }
 
     /// 断线重连：只要用户还在会话里（active）就无限重连，永不放弃、永不 stop——
@@ -114,6 +141,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// 退避封顶 8s；每次都提示"重连中"，连上（state 事件）后自动清零并"已重连"。
     private func scheduleReconnect() {
         guard active else { return }
+        stopPing()
         task?.cancel(with: .abnormalClosure, reason: nil)
         task = nil
         reconnectAttempts += 1
@@ -150,6 +178,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
         isConnected = false
         isPaused = false
         pendingTypedTexts = []
+        stopPing()
         reconnectTask?.cancel(); reconnectTask = nil
         sendJSON(["type": "bye"])
         if engineRunning {
@@ -499,6 +528,12 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             isConnected = true
             if reconnectAttempts > 0 { onStatus?("已重连") }
             reconnectAttempts = 0
+            // 已连上一次后，把 URL 里的 greet=1 去掉——内部重连不再触发寒暄（问题一）
+            if let u = streamURL, u.absoluteString.contains("greet=1") {
+                streamURL = URL(string: u.absoluteString.replacingOccurrences(of: "&greet=1", with: "")
+                                                          .replacingOccurrences(of: "greet=1&", with: "")
+                                                          .replacingOccurrences(of: "greet=1", with: ""))
+            }
             aiPlayer?.stop(); aiPlayer = nil
             aiQueue.removeAll()
             receivingAudio = false; incomingAudio.removeAll()
