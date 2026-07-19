@@ -439,6 +439,8 @@ final class AppModel: ObservableObject {
         } else {
             freeStream.stop()
         }
+        // 必须同时清 sceneId：否则退出后任何重连仍带旧 scene_id → 又进场景、又问角色（用户实测）。
+        homeSceneId = nil
         homeSceneName = nil
         startHomeChat()
     }

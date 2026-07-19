@@ -447,7 +447,11 @@ async def transcribe_verbose(audio_bytes: bytes, suffix: str = ".m4a", reference
     seconds = _estimate_seconds(audio_bytes, suffix)
     if suffix == ".pcm16":
         audio_bytes, suffix = _pcm16_to_wav(audio_bytes), ".wav"
-    data = {"model": model, "language": language, "response_format": "verbose_json"}
+    # language 为 None/""/"auto" → 不强制语种，交给 whisper 自动判定（实时翻译必须：用户可能说中文或英文，
+    # 强制 en 会把中文错转成英文，导致翻译方向全反、朗读也反）。指定语种(如 en)时仍强制以提高准确率。
+    data = {"model": model, "response_format": "verbose_json"}
+    if language and language.strip().lower() != "auto":
+        data["language"] = language
     if reference_text:
         data["prompt"] = reference_text  # whisper 把 prompt 当上下文偏置 → 更宽容地识别成目标句
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15)) as client:

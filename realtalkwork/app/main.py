@@ -3269,13 +3269,16 @@ async def freetalk_stream(
         picked = db.get_scenario(user.id, scene_id)
         if picked is not None:
             scene_ctx = format_scene_context(picked)
+            role_list = "; ".join(f"{r.name}" for r in picked.roles) or "the two roles"
             scene_opening = (
-                "(The user picked this scene from the scenario list to practice FREELY (protocol E). "
-                "Greet in one short sentence and ask which role they want to play — ask this ONCE ONLY. "
-                "On the user's VERY NEXT message, no matter what they say (even if unclear or misheard), "
-                "immediately assign roles — take your best guess at the role they want, or just pick sensible "
-                "roles yourself — and START improvising the scene's first line. NEVER ask the role question a "
-                "second time. Do NOT ask whether to practice strictly or freely; it is already FREE.)"
+                f"(The user just entered FREE scene practice for the scene titled \"{picked.title}\". "
+                f"In ONE short spoken message: (1) tell them which scene they're now practicing "
+                f"(\"We're now practicing the scene: {picked.title}\"), (2) say the roles they can choose from — "
+                f"list them explicitly: {role_list} — and ask which role they want to play. In the ⟦ZH⟧ subtitle give the "
+                f"Chinese version of this. Ask the role question ONCE ONLY. On the user's VERY NEXT message, no matter "
+                f"what they say (even if unclear/misheard), immediately assign roles — take your best guess or pick "
+                f"sensible roles yourself — and START improvising the scene's first line. NEVER ask the role question "
+                f"again. Do NOT ask whether to practice strictly or freely; it is already FREE.)"
             )
         else:
             await _sj({"type": "notice", "detail": "这个场景不在了，我们换个话题吧"})
@@ -3715,8 +3718,11 @@ async def freetalk_stream(
             if not audio:
                 continue
             try:
+                # 翻译模式必须自动判定语种（用户中/英都可能说）；对话/场景练习是英语练习，仍锁 en 提高准确率。
+                _asr_lang = "auto" if translate_mode else "en"
                 recognized, rec_words, rec_dur = await voice_io.transcribe_verbose(
-                    audio, suffix="." + str(data.get("format", "m4a")).lstrip("."), user_id=user.id)
+                    audio, suffix="." + str(data.get("format", "m4a")).lstrip("."),
+                    language=_asr_lang, user_id=user.id)
                 recognized = recognized.strip()
             except Exception as exc:  # noqa: BLE001 — 识别失败(多为噪音/空音频)：轻提示后回到聆听，不当成错误
                 print(f"[freetalk] 转写失败(回到聆听)：{str(exc)[-160:]}", flush=True)
