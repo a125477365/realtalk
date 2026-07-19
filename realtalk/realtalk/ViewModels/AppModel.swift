@@ -143,7 +143,7 @@ final class AppModel: ObservableObject {
     // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
     struct HomeChatItem: Identifiable {
-        enum Kind: Equatable { case user, ai, guidance, hint }   // guidance=指导卡；hint=严格场景下一句中文提示
+        enum Kind: Equatable { case user, ai, guidance, hint, translate }   // guidance=指导卡；hint=严格场景提示；translate=实时翻译(原文+译文一条)
         let id = UUID()
         let kind: Kind
         var text: String
@@ -234,6 +234,11 @@ final class AppModel: ObservableObject {
         freeStream.onCommitted = { [weak self] in self?.setHomeWorking(true) }
         freeStream.onUserText = { [weak self] t, tr, words, wpm in
             guard let self else { return }
+            // 实时翻译：原文先上屏成一条 translate（译文稍后由 onAIText 补上），不走普通用户气泡。
+            if self.tutorMode == "translate" {
+                self.homeItems.append(HomeChatItem(kind: .translate, text: t, translation: "", translating: true))
+                return
+            }
             // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡。
             // 连发多条时按「文本匹配优先，其次先进先出」合并——服务端排队逐条处理、回包有序，
             // 绝不能取最后一条（会把第一条的规整结果盖到第二条气泡上，内容互换）。
@@ -262,6 +267,16 @@ final class AppModel: ObservableObject {
         freeStream.onAIText = { [weak self] t, tr, tone in
             guard let self else { return }
             self.setHomeWorking(false)
+            // 实时翻译：把译文补进最近一条待译的 translate（原文+译文合成一条），不新增气泡。
+            if self.tutorMode == "translate" {
+                if let i = self.homeItems.lastIndex(where: { $0.kind == .translate && $0.translating }) {
+                    self.homeItems[i].translation = t
+                    self.homeItems[i].translating = false
+                } else {
+                    self.homeItems.append(HomeChatItem(kind: .translate, text: "", translation: t))
+                }
+                return
+            }
             // AI 台词默认打码（先听后看），点击文字才显示；已揭示过的同句保持揭示（#四）
             self.homeItems.append(HomeChatItem(kind: .ai, text: t, translation: tr,
                                                masked: self.isAIRevealed(t) == false, tone: tone))

@@ -253,7 +253,26 @@ struct ChatHomeView: View {
         case .user: userBubble(item)
         case .guidance: guidanceCard(item)
         case .hint: hintCard(item)
+        case .translate: translateRow(item)   // 实时翻译在私教全屏渲染；主界面兜底也渲染一条
         }
+    }
+
+    /// 实时翻译条（主界面兜底渲染）：原文 + 蓝色译文 + 重播译文。
+    private func translateRow(_ item: AppModel.HomeChatItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(item.text).font(.system(size: 15 * model.fontScale, weight: .medium)).foregroundStyle(RTTheme.textPrimary)
+            if item.translation.isEmpty == false {
+                HStack(spacing: 8) {
+                    Button { model.speakText(item.translation) } label: {
+                        Image(systemName: "waveform").font(.system(size: 13)).foregroundStyle(RTTheme.accent)
+                    }
+                    Text(item.translation).font(.system(size: 15 * model.fontScale, weight: .semibold)).foregroundStyle(RTTheme.accent)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 14))
     }
 
     /// AI 大卡片：文本默认打码（点击文字显示）+ 波形重播/译 小按钮 + 中文翻译(卡内切换，缺失时按需翻译)。

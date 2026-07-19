@@ -22,34 +22,15 @@ struct TutorCallView: View {
 
     private var isTranslate: Bool { model.tutorMode == "translate" }
 
-    /// 实时翻译界面的顶部占位（替代头像）：一个大的 A⇄中 图形，表明这是同传界面。
-    private var translateHeader: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle().fill(.white.opacity(0.08)).frame(width: 120, height: 120)
-                HStack(spacing: 4) {
-                    Text("A").font(.system(size: 34, weight: .bold))
-                    Image(systemName: "arrow.left.arrow.right").font(.system(size: 20, weight: .semibold))
-                    Text("中").font(.system(size: 34, weight: .bold))
-                }
-                .foregroundStyle(.white)
-            }
-            Text("实时翻译 · 说中出英 / 说英出中")
-                .font(.system(size: 14 * model.fontScale))
-                .foregroundStyle(.white.opacity(0.7))
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     var body: some View {
         ZStack {
             Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
             bottomGlow
             VStack(spacing: 0) {
                 header
-                // 实时翻译界面不显示头像（只做同传）；私教对话显示头像。
+                // 实时翻译界面：不显示头像、不显示中间 A中 图标（右上角有开关即可）；私教对话显示头像。
                 if isTranslate {
-                    translateHeader.padding(.top, 10)
+                    Color.clear.frame(height: 8)
                 } else {
                     avatar.padding(.top, 6)
                 }
@@ -159,10 +140,61 @@ struct TutorCallView: View {
 
     // MARK: 字幕（最近两条 + 中文翻译）
 
+    /// 文本是否以中文为主（决定实时翻译气泡靠左/靠右）。
+    private func isChinese(_ s: String) -> Bool {
+        let cjk = s.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
+        let letters = s.unicodeScalars.filter { ("a"..."z").contains(Character($0)) || ("A"..."Z").contains(Character($0)) }.count
+        return cjk > 0 && cjk >= letters
+    }
+
+    /// 实时翻译气泡：原文(第一行) + 蓝色译文(第二行) + 重播译文按钮；
+    /// 说中文→靠右、说英文→靠左（按原文语种对齐）。
+    private func translateRow(_ item: AppModel.HomeChatItem) -> some View {
+        let cn = isChinese(item.text)   // 原文是中文 → 用户说的中文 → 靠右
+        return VStack(alignment: cn ? .trailing : .leading, spacing: 5) {
+            Text(item.text)   // 第一行：原话
+                .font(.system(size: 17 * model.fontScale, weight: .medium))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(cn ? .trailing : .leading)
+                .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
+            if item.translating || item.translation.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini).tint(.white)
+                    Text("正在翻译…").font(.system(size: 13 * model.fontScale)).foregroundStyle(.white.opacity(0.6))
+                }
+                .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
+            } else {
+                HStack(spacing: 10) {
+                    if cn == false {   // 靠左：重播在译文左侧
+                        translateReplay(item)
+                    }
+                    Text(item.translation)   // 第二行：蓝色译文
+                        .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.36, green: 0.66, blue: 1.0))
+                        .multilineTextAlignment(cn ? .trailing : .leading)
+                    if cn {            // 靠右：重播在译文右侧
+                        translateReplay(item)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
+            }
+        }
+    }
+
+    private func translateReplay(_ item: AppModel.HomeChatItem) -> some View {
+        Button { model.speakText(item.translation) } label: {
+            Image(systemName: "waveform").font(.system(size: 14, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+        }
+        .accessibilityLabel("重播译文")
+    }
+
     private var subtitles: some View {
-        // #1：用户字幕靠右、AI 字幕靠左（此前全部靠左，分不清谁说的）。
+        // #1：用户字幕靠右、AI 字幕靠左；实时翻译=原文+蓝色译文一条(按原文语种左右对齐)。
         VStack(spacing: 12) {
             ForEach(recentLines) { item in
+                if item.kind == .translate {
+                    translateRow(item)
+                } else {
                 let isUser = item.kind == .user
                 VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                     Text(item.text)
@@ -212,6 +244,7 @@ struct TutorCallView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
                 }
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -220,9 +253,10 @@ struct TutorCallView: View {
         .animation(.easeOut(duration: 0.2), value: model.homeItems.count)
     }
 
-    /// 私教字幕只滚最近两条主对话（user/ai），指导与提示卡不在头像界面展示。
+    /// 私教=最近两条主对话(user/ai)；实时翻译=最近两条 translate（原文+译文一条）。
     private var recentLines: [AppModel.HomeChatItem] {
-        Array(model.homeItems.filter { $0.kind == .user || $0.kind == .ai }.suffix(2))
+        let kinds: Set<AppModel.HomeChatItem.Kind> = isTranslate ? [.translate] : [.user, .ai]
+        return Array(model.homeItems.filter { kinds.contains($0.kind) }.suffix(2))
     }
 
     private var timeString: String {
