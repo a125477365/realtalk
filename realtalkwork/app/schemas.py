@@ -773,6 +773,7 @@ class ModelSettingsUpdateRequest(BaseModel):
     timeout_long_seconds: float | None = Field(default=None, ge=30, le=7200)    # 长任务(场景生成/学习)超时
     max_tokens_normal: int | None = Field(default=None, ge=64, le=200000)       # 普通任务输出上限
     max_tokens_long: int | None = Field(default=None, ge=256, le=1000000)       # 长任务输出上限
+    memory_max_chars: int | None = Field(default=None, ge=200, le=20000)        # 用户档案(记忆)最大字符，超过自动压缩
     input_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     output_price_per_1m_cents: float | None = Field(default=None, ge=0, le=1000000)
     # 场景生成独立模型槽位（留空字符串=清除，回到跟随对话模型）

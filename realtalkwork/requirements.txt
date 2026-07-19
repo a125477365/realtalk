@@ -10,3 +10,5 @@ redis>=5.0
 # 高级会员实时语音大模型对练：后端做 WebSocket 转发（OpenAI 兼容 Realtime API）
 websockets>=14.0
 eval_type_backport>=0.2; python_version < "3.10"
+# 繁体→简体转换（实时翻译/字幕强制简体，弱模型/ASR 常吐繁体）
+zhconv>=1.4

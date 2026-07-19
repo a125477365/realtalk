@@ -33,6 +33,7 @@ from .ark_client import (
     translate_instructions,
     generate_freetalk_reply,
     generate_translation,
+    to_simplified,
     generate_zh_translation,
     generate_refinements,
     generate_learning,
@@ -589,6 +590,7 @@ async def admin_get_model_settings(admin: dict = Depends(current_admin)) -> dict
         "timeout_long_seconds": config.timeout_long_seconds,
         "max_tokens_normal": config.max_tokens_normal,
         "max_tokens_long": config.max_tokens_long,
+        "memory_max_chars": int(db.get_app_setting_str("ai_memory_max_chars") or 1500),
         "effective_timeouts": ai_timeout_policy(config),
         "input_price_per_1m_cents": config.input_price_per_1m_cents,
         "output_price_per_1m_cents": config.output_price_per_1m_cents,
@@ -625,6 +627,8 @@ async def admin_update_model_settings(
         updates["ai_timeout_seconds"] = str(request.timeout_seconds)
     if request.timeout_long_seconds is not None:
         updates["ai_timeout_long_seconds"] = str(request.timeout_long_seconds)
+    if request.memory_max_chars is not None:
+        updates["ai_memory_max_chars"] = str(request.memory_max_chars)
     if request.max_tokens_normal is not None:
         updates["ai_max_tokens_normal"] = str(request.max_tokens_normal)
     if request.max_tokens_long is not None:
@@ -3739,6 +3743,8 @@ async def freetalk_stream(
                 break
             # 识别一完成立刻回显「你说的话」（含词级发音/语速）——不等 LLM 慢慢想回复；
             # 本地 CPU 模型一轮要几分钟，此前用户几分钟都看不到自己刚才说了什么
+            if translate_mode:
+                recognized = to_simplified(recognized)   # 原话若为中文强制简体显示(#2)
             await _sj({"type": "user_text", "text": recognized, "translation": "",
                        "words": rec_words, "wpm": _wpm(rec_words, rec_dur)})
             if translate_mode:
@@ -3782,9 +3788,14 @@ async def freetalk_stream(
 
 @app.delete("/freetalk/history", response_model=MessageResponse)
 def clear_freetalk_history(user: UserOut = Depends(current_user)) -> MessageResponse:
-    """设置页「清除聊天记录」：删掉该用户的私教/自由对话历史（不影响学习记忆与练习记录）。"""
+    """设置页「清除聊天记录」：删掉该用户的私教/自由对话历史 + 用户档案(记忆)。
+    记忆一并清（此前不清）——旧版记忆常被存成对话记录，不清会继续污染后续对话。"""
     removed = db.clear_freetalk_messages(user.id)
-    return MessageResponse(message=f"已清除 {removed} 条聊天记录")
+    try:
+        db.set_user_memory(user.id, "")
+    except Exception:  # noqa: BLE001
+        pass
+    return MessageResponse(message=f"已清除 {removed} 条聊天记录及用户档案")
 
 
 @app.get("/practice/history", response_model=PracticeHistoryResponse)
