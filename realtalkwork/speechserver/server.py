@@ -275,7 +275,11 @@ async def responses(payload: dict):
 
 @app.websocket("/v1/realtime")
 async def realtime_ws(websocket: WebSocket) -> None:
-    if os.getenv("SPEECH_REALTIME_ENGINE", "s2s").lower() == "s2s":
+    # 只转写实时模式（实时翻译用 ?mode=transcribe）：不论引擎配置，一律走原生 realtime（faster-whisper
+    # 转写、不碰 s2s 进程），Docker/Mac 两种部署共用同一份代码、行为一致。
+    if (websocket.query_params.get("mode") or "").lower() == "transcribe":
+        await realtime.handle_session(websocket)
+    elif os.getenv("SPEECH_REALTIME_ENGINE", "s2s").lower() == "s2s":
         await realtime_s2s.handle_session(websocket)
     else:
         # 应急回退：原 RealTalk 实现仍完整保留。用于资源不足或升级 speech-to-speech 时临时兜底。

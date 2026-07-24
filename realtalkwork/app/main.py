@@ -3854,6 +3854,157 @@ async def freetalk_stream(
             pass
 
 
+@app.websocket("/translate/stream")
+async def translate_stream(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
+    """实时翻译·流式（边说边出）：客户端持续上行 pcm16 音频，不需手动提交/断句——
+    语音服务器的「只转写实时模式」(?mode=transcribe, server_vad)自动把连续说话按停顿分句、
+    每句立即回转写；后端对每句翻译（中→英 / 其它→简中）并把 原文/译文/译文语音 流式推回。
+    连续说话被当作一句话看待(逐句累加显示)，无 AI 对话、不沉淀记忆。计费同私教(d 类按分钟)。"""
+    await websocket.accept()
+    try:
+        user = _websocket_user(websocket, token)
+        require_ai_access(user, estimated_cents=0.0)
+    except HTTPException as exc:
+        await websocket.close(code=4401, reason=_ws_reason(exc.detail))
+        return
+
+    voice = db.get_user_tts_voice(user.id) or voice_io.default_voice()
+    send_lock = asyncio.Lock()
+
+    async def _sj(obj: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(obj)
+
+    async def _sb(data: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(data)
+
+    rt_url = resolve_conv_realtime_url()
+    if not rt_url:
+        # 未配置实时通道：告知客户端回退点按式翻译（/practice/translate）
+        await _sj({"type": "unavailable", "detail": "实时翻译通道未配置，请用点按式翻译"})
+        await websocket.close()
+        return
+
+    upstream = None
+    upstream_started = 0.0
+    user_ended = False
+    seg_seq = 0
+    seg_queue: asyncio.Queue = asyncio.Queue()
+    try:
+        upstream = await ConvRealtimeSession(
+            rt_url, f"tr-{user.id}-{uuid.uuid4().hex[:8]}", transcribe_only=True, voice=voice,
+        ).connect()
+        upstream_started = _time.monotonic()
+    except Exception as exc:  # noqa: BLE001 — 通道连不上 → 让客户端回退点按式
+        print(f"[translate] 流式转写通道连接失败：{str(exc)[:160]}", flush=True)
+        await _sj({"type": "unavailable", "detail": "实时翻译通道连接失败，请用点按式翻译"})
+        await websocket.close()
+        return
+
+    await _sj({"type": "live", "enabled": True})
+
+    async def _keepalive() -> None:
+        try:
+            while True:
+                await asyncio.sleep(12)
+                await _sj({"type": "keepalive"})
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _consumer() -> None:
+        """按到达顺序逐句翻译 + 合成译文语音，保持字幕顺序，不与音频上行争抢。"""
+        while True:
+            seg_id, original = await seg_queue.get()
+            try:
+                translation = await generate_translation(original, user_id=user.id)
+            except Exception as exc:  # noqa: BLE001 — 单句翻译失败不影响后续
+                print(f"[translate] 逐句翻译失败：{str(exc)[:160]}", flush=True)
+                await _sj({"type": "translation", "id": seg_id, "text": "", "detail": "翻译失败"})
+                continue
+            await _sj({"type": "translation", "id": seg_id, "text": translation})
+            if not translation:
+                continue
+            try:
+                audio, ct = await voice_io.synthesize(translation, voice, use_cache=False, user_id=user.id)
+                await _sj({"type": "ai_audio_begin", "content_type": ct, "id": seg_id})
+                for i in range(0, len(audio), 16384):
+                    await _sb(audio[i:i + 16384])
+                await _sj({"type": "ai_audio_end", "id": seg_id})
+            except Exception as exc:  # noqa: BLE001 — 合成失败字幕仍在
+                await _sj({"type": "ai_audio_error", "id": seg_id, "detail": str(exc)[:120]})
+
+    async def _pump() -> None:
+        """泵上游转写事件：每句转写立即上屏原文，并排队等翻译。"""
+        nonlocal seg_seq
+        while True:
+            ev = await upstream.recv_event(timeout=600)
+            t = ev.get("type")
+            if t == "conversation.item.input_audio_transcription.completed":
+                text = (ev.get("transcript") or "").strip()
+                if not text:
+                    continue
+                if is_political_sensitive(text):
+                    await _sj({"type": "terminated", "reason": "涉及敏感话题，本次翻译已结束"})
+                    raise WebSocketDisconnect()
+                seg_seq += 1
+                await _sj({"type": "segment", "id": seg_seq, "original": text})
+                await seg_queue.put((seg_seq, text))
+            elif t == "error":
+                await _sj({"type": "notice", "detail": "没听清，请再说一次"})
+
+    keepalive_task = asyncio.create_task(_keepalive())
+    consumer_task = asyncio.create_task(_consumer())
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            event = await websocket.receive()
+            if event.get("type") == "websocket.disconnect":
+                break
+            if event.get("bytes") is not None:
+                try:
+                    await upstream.append_audio(event["bytes"])   # 边说边转发（连续上行）
+                except Exception:  # noqa: BLE001 — 上游断了结束会话
+                    break
+                continue
+            text = event.get("text")
+            if not text:
+                continue
+            try:
+                data = _json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if data.get("type") in ("bye", "session.close"):
+                user_ended = True
+                break
+            if data.get("type") == "reset_audio":
+                try:
+                    await upstream.send({"type": "input_audio_buffer.clear"})
+                except Exception:  # noqa: BLE001
+                    pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await _sj({"type": "error", "detail": str(exc)[:160]})
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        for tk in (keepalive_task, consumer_task, pump_task):
+            if not tk.done():
+                tk.cancel()
+        if upstream is not None:
+            await upstream.close(wipe_context=True)   # 翻译无需保留上下文
+            if upstream_started:
+                voice_io.record_conv_voice_cost(user.id, _time.monotonic() - upstream_started)
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @app.delete("/freetalk/history", response_model=MessageResponse)
 def clear_freetalk_history(user: UserOut = Depends(current_user)) -> MessageResponse:
     """设置页「清除聊天记录」：删掉该用户的私教/自由对话历史 + 用户档案(记忆)。

@@ -116,10 +116,15 @@ async def handle_session(ws: WebSocket) -> None:
     response_task: asyncio.Task | None = None
     send_lock = asyncio.Lock()
 
+    # 只转写实时模式（?mode=transcribe，实时翻译用）：连续上行 → 服务端 VAD 自动分句 →
+    # 每句立即吐转写(conversation.item.input_audio_transcription.completed)，绝不生成 AI 回复。
+    # 低延迟「边说边出」：翻译/合成由 api 后端对每句转写另做。默认开 server_vad。
+    transcribe_only = (ws.query_params.get("mode") or "").lower() == "transcribe"
+
     # ---- live 全双工（server_vad）状态：轮次判定在服务端 ----
-    live = False
+    live = transcribe_only            # 只转写模式默认连续 VAD 分句
     live_rate = 16000                 # live 模式固定裸 pcm16 上行
-    vad_silence_ms = 800              # 停顿多久判"说完"
+    vad_silence_ms = 500 if transcribe_only else 800   # 翻译要更快成句：停顿阈值更短
     vad_min_speech_ms = 400           # 有效人声下限（低于视为噪音丢弃）
     noise_floor = 0.15                # 自适应环境底噪
     heard_speech = False
@@ -206,6 +211,9 @@ async def handle_session(ws: WebSocket) -> None:
         text, words, duration = await engine.transcribe_verbose(_pcm16_to_wav(audio, live_rate), language)
         await _sj({"type": "conversation.item.input_audio_transcription.completed",
                    "transcript": text, "words": words, "duration": duration})
+        # 只转写模式：到此为止，不生成 AI 回复（翻译由 api 后端对该句另做）
+        if transcribe_only:
+            return
         if text.strip():
             _cancel_response()
             response_task = asyncio.create_task(_respond(text))

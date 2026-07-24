@@ -45,7 +45,8 @@ class ConvRealtimeSession:
     """与本地语音服务器实时通道的一条上游连接（每个私教 WS 一条）。"""
 
     def __init__(self, url: str, session_id: str, language: str = "en",
-                 live: bool = False, voice: str | None = None):
+                 live: bool = False, voice: str | None = None,
+                 transcribe_only: bool = False):
         from .voice_io import resolve_conv_voice
 
         cv = resolve_conv_voice()
@@ -53,12 +54,15 @@ class ConvRealtimeSession:
         self.api_key = cv["api_key"]
         self.model = cv["model"]
         self.voice = (voice or "").strip() or cv["voice"]   # 用户自选音色优先，未选用 B 卡默认
-        self.live = live                                     # 全双工：轮次判定在服务端（server_vad）
+        # 只转写实时模式（实时翻译）：连续 VAD 分句、只吐转写不回话 → 强制 server_vad(live)
+        self.transcribe_only = transcribe_only
+        self.live = live or transcribe_only                  # 全双工/连续分句：轮次判定在服务端（server_vad）
         sep = "&" if "?" in url else "?"
         if self.is_openai:
             self.url = f"{url}{sep}model={self.model or 'gpt-realtime'}"
         else:
-            self.url = f"{url}{sep}session={session_id}&language={language}"
+            extra = "&mode=transcribe" if transcribe_only else ""
+            self.url = f"{url}{sep}session={session_id}&language={language}{extra}"
         self.ws = None
         self.restored = False
 
