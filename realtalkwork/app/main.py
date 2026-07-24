@@ -4,6 +4,7 @@ import asyncio
 import base64 as _b64
 import hashlib
 import hmac
+from contextvars import ContextVar
 import json as _json
 import os
 import re
@@ -118,8 +119,10 @@ from .schemas import (
     SceneLine,
     TokenRefreshRequest,
     TrainingAnswerRequest,
+    TrainingScene,
     TrainingStartRequest,
     TrainingStateResponse,
+    TrainingTodayResponse,
     TranscriptItem,
     TranscriptQueryResponse,
     TranscriptUploadRequest,
@@ -2789,6 +2792,11 @@ async def roleplay_start(
     return roleplay_state_response(user.id, session, scenario)
 
 
+# 语音路径把 ASR 逐词命中率算出的发音分(0-100)放这里，roleplay_message 取用它作为发音维度分，
+# 从而正确落库(driving 掌握模型)。文字路径不设置→用模型估计(通常 0，不参与掌握门槛)。
+_rp_pron_override: ContextVar[int | None] = ContextVar("_rp_pron_override", default=None)
+
+
 @app.post("/roleplay/message", response_model=RoleplayStateResponse)
 async def roleplay_message(
     request: RoleplayMessageRequest,
@@ -2856,6 +2864,9 @@ async def roleplay_message(
             translation=target_line.source_text,
             feedback=(stored_feedback if final_guidance else feedback or None),
         )
+    # 发音维度：语音路径用 ASR 逐词命中率(更准)；文字路径退回模型估计
+    _pron = _rp_pron_override.get()
+    pron_score = _pron if _pron is not None else evaluation.pronunciation_score
     db.add_practice_result(
         user.id,
         session.session_id,
@@ -2865,6 +2876,10 @@ async def roleplay_message(
         request.message.strip(),
         score,
         stored_feedback,
+        dim_pronunciation=pron_score,
+        dim_grammar=evaluation.grammar_score,
+        dim_naturalness=evaluation.naturalness_score,
+        dim_vocabulary=evaluation.vocabulary_score,
     )
 
     if accepted:
@@ -2888,10 +2903,11 @@ async def roleplay_message(
             session,
             db.list_roleplay_messages(user.id, session.session_id),
         )
-    # 四维评分(0-100)供训练界面展示：语法/自然/词汇来自模型；发音默认取模型值，
-    # 语音路径的 WS 处理器会用 ASR 逐词置信度覆盖 pronunciation(更准)。
+        # 训练系统：一次跑完就更新场景掌握度，驱动「掌握→进阶 / 未掌握→间隔复习」的闭环
+        update_scene_mastery_on_complete(user.id, session, scenario.scene_id)
+    # 四维评分(0-100)供训练界面展示：语法/自然/词汇来自模型；发音优先用语音路径的 ASR 命中率
     latest_scores = {
-        "pronunciation": evaluation.pronunciation_score,
+        "pronunciation": pron_score,
         "grammar": evaluation.grammar_score,
         "naturalness": evaluation.naturalness_score,
         "vocabulary": evaluation.vocabulary_score,
@@ -2943,13 +2959,19 @@ async def roleplay_message_audio(
         # 涉政敏感：不进模型，403 中断（客户端应结束本次对话）
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="涉及敏感话题，本次对话已结束")
     gm = "final" if guidance_mode == "final" else "realtime"
-    resp = await roleplay_message(
-        RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
-        user,
-    )
+    # 发音分(ASR 逐词命中率)提前算好，经 ContextVar 传给 roleplay_message 落库(驱动掌握模型)
+    pron_words = voice_io.pronunciation_diff(recognized, reference) if reference else []
+    _token = _rp_pron_override.set(_pron_hit_score(pron_words) if pron_words else None)
+    try:
+        resp = await roleplay_message(
+            RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
+            user,
+        )
+    finally:
+        _rp_pron_override.reset(_token)
     resp.recognized_text = recognized
-    if reference:
-        resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
+    if pron_words:
+        resp.pronunciation = [PronunciationWord(**w) for w in pron_words]
     return resp
 
 
@@ -3166,6 +3188,9 @@ async def roleplay_stream(
                 await _sj({"type": "terminated", "reason": "涉及敏感话题，本次对话已结束"})
                 break
             gm = "final" if data.get("guidance_mode") == "final" else "realtime"
+            # 发音分(ASR 逐词命中率)提前算好，经 ContextVar 传给 roleplay_message 落库(驱动掌握模型)
+            pron_words = voice_io.pronunciation_diff(recognized, reference) if reference else []
+            _ptok = _rp_pron_override.set(_pron_hit_score(pron_words) if pron_words else None)
             try:
                 resp = await roleplay_message(
                     RoleplayMessageRequest(session_id=session_id, message=recognized[:2000], guidance_mode=gm),
@@ -3174,13 +3199,11 @@ async def roleplay_stream(
             except HTTPException as exc:  # noqa: PERF203 — #9：模型不可用 → 明确报错给用户，会话保持可重试
                 await _sj({"type": "notice", "detail": str(exc.detail)[:160]})
                 continue
+            finally:
+                _rp_pron_override.reset(_ptok)
             resp.recognized_text = recognized
-            if reference:
-                resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
-                # 发音分用 ASR 逐词命中率覆盖模型估计(语音路径更准)：命中词占比 ×100
-                if resp.pronunciation and resp.latest_scores is not None:
-                    hit = sum(1 for p in resp.pronunciation if p.ok)
-                    resp.latest_scores["pronunciation"] = round(hit / len(resp.pronunciation) * 100)
+            if pron_words:
+                resp.pronunciation = [PronunciationWord(**w) for w in pron_words]
             # 整轮完整状态回客户端：客户端据此直接刷新字幕/进度/评分（与 HTTP 回合同构）
             await _sj({"type": "result", "state": resp.model_dump(mode="json")})
             # 实时指导：本句没通过 → 把中文纠正也念出来（此前只显示不发声）
@@ -3851,6 +3874,73 @@ def practice_history(
     return PracticeHistoryResponse(items=db.list_practice_history(user.id, limit=limit))
 
 
+@app.get("/training/today", response_model=TrainingTodayResponse)
+def training_today(
+    limit: int = Query(default=6, ge=1, le=20),
+    user: UserOut = Depends(current_user),
+) -> TrainingTodayResponse:
+    """今日训练路径（课程编排引擎）：把用户的场景按掌握度排成一条队列——
+    到期需复习(未掌握)的优先，其次没练过的新场景，已掌握的排后面偶尔巩固。
+    iOS 底部气泡列表消费这个队列，让用户按推荐顺序逐个进入场景训练。"""
+    now = datetime.now(timezone.utc)
+    mastery = {m.scene_id: m for m in db.list_scene_mastery(user.id)}
+    # 候选场景池：用户自己的场景 + 全体预置场景（去重，用户场景优先）
+    pool: list[dict[str, Any]] = list(db.list_scenarios(user.id, limit=50))
+    seen = {s["scene_id"] for s in pool}
+    for p in db.list_preset_scenarios():
+        if p["scene_id"] not in seen:
+            pool.append(p)
+            seen.add(p["scene_id"])
+
+    reviews: list[TrainingScene] = []
+    news: list[TrainingScene] = []
+    mastered_list: list[TrainingScene] = []
+    reviews_due = 0
+    mastered_total = 0
+    for s in pool:
+        sid = s["scene_id"]
+        m = mastery.get(sid)
+        if m is None:
+            news.append(TrainingScene(
+                scene_id=sid, title=s["title"], summary=s.get("summary") or "",
+                status="new", reason="还没练过，来试试",
+            ))
+            continue
+        scores = {
+            "pronunciation": m.last_pronunciation, "grammar": m.last_grammar,
+            "naturalness": m.last_naturalness, "vocabulary": m.last_vocabulary,
+        }
+        if m.mastered:
+            mastered_total += 1
+            mastered_list.append(TrainingScene(
+                scene_id=sid, title=s["title"], summary=s.get("summary") or "",
+                status="mastered", attempts=m.attempts, scores=scores, reason="已掌握",
+            ))
+        else:
+            due = m.next_review_at <= now
+            if due:
+                reviews_due += 1
+            # 找出最弱一维，给出复习理由
+            weak_key = min(scores, key=lambda k: scores[k])
+            weak_label = {"pronunciation": "发音", "grammar": "语法",
+                          "naturalness": "自然度", "vocabulary": "词汇"}[weak_key]
+            (reviews if due else news).append(TrainingScene(
+                scene_id=sid, title=s["title"], summary=s.get("summary") or "",
+                status="review", attempts=m.attempts, scores=scores,
+                reason=f"{weak_label}偏低({scores[weak_key]})，复习巩固" if due else "稍后复习",
+            ))
+    # 队列顺序：到期复习 → 新场景 → 已掌握（巩固）。取前 limit 个约等于今天的量。
+    ordered = reviews + news + mastered_list
+    scenes = ordered[:limit]
+    return TrainingTodayResponse(
+        date=now.date().isoformat(),
+        scenes=scenes,
+        reviews_due=reviews_due,
+        mastered_total=mastered_total,
+        minutes_estimate=len(scenes) * 5,
+    )
+
+
 @app.post("/training/start", response_model=TrainingStateResponse)
 async def training_start(
     request: TrainingStartRequest,
@@ -4263,6 +4353,56 @@ def next_user_line(session: RoleplaySessionRecord, scenario: ScenarioResponse) -
         if line.target_role == session.selected_role:
             return line
     return None
+
+
+# ---- 训练系统：掌握模型 + 课程编排 ----
+# 掌握判定：四维分每一维都达标才算掌握（某一维明显偏低就不算——对齐「自然度60→未掌握」）。
+MASTERY_MIN_DIM = 70          # 每一维至少 70
+MASTERY_MIN_OVERALL = 0.78    # 且综合分至少 0.78
+
+
+def _mastery_next_review(mastered: bool, min_dim: int) -> datetime:
+    """间隔复习到期时间：掌握了推很远（偶尔巩固），没掌握的按薄弱程度尽快回炉。"""
+    from datetime import timedelta as _td
+    now = datetime.now(timezone.utc)
+    if mastered:
+        return now + _td(days=14)
+    if min_dim >= 60:
+        return now + _td(days=2)
+    if min_dim >= 45:
+        return now + _td(days=1)
+    return now   # 很弱：今天就该再练
+
+
+def update_scene_mastery_on_complete(
+    user_id: str, session: RoleplaySessionRecord, scene_id: str
+) -> None:
+    """一次完整跑完某场景后更新掌握度：聚合四维分→判定掌握→排下次复习。绝不因此让主流程失败。"""
+    try:
+        dims = db.aggregate_session_dims(session.session_id)
+        overall = round(session.score_total / session.turns, 3) if session.turns else 0.0
+        min_dim = min(dims.values()) if dims else 0
+        mastered = min_dim >= MASTERY_MIN_DIM and overall >= MASTERY_MIN_OVERALL
+        db.upsert_scene_mastery(
+            user_id, scene_id, dims, overall, mastered,
+            next_review_at=_iso_dt(_mastery_next_review(mastered, min_dim)),
+        )
+    except Exception as exc:  # noqa: BLE001 — 掌握度是附加信号，失败不能影响评分/对话主流程
+        print(f"[mastery] 更新失败 scene={scene_id}: {str(exc)[:160]}", flush=True)
+
+
+def _iso_dt(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _pron_hit_score(pron_words: list[dict[str, Any]]) -> int:
+    """ASR 逐词发音命中率→发音分(0-100)：命中(ok=True)词占比 ×100。空表返回 0。"""
+    if not pron_words:
+        return 0
+    hit = sum(1 for w in pron_words if w.get("ok"))
+    return round(hit / len(pron_words) * 100)
 
 
 def roleplay_state_response(

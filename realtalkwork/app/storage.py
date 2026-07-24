@@ -44,6 +44,7 @@ from .schemas import (
     ScenarioResponse,
     ScenarioRole,
     SceneLine,
+    SceneMasteryRecord,
     SessionRecord,
     TranscriptItem,
     UserOut,
@@ -247,8 +248,36 @@ practice_results = Table(
     Column("score", Float, nullable=False),
     Column("feedback", Text, nullable=False),
     Column("created_at", Text, nullable=False),
+    # 四维评分(0-100)：训练系统按维度聚合出「掌握度」。0=该轮无评分(旧数据/未打分)。
+    Column("dim_pronunciation", Integer, nullable=False, server_default="0"),
+    Column("dim_grammar", Integer, nullable=False, server_default="0"),
+    Column("dim_naturalness", Integer, nullable=False, server_default="0"),
+    Column("dim_vocabulary", Integer, nullable=False, server_default="0"),
 )
 Index("idx_practice_results_user_created", practice_results.c.user_id, practice_results.c.created_at)
+
+# 场景掌握度（训练系统核心）：每个用户对每个场景的四维掌握情况 + 间隔复习到期时间。
+# 一次完整跑完某场景（completed）后更新一行。curriculum 引擎据此排「今日训练路径」：
+# 到期未掌握的优先复习，其余推进到没练过的新场景。
+scene_mastery = Table(
+    "scene_mastery",
+    metadata,
+    Column("user_id", Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("scene_id", Text, ForeignKey("scenarios.scene_id", ondelete="CASCADE"), primary_key=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),   # 完整跑完的次数
+    Column("mastered", Integer, nullable=False, server_default="0"),   # 1=已掌握
+    # 最近一次完整跑完的四维平均分（0-100）
+    Column("last_pronunciation", Integer, nullable=False, server_default="0"),
+    Column("last_grammar", Integer, nullable=False, server_default="0"),
+    Column("last_naturalness", Integer, nullable=False, server_default="0"),
+    Column("last_vocabulary", Integer, nullable=False, server_default="0"),
+    Column("best_overall", Float, nullable=False, server_default="0"),  # 历次最好综合分(0-1)
+    Column("last_practiced_at", Text, nullable=False),
+    Column("next_review_at", Text, nullable=False),   # 间隔复习到期时间；已掌握推很远
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+Index("idx_scene_mastery_user_review", scene_mastery.c.user_id, scene_mastery.c.next_review_at)
 
 email_verification_codes = Table(
     "email_verification_codes",
@@ -503,6 +532,10 @@ class Database:
             self._ensure_column(conn, "admins", "last_login_at", "TEXT")
             self._ensure_column(conn, "admins", "last_login_ip", "TEXT")
             self._ensure_column(conn, "admins", "updated_at", "TEXT")
+            self._ensure_column(conn, "practice_results", "dim_pronunciation", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "practice_results", "dim_grammar", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "practice_results", "dim_naturalness", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "practice_results", "dim_vocabulary", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_index(
                 conn,
                 "idx_admins_username",
@@ -2592,6 +2625,10 @@ class Database:
         user_text: str,
         score: float,
         feedback: str,
+        dim_pronunciation: int = 0,
+        dim_grammar: int = 0,
+        dim_naturalness: int = 0,
+        dim_vocabulary: int = 0,
     ) -> None:
         now = _now()
         with self.engine.begin() as conn:
@@ -2607,8 +2644,131 @@ class Database:
                     score=score,
                     feedback=feedback,
                     created_at=_iso(now),
+                    dim_pronunciation=int(dim_pronunciation),
+                    dim_grammar=int(dim_grammar),
+                    dim_naturalness=int(dim_naturalness),
+                    dim_vocabulary=int(dim_vocabulary),
                 )
             )
+
+    def aggregate_session_dims(self, session_id: str) -> dict[str, int]:
+        """把一次会话的四维分聚合成场景级掌握信号：每个 line 取历次尝试中综合分最高的一次，
+        再对四维求平均（反映用户「最终把每句练到多好」，而非把重试的低分也算进去）。"""
+        with self.engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    select(
+                        practice_results.c.line_index,
+                        practice_results.c.score,
+                        practice_results.c.dim_pronunciation,
+                        practice_results.c.dim_grammar,
+                        practice_results.c.dim_naturalness,
+                        practice_results.c.dim_vocabulary,
+                    ).where(practice_results.c.session_id == session_id)
+                )
+                .mappings()
+                .fetchall()
+            )
+        best: dict[int, Mapping[str, Any]] = {}
+        for r in rows:
+            li = r["line_index"]
+            if li not in best or (r["score"] or 0) > (best[li]["score"] or 0):
+                best[li] = r
+        if not best:
+            return {"pronunciation": 0, "grammar": 0, "naturalness": 0, "vocabulary": 0}
+        n = len(best)
+        def avg(col: str) -> int:
+            return round(sum(int(r[col] or 0) for r in best.values()) / n)
+        return {
+            "pronunciation": avg("dim_pronunciation"),
+            "grammar": avg("dim_grammar"),
+            "naturalness": avg("dim_naturalness"),
+            "vocabulary": avg("dim_vocabulary"),
+        }
+
+    def upsert_scene_mastery(
+        self,
+        user_id: str,
+        scene_id: str,
+        dims: dict[str, int],
+        overall: float,
+        mastered: bool,
+        next_review_at: str,
+    ) -> None:
+        now = _iso(_now())
+        with self.engine.begin() as conn:
+            existing = (
+                conn.execute(
+                    select(scene_mastery.c.attempts, scene_mastery.c.best_overall).where(
+                        scene_mastery.c.user_id == user_id,
+                        scene_mastery.c.scene_id == scene_id,
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+            values = dict(
+                attempts=(int(existing["attempts"]) + 1) if existing else 1,
+                mastered=1 if mastered else 0,
+                last_pronunciation=int(dims.get("pronunciation", 0)),
+                last_grammar=int(dims.get("grammar", 0)),
+                last_naturalness=int(dims.get("naturalness", 0)),
+                last_vocabulary=int(dims.get("vocabulary", 0)),
+                best_overall=max(float(overall), float(existing["best_overall"])) if existing else float(overall),
+                last_practiced_at=now,
+                next_review_at=next_review_at,
+                updated_at=now,
+            )
+            if existing:
+                conn.execute(
+                    update(scene_mastery)
+                    .where(scene_mastery.c.user_id == user_id, scene_mastery.c.scene_id == scene_id)
+                    .values(**values)
+                )
+            else:
+                conn.execute(
+                    insert(scene_mastery).values(
+                        user_id=user_id, scene_id=scene_id, created_at=now, **values
+                    )
+                )
+
+    def _scene_mastery_from_row(self, r: Mapping[str, Any]) -> SceneMasteryRecord:
+        return SceneMasteryRecord(
+            user_id=r["user_id"],
+            scene_id=r["scene_id"],
+            attempts=int(r["attempts"]),
+            mastered=bool(r["mastered"]),
+            last_pronunciation=int(r["last_pronunciation"]),
+            last_grammar=int(r["last_grammar"]),
+            last_naturalness=int(r["last_naturalness"]),
+            last_vocabulary=int(r["last_vocabulary"]),
+            best_overall=float(r["best_overall"]),
+            last_practiced_at=_parse_dt(r["last_practiced_at"]),
+            next_review_at=_parse_dt(r["next_review_at"]),
+        )
+
+    def list_scene_mastery(self, user_id: str) -> list[SceneMasteryRecord]:
+        with self.engine.connect() as conn:
+            rows = (
+                conn.execute(select(scene_mastery).where(scene_mastery.c.user_id == user_id))
+                .mappings()
+                .fetchall()
+            )
+        return [self._scene_mastery_from_row(r) for r in rows]
+
+    def get_scene_mastery(self, user_id: str, scene_id: str) -> SceneMasteryRecord | None:
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(scene_mastery).where(
+                        scene_mastery.c.user_id == user_id,
+                        scene_mastery.c.scene_id == scene_id,
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+        return self._scene_mastery_from_row(row) if row else None
 
     def has_rejected_practice_attempt(
         self,

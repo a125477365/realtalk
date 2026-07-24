@@ -680,6 +680,43 @@ class RoleplaySessionRecord(BaseModel):
     updated_at: datetime
 
 
+class SceneMasteryRecord(BaseModel):
+    """某用户对某场景的掌握度（训练系统持久化状态）。"""
+    user_id: str
+    scene_id: str
+    attempts: int
+    mastered: bool
+    last_pronunciation: int
+    last_grammar: int
+    last_naturalness: int
+    last_vocabulary: int
+    best_overall: float
+    last_practiced_at: datetime
+    next_review_at: datetime
+
+
+class TrainingScene(BaseModel):
+    """今日训练路径中的一项（供 iOS 底部气泡列表渲染）。"""
+    scene_id: str
+    title: str
+    summary: str
+    # 状态：new=没练过 / review=到期需复习(未掌握) / mastered=已掌握
+    status: Literal["new", "review", "mastered"]
+    attempts: int = 0
+    # 最近一次四维分（0-100）；new 场景全 0
+    scores: dict[str, int] = Field(default_factory=dict)
+    reason: str = ""   # 中文一句说明为何排进今天（如「上次自然度偏低，复习」）
+
+
+class TrainingTodayResponse(BaseModel):
+    """今日训练路径：一条有序队列 + 进度概览。"""
+    date: str
+    scenes: list[TrainingScene]
+    reviews_due: int          # 到期需复习的场景数
+    mastered_total: int       # 已掌握场景总数
+    minutes_estimate: int     # 预计训练分钟数（每场景约 5 分钟）
+
+
 # ============================================================
 # User Authentication & Password Reset
 # ============================================================
