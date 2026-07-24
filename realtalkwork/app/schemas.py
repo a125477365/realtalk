@@ -260,6 +260,12 @@ class RoleplayEvaluateRequest(BaseModel):
 
 class RoleplayEvaluation(BaseModel):
     score: float = Field(ge=0, le=1)
+    # 四维评分(0-100)——训练系统核心。pronunciation 由 ASR 逐词置信度覆盖(更准)，
+    # grammar/naturalness/vocabulary 由模型按文本判定。默认 0=模型漏给时不显示。
+    pronunciation_score: int = Field(default=0, ge=0, le=100)
+    grammar_score: int = Field(default=0, ge=0, le=100)
+    naturalness_score: int = Field(default=0, ge=0, le=100)
+    vocabulary_score: int = Field(default=0, ge=0, le=100)
     feedback: str
     correction: str
     # 默认 False：模型若漏给/给错 accepted 字段(弱模型常见)，宁可判「未通过」给出指导让用户重试，
@@ -298,6 +304,8 @@ class RoleplayStateResponse(BaseModel):
     messages: list[RoleplayMessageOut]
     latest_feedback: str | None = None
     latest_accepted: bool | None = None
+    # 本轮四维评分(0-100)：pronunciation/grammar/naturalness/vocabulary。仅当前这句有效，供训练界面展示。
+    latest_scores: dict[str, int] | None = None
     # 后端语音对练新增（仅 /roleplay/message/audio 填充；文字接口与旧客户端不受影响）
     recognized_text: str | None = None              # 后端 ASR 识别到的英文
     pronunciation: list[PronunciationWord] = Field(default_factory=list)  # 逐词发音命中情况

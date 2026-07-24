@@ -1228,10 +1228,14 @@ async def _evaluate_roleplay_turn_with_model(
 {{
   "score": 0.0到1.0之间的小数,
   "accepted": true/false,
+  "grammar_score": 0到100的整数（语法正确度：时态/单复数/冠词/语序等，识别文本缺标点不扣分）,
+  "naturalness_score": 0到100的整数（自然地道度：是否像母语者的说法，中式表达扣分）,
+  "vocabulary_score": 0到100的整数（用词恰当度：是否用了合适/丰富的词汇表达该意思）,
   "feedback": "中文短反馈，包含最关键错误或优点",
   "correction": "更自然、可直接跟读的英文句子",
   "user_said": "把用户识别文本整理成他【实际想表达】的简洁英文：去掉口头语/语气词/卡顿重复/无意义内容、补全大小写标点，保留用户自己的说法与用词，不要强行改写成目标英文或 correction"
 }}
+三个维度分与 score 判定一致的宽松原则：意思到位就给较高分(70-100)，明显问题才低分；识别文本无标点/大小写不扣分。
 要求 feedback 不超过 60 个中文字符；correction 优先贴近目标英文，但可更地道；
 user_said 是「用户自己说的整理版」（用于字幕），与 correction（理想答案）不同，不得直接照搬 correction。
 """

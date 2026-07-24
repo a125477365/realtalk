@@ -2888,12 +2888,21 @@ async def roleplay_message(
             session,
             db.list_roleplay_messages(user.id, session.session_id),
         )
+    # 四维评分(0-100)供训练界面展示：语法/自然/词汇来自模型；发音默认取模型值，
+    # 语音路径的 WS 处理器会用 ASR 逐词置信度覆盖 pronunciation(更准)。
+    latest_scores = {
+        "pronunciation": evaluation.pronunciation_score,
+        "grammar": evaluation.grammar_score,
+        "naturalness": evaluation.naturalness_score,
+        "vocabulary": evaluation.vocabulary_score,
+    }
     return roleplay_state_response(
         user.id,
         session,
         scenario,
         latest_feedback=latest_feedback,
         latest_accepted=accepted,
+        latest_scores=latest_scores,
     )
 
 
@@ -3168,6 +3177,10 @@ async def roleplay_stream(
             resp.recognized_text = recognized
             if reference:
                 resp.pronunciation = [PronunciationWord(**w) for w in voice_io.pronunciation_diff(recognized, reference)]
+                # 发音分用 ASR 逐词命中率覆盖模型估计(语音路径更准)：命中词占比 ×100
+                if resp.pronunciation and resp.latest_scores is not None:
+                    hit = sum(1 for p in resp.pronunciation if p.ok)
+                    resp.latest_scores["pronunciation"] = round(hit / len(resp.pronunciation) * 100)
             # 整轮完整状态回客户端：客户端据此直接刷新字幕/进度/评分（与 HTTP 回合同构）
             await _sj({"type": "result", "state": resp.model_dump(mode="json")})
             # 实时指导：本句没通过 → 把中文纠正也念出来（此前只显示不发声）
@@ -4258,6 +4271,7 @@ def roleplay_state_response(
     scenario: ScenarioResponse,
     latest_feedback: str | None = None,
     latest_accepted: bool | None = None,
+    latest_scores: dict[str, int] | None = None,
 ) -> RoleplayStateResponse:
     total = sum(1 for line in scenario.lines if line.target_role == session.selected_role)
     completed = session.status == "completed"
@@ -4275,6 +4289,7 @@ def roleplay_state_response(
         messages=db.list_roleplay_messages(user_id, session.session_id),
         latest_feedback=latest_feedback,
         latest_accepted=latest_accepted,
+        latest_scores=latest_scores,
     )
 
 
