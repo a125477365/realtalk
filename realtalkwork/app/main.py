@@ -3071,6 +3071,17 @@ async def roleplay_stream(
     })
     tts_task = asyncio.create_task(_speak_new(state0.messages))
 
+    async def _keepalive() -> None:
+        # 服务端心跳：每 12s 一帧防空闲 WS 被掐断（老客户端也保活；未知类型客户端忽略）。
+        try:
+            while True:
+                await asyncio.sleep(12)
+                await _sj({"type": "keepalive"})
+        except Exception:  # noqa: BLE001
+            pass
+
+    keepalive_task = asyncio.create_task(_keepalive())
+
     try:
         while True:
             event = await websocket.receive()
@@ -3174,6 +3185,8 @@ async def roleplay_stream(
             pass
     finally:
         _cancel_tts()
+        if not keepalive_task.done():
+            keepalive_task.cancel()
         if rp_upstream is not None:
             await rp_upstream.close(wipe_context=True)   # 沉浸式转写会话无需保留上下文
             if rp_upstream_started:
@@ -3604,6 +3617,18 @@ async def freetalk_stream(
     if live_active and upstream is not None:
         pump_task = asyncio.create_task(_live_pump())
 
+    async def _keepalive() -> None:
+        # 服务端每 12s 主动发一帧，避免空闲 WS 被 NAT/路由/代理静默掐断——
+        # 老客户端(没做心跳)也能因此保活；客户端不认识 keepalive 类型会直接忽略。
+        try:
+            while True:
+                await asyncio.sleep(12)
+                await _sj({"type": "keepalive"})
+        except Exception:  # noqa: BLE001 — 连接已断/发送失败即退出
+            pass
+
+    keepalive_task = asyncio.create_task(_keepalive())
+
     try:
         while True:
             event = await websocket.receive()
@@ -3775,6 +3800,8 @@ async def freetalk_stream(
             pass
     finally:
         _cancel_tts()
+        if not keepalive_task.done():
+            keepalive_task.cancel()
         if pump_task is not None and not pump_task.done():
             pump_task.cancel()
         if upstream is not None:
