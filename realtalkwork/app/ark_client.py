@@ -1496,9 +1496,27 @@ def _repair_roleplay_evaluation(
             score = min(score, 0.3)
             # 强制打回时模型原 feedback 多半假设「已通过」，与打回矛盾，统一换成一致提示
             feedback = "这句和目标意思差得比较远，我们照参考再说一遍。"
+    def _clamp100(v: int) -> int:
+        try:
+            return max(0, min(100, int(round(float(v)))))
+        except (TypeError, ValueError):
+            return 0
+    # 四维分：语法/自然度/词汇由模型给；模型漏给(=0)时用总分兜底(score×100)，避免评分卡整排 0。
+    fallback100 = int(round(score * 100))
+    grammar = _clamp100(evaluation.grammar_score) or fallback100
+    naturalness = _clamp100(evaluation.naturalness_score) or fallback100
+    vocabulary = _clamp100(evaluation.vocabulary_score) or fallback100
+    # 打回时四维分同步压到与总分一致，避免「打回却四维高分」的矛盾。
+    if not accepted:
+        cap = int(round(score * 100))
+        grammar, naturalness, vocabulary = min(grammar, cap), min(naturalness, cap), min(vocabulary, cap)
     return RoleplayEvaluation(
         score=round(score, 3),
         accepted=accepted,
+        pronunciation_score=_clamp100(evaluation.pronunciation_score),
+        grammar_score=grammar,
+        naturalness_score=naturalness,
+        vocabulary_score=vocabulary,
         feedback=feedback,
         correction=correction,
         user_said=user_said,
