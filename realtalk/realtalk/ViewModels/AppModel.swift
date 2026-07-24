@@ -143,7 +143,7 @@ final class AppModel: ObservableObject {
     // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
     struct HomeChatItem: Identifiable {
-        enum Kind: Equatable { case user, ai, guidance, hint, translate }   // guidance=指导卡；hint=严格场景提示；translate=实时翻译(原文+译文一条)
+        enum Kind: Equatable { case user, ai, guidance, hint, translate, score }   // guidance=指导卡；hint=严格场景提示；translate=实时翻译(原文+译文一条)；score=四维评分卡
         let id = UUID()
         let kind: Kind
         var text: String
@@ -156,6 +156,7 @@ final class AppModel: ObservableObject {
         /// 键盘发送的本地回显：发出瞬间先上屏（网络异常也可见），服务端回显到达后原位合并
         var localEcho: Bool = false
         var tone: String = ""               // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
+        var scores: [String: Int]? = nil    // 四维评分卡：发音/语法/自然度/词汇(0-100)
     }
 
     @Published var homeItems: [HomeChatItem] = []
@@ -595,6 +596,11 @@ final class AppModel: ObservableObject {
                 translation: msg.translation ?? "",
                 masked: msg.speaker == "ai" && revealed.contains(msg.content) == false
             ))
+        }
+        // 四维评分卡（训练系统）：本轮刚打过分就显示发音/语法/自然度/词汇四个维度分数，
+        // 让「聊天」变成「有反馈的训练」。只在本轮确有评分时出现（latestScores 非空）。
+        if let sc = state.latestScores, sc.values.contains(where: { $0 > 0 }) {
+            items.append(HomeChatItem(kind: .score, text: "", scores: sc))
         }
         // #8 顺序：先出「下一句该说什么」的中文提示（英文答案默认打码，点击才显示——不点也知道说什么），
         // 指导（对刚才那句的纠正）紧随其后显示在提示下方，符合"提示→尝试→纠正"的先后顺序。

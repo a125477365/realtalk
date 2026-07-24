@@ -178,6 +178,7 @@ struct RoleplayStateResponse: Codable, Equatable {
     let latestAccepted: Bool?
     let recognizedText: String?              // 后端语音识别到的英文（语音回合）
     let pronunciation: [PronunciationWord]   // 逐词发音命中（语音回合）
+    let latestScores: [String: Int]?         // 本轮四维评分：发音/语法/自然度/词汇(0-100)
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -194,6 +195,7 @@ struct RoleplayStateResponse: Codable, Equatable {
         case latestAccepted = "latest_accepted"
         case recognizedText = "recognized_text"
         case pronunciation
+        case latestScores = "latest_scores"
     }
 
     init(from decoder: Decoder) throws {
@@ -212,6 +214,7 @@ struct RoleplayStateResponse: Codable, Equatable {
         latestAccepted = try c.decodeIfPresent(Bool.self, forKey: .latestAccepted)
         recognizedText = try c.decodeIfPresent(String.self, forKey: .recognizedText)
         pronunciation = (try c.decodeIfPresent([PronunciationWord].self, forKey: .pronunciation)) ?? []
+        latestScores = try c.decodeIfPresent([String: Int].self, forKey: .latestScores)
     }
 }
 

@@ -254,6 +254,56 @@ struct ChatHomeView: View {
         case .guidance: guidanceCard(item)
         case .hint: hintCard(item)
         case .translate: translateRow(item)   // 实时翻译在私教全屏渲染；主界面兜底也渲染一条
+        case .score: scoreCard(item)
+        }
+    }
+
+    /// 四维评分卡（训练系统）：发音 / 语法 / 自然度 / 词汇，各 0-100。
+    private func scoreCard(_ item: AppModel.HomeChatItem) -> some View {
+        let dims: [(String, String)] = [("pronunciation", "发音"), ("grammar", "语法"),
+                                        ("naturalness", "自然度"), ("vocabulary", "词汇")]
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.fill").font(.system(size: 12)).foregroundStyle(RTTheme.accent)
+                Text("本句评分").font(.system(size: 12 * model.fontScale, weight: .semibold)).foregroundStyle(RTTheme.accent)
+            }
+            HStack(spacing: 10) {
+                ForEach(dims, id: \.0) { key, label in
+                    let v = item.scores?[key] ?? 0
+                    VStack(spacing: 4) {
+                        Text("\(v)")
+                            .font(.system(size: 18 * model.fontScale, weight: .bold, design: .rounded))
+                            .foregroundStyle(scoreColor(v))
+                        Text(label)
+                            .font(.system(size: 11 * model.fontScale))
+                            .foregroundStyle(RTTheme.textSecondary)
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(scoreColor(v).opacity(0.25))
+                            .frame(height: 3)
+                            .overlay(alignment: .leading) {
+                                GeometryReader { geo in
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(scoreColor(v))
+                                        .frame(width: geo.size.width * CGFloat(max(0, min(100, v))) / 100)
+                                }
+                            }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RTTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// 分数配色：≥85 绿、≥70 蓝、≥50 橙、其余红。
+    private func scoreColor(_ v: Int) -> Color {
+        switch v {
+        case 85...: return .green
+        case 70..<85: return RTTheme.accent
+        case 50..<70: return .orange
+        default: return .red
         }
     }
 
