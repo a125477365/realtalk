@@ -561,6 +561,52 @@ final class AppModel: ObservableObject {
         stream.manualCommit = true          // 常规界面 = 点击说话手动提交
     }
 
+    // ---- 训练系统：今日训练路径 + 底部气泡 ----
+    @Published var trainingToday: TrainingTodayResponse?
+    @Published var trainingBubblesVisible = false
+    @Published var trainingLoading = false
+
+    /// 拉取今日训练路径（课程编排引擎排好的场景队列）。
+    func loadTrainingToday() async {
+        guard let token = auth.token else { return }
+        trainingLoading = true
+        defer { trainingLoading = false }
+        do { trainingToday = try await api.trainingToday(token: token) }
+        catch { /* 静默：气泡是增强项，拉取失败不打断对话 */ }
+    }
+
+    /// 展开/收起底部训练气泡（展开时顺带刷新一次）。
+    func toggleTrainingBubbles() {
+        trainingBubblesVisible.toggle()
+        if trainingBubblesVisible { Task { await loadTrainingToday() } }
+    }
+
+    /// 从训练气泡一键进入某场景：解析出场景角色（优先本地已加载，否则拉详情），
+    /// 自动选第一个可扮演角色进入严格场景（训练路径要少摩擦，角色可后续再换）。
+    func enterTrainingScene(_ item: TrainingSceneItem) async {
+        trainingBubblesVisible = false
+        if let summary = todayScenarios.first(where: { $0.sceneId == item.sceneId }),
+           let role = summary.roles.first(where: { $0.isUserCandidate }) {
+            await startStrictScene(summary, roleId: role.id, resume: summary.inProgress)
+            return
+        }
+        guard let token = auth.token else { return }
+        do {
+            let detail = try await api.scenarioDetail(sceneId: item.sceneId, token: token)
+            guard let role = detail.roles.first(where: { $0.isUserCandidate }) ?? detail.roles.first else {
+                homeStatus = "这个场景暂时无法进入"; return
+            }
+            let now = Date()
+            let summary = ScenarioSummary(
+                sceneId: detail.sceneId, title: detail.title, summary: detail.summary,
+                roles: detail.roles, lineCount: detail.lines.count,
+                sourceStart: now, sourceEnd: now, createdAt: now)
+            await startStrictScene(summary, roleId: role.id)
+        } catch {
+            homeStatus = error.localizedDescription
+        }
+    }
+
     /// 严格场景的键盘输入：走 roleplay REST，一样返回整轮状态。
     private func sendStrictTyped(_ text: String) {
         guard let token = auth.token, let rp = roleplay else { return }

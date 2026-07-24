@@ -197,6 +197,11 @@ final class APIClient {
         try await get("/scenario/\(sceneId)", token: token, queryItems: [])
     }
 
+    /// 今日训练路径（课程编排引擎）：到期复习优先 → 新场景 → 已掌握。
+    func trainingToday(token: String) async throws -> TrainingTodayResponse {
+        try await get("/training/today", token: token, queryItems: [])
+    }
+
     /// 删除用户自己的场景（预置通用场景不可删）。
     func deleteScenario(sceneId: String, token: String) async throws {
         var request = URLRequest(url: url(for: "/scenario/\(sceneId)"))

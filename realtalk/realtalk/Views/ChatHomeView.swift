@@ -34,6 +34,22 @@ struct ChatHomeView: View {
                     if let scene = model.homeSceneName { sceneBanner(scene) }
                     inputBar
                 }
+                // 训练系统：右下角悬浮入口，唤起「今日训练路径」底部气泡
+                if model.trainingBubblesVisible == false {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            trainingFab
+                                .padding(.trailing, 16)
+                                .padding(.bottom, 92)
+                        }
+                    }
+                }
+                if model.trainingBubblesVisible {
+                    TrainingBubblesOverlay(model: model)
+                        .zIndex(10)
+                }
             }
             .alert(item: $model.failureAlert) { alert in
                 Alert(title: Text(alert.title), message: Text(alert.message), dismissButton: .default(Text("我知道了")))
@@ -244,6 +260,23 @@ struct ChatHomeView: View {
                 withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("homeBottom", anchor: .bottom) }
             }
         }
+    }
+
+    /// 训练系统悬浮入口：唤起今日训练路径气泡。
+    private var trainingFab: some View {
+        Button {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                model.toggleTrainingBubbles()
+            }
+        } label: {
+            Image(systemName: "sparkles")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(RTTheme.brandGradient, in: Circle())
+                .shadow(color: RTTheme.accent.opacity(0.35), radius: 10, y: 4)
+        }
+        .accessibilityLabel("今日训练")
     }
 
     @ViewBuilder

@@ -218,6 +218,49 @@ struct RoleplayStateResponse: Codable, Equatable {
     }
 }
 
+// ---- 训练系统：今日训练路径（课程编排引擎的产物）----
+struct TrainingSceneItem: Identifiable, Codable, Equatable {
+    var id: String { sceneId }
+    let sceneId: String
+    let title: String
+    let summary: String
+    let status: String            // new / review / mastered
+    let attempts: Int
+    let scores: [String: Int]     // 发音/语法/自然度/词汇 最近一次(0-100)
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case sceneId = "scene_id"
+        case title, summary, status, attempts, scores, reason
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sceneId = try c.decode(String.self, forKey: .sceneId)
+        title = try c.decode(String.self, forKey: .title)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        status = try c.decode(String.self, forKey: .status)
+        attempts = try c.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
+        scores = try c.decodeIfPresent([String: Int].self, forKey: .scores) ?? [:]
+        reason = try c.decodeIfPresent(String.self, forKey: .reason) ?? ""
+    }
+}
+
+struct TrainingTodayResponse: Codable, Equatable {
+    let date: String
+    let scenes: [TrainingSceneItem]
+    let reviewsDue: Int
+    let masteredTotal: Int
+    let minutesEstimate: Int
+
+    enum CodingKeys: String, CodingKey {
+        case date, scenes
+        case reviewsDue = "reviews_due"
+        case masteredTotal = "mastered_total"
+        case minutesEstimate = "minutes_estimate"
+    }
+}
+
 struct PracticeHistoryItem: Identifiable, Codable, Equatable {
     var id: String { sessionId }
 
