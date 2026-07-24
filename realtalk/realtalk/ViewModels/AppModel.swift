@@ -386,9 +386,13 @@ final class AppModel: ObservableObject {
     // 两种形态的轮次策略不同（服务端 VAD vs 客户端提交），切换时按目标形态重连。
 
     /// 进入私教：按当前形态（沉浸=live / 常规=turn-based）建立/重建连接。
+    /// 是否走全双工(live)：实时翻译永远点按式(turn-based)，绝不用 s2s 实时通道——
+    /// 此前翻译也跟着 tutorImmersive 走了 live，导致翻译/私教都占易卡的 s2s 槽而断线(主界面点按却正常)。
+    private var tutorLiveTurn: Bool { tutorMode != "translate" && tutorImmersive }
+
     func startTutor() {
         freeStream.stop()
-        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorLiveTurn)
         Task { await loadTtsVoices() }   // 音色菜单数据
     }
 
@@ -397,7 +401,7 @@ final class AppModel: ObservableObject {
         if freeStream.manualRecording { freeStream.endManualUtterance() }
         tutorImmersive.toggle()
         freeStream.stop()
-        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorImmersive)
+        startHomeChat(sceneId: homeSceneId, sceneName: homeSceneName, liveTurn: tutorLiveTurn)
     }
 
     /// WS 无法自己续期 access 令牌：重连前先打一个带鉴权的轻请求——
@@ -414,7 +418,7 @@ final class AppModel: ObservableObject {
         afterTokenRefresh { [weak self] in
             guard let self else { return }
             self.freeStream.stop()
-            self.startHomeChat(sceneId: self.homeSceneId, sceneName: self.homeSceneName, liveTurn: self.tutorImmersive)
+            self.startHomeChat(sceneId: self.homeSceneId, sceneName: self.homeSceneName, liveTurn: self.tutorLiveTurn)
         }
     }
 
