@@ -3902,9 +3902,12 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
     user_ended = False
     seg_seq = 0
     seg_queue: asyncio.Queue = asyncio.Queue()
-    # 最近几条已朗读的译文：用于识别「AI 自己的译文被麦克风拾回」的回声，直接丢弃不再翻译。
+    # 最近朗读过的译文 (时刻, 文本)：用于识别「AI 自己的译文被麦克风拾回」的回声，直接丢弃不再翻译。
     # 客户端已在 AI 朗读期间静音上行，这里是第二道防线（长句/尾音可能漏进来）。
-    recent_spoken: list[str] = []
+    # 带时间窗：回声只可能出现在刚朗读完的十几秒内；过了窗口就当正常用户发言，
+    # 否则「你好」这种常用短句以后再说会被误杀。
+    recent_spoken: list[tuple[float, str]] = []
+    ECHO_WINDOW_SECONDS = 20.0
 
     def _norm_echo(s: str) -> str:
         # 必须转简体：TTS 念的是简体译文，但 ASR 回来常是繁体（实测「怎么样」→「怎麼樣」），
@@ -3913,17 +3916,20 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
 
     def _is_echo(text: str) -> bool:
         n = _norm_echo(text)
-        if len(n) < 4:
+        if len(n) < 2:
             return False
-        for prev in recent_spoken:
+        now = _time.monotonic()
+        for spoken_at, prev in recent_spoken:
+            if now - spoken_at > ECHO_WINDOW_SECONDS:
+                continue   # 太久以前念的，不可能是这次的回声
             p = _norm_echo(prev)
             if not p:
                 continue
-            # 完全包含即判回声（识别可能只截到译文的一部分）
+            # 完全包含即判回声——VAD 可能把回声切成碎片（实测只回来「你好」这样的开头两字）
             if n in p or p in n:
                 return True
             # 相似度兜底：ASR 与 TTS 文本常有个别字/词差异，不必逐字相同
-            if difflib.SequenceMatcher(None, n, p).ratio() >= 0.75:
+            if len(n) >= 4 and difflib.SequenceMatcher(None, n, p).ratio() >= 0.75:
                 return True
         return False
     try:
@@ -3966,14 +3972,15 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             await _sj({"type": "ai_text", "text": translation, "translation": ""})
             if not translation:
                 continue
-            recent_spoken.append(translation)
-            del recent_spoken[:-4]   # 只留最近 4 条做回声比对
             try:
                 audio, ct = await voice_io.synthesize(translation, voice, use_cache=False, user_id=user.id)
                 await _sj({"type": "ai_audio_begin", "content_type": ct})
                 for i in range(0, len(audio), 16384):
                     await _sb(audio[i:i + 16384])
                 await _sj({"type": "ai_audio_end"})
+                # 音频推完才开始计回声窗口（客户端随后才播放；合成失败没出声就不必记）
+                recent_spoken.append((_time.monotonic(), translation))
+                del recent_spoken[:-4]   # 只留最近 4 条做回声比对
             except Exception as exc:  # noqa: BLE001 — 合成失败字幕仍在
                 await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
 
