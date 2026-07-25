@@ -219,8 +219,15 @@ final class AppModel: ObservableObject {
     func startHomeChat(sceneId: String? = nil, sceneName: String? = nil, liveTurn: Bool = false) {
         // 场景由 scene_opening 驱动开场；翻译不寒暄；闲聊每天首次才寒暄一次
         let greet = (sceneId ?? "").isEmpty && tutorMode == "chat" && shouldGreetToday()
-        guard let token = auth.token,
-              let url = api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "", live: liveTurn, greet: greet) else {
+        guard let token = auth.token else {
+            presentFailure("请先登录", title: "无法开始对话")
+            return
+        }
+        let isTranslate = tutorMode == "translate"
+        // 实时翻译走「边说边出」流式端点（连续上行、服务端只转写自动分句）；其余走自由对话流
+        let streamURL = isTranslate ? api.translateStreamURL(token: token)
+                                    : api.freeTalkStreamURL(token: token, mode: tutorMode, sceneId: sceneId ?? "", live: liveTurn, greet: greet)
+        guard let url = streamURL else {
             presentFailure("请先登录", title: "无法开始对话")
             return
         }
@@ -231,8 +238,9 @@ final class AppModel: ObservableObject {
         homeSceneId = sceneId
         homeSceneStrict = false
         freeStream.autoPlayAI = autoPlayAI
-        freeStream.liveMode = liveTurn
-        freeStream.manualCommit = liveTurn == false && (showTutor == false || tutorImmersive == false)
+        // 翻译流式：连续上行、不手动提交（服务端 VAD 自动分句、每句边说边出）
+        freeStream.liveMode = isTranslate ? true : liveTurn
+        freeStream.manualCommit = isTranslate ? false : (liveTurn == false && (showTutor == false || tutorImmersive == false))
         freeStream.onFreeTalkHistory = { [weak self] items in
             guard let self else { return }
             self.homeConnected = true
@@ -283,9 +291,10 @@ final class AppModel: ObservableObject {
         freeStream.onAIText = { [weak self] t, tr, tone in
             guard let self else { return }
             self.setHomeWorking(false)
-            // 实时翻译：把译文补进最近一条待译的 translate（原文+译文合成一条），不新增气泡。
+            // 实时翻译：把译文按 FIFO 补进【最早】一条待译的 translate（后端逐句顺序回译文），
+            // 原文+译文合成一条，不新增气泡。firstIndex 保证多句连说时译文与原文一一对应不错位。
             if self.tutorMode == "translate" {
-                if let i = self.homeItems.lastIndex(where: { $0.kind == .translate && $0.translating }) {
+                if let i = self.homeItems.firstIndex(where: { $0.kind == .translate && $0.translating }) {
                     self.homeItems[i].translation = t
                     self.homeItems[i].translating = false
                 } else {

@@ -389,6 +389,20 @@ final class APIClient {
         return URL(string: s)
     }
 
+    /// 实时翻译·流式（边说边出）地址：连续上行音频，后端只转写通道自动分句 → 每句原文/译文/译文语音流回。
+    /// 协议复用自由对话流(live_mode/state/user_text/ai_text)，客户端连续上行、不手动提交。
+    func translateStreamURL(token: String) -> URL? {
+        var comps = URLComponents(url: url(for: "/translate/stream"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "token", value: token)]
+        if let encoded = comps?.percentEncodedQuery {
+            comps?.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+        }
+        guard let s = comps?.url?.absoluteString else { return nil }
+        if s.hasPrefix("https") { return URL(string: "wss" + s.dropFirst(5)) }
+        if s.hasPrefix("http") { return URL(string: "ws" + s.dropFirst(4)) }
+        return URL(string: s)
+    }
+
     // ---- 学习提醒（智能电话）：App 定时触发并上报信号，后端综合裁决（后端无任何主动动作）----
 
     struct ReminderCheckRequest: Codable {
