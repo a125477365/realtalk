@@ -3901,6 +3901,25 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
     user_ended = False
     seg_seq = 0
     seg_queue: asyncio.Queue = asyncio.Queue()
+    # 最近几条已朗读的译文：用于识别「AI 自己的译文被麦克风拾回」的回声，直接丢弃不再翻译。
+    # 客户端已在 AI 朗读期间静音上行，这里是第二道防线（长句/尾音可能漏进来）。
+    recent_spoken: list[str] = []
+
+    def _norm_echo(s: str) -> str:
+        return re.sub(r"[^\w]+", "", s.lower())
+
+    def _is_echo(text: str) -> bool:
+        n = _norm_echo(text)
+        if len(n) < 4:
+            return False
+        for prev in recent_spoken:
+            p = _norm_echo(prev)
+            if not p:
+                continue
+            # 完全包含即判回声（识别可能只截到译文的一部分）
+            if n in p or p in n:
+                return True
+        return False
     try:
         upstream = await ConvRealtimeSession(
             rt_url, f"tr-{user.id}-{uuid.uuid4().hex[:8]}", transcribe_only=True, voice=voice,
@@ -3941,6 +3960,8 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             await _sj({"type": "ai_text", "text": translation, "translation": ""})
             if not translation:
                 continue
+            recent_spoken.append(translation)
+            del recent_spoken[:-4]   # 只留最近 4 条做回声比对
             try:
                 audio, ct = await voice_io.synthesize(translation, voice, use_cache=False, user_id=user.id)
                 await _sj({"type": "ai_audio_begin", "content_type": ct})
@@ -3959,6 +3980,10 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             if t == "conversation.item.input_audio_transcription.completed":
                 text = (ev.get("transcript") or "").strip()
                 if not text:
+                    continue
+                if _is_echo(text):
+                    # AI 刚朗读的译文被拾回 → 丢弃，绝不把自己的话再翻译一遍
+                    print(f"[translate] 丢弃回声：{text[:60]}", flush=True)
                     continue
                 if is_political_sensitive(text):
                     await _sj({"type": "terminated", "reason": "涉及敏感话题，本次翻译已结束"})

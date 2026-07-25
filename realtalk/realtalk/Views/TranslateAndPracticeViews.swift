@@ -24,8 +24,9 @@ struct TranslateCallView: View {
             VStack(spacing: 0) {
                 header
                 statusLine.padding(.top, 14)
-                subtitles
-                Spacer(minLength: 12)
+                // 字幕区占满中间剩余空间（此前固定高度 + Spacer 会把新句挤到可视区之外，
+                // 表现为「界面只显示上边一部分」）；内部自动滚到最新一句。
+                subtitles.frame(maxHeight: .infinity)
                 micIndicator.padding(.bottom, 26)
                 Text("翻译内容会自动整理成英文场景，可回主界面练习")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
@@ -62,11 +63,16 @@ struct TranslateCallView: View {
             .frame(maxWidth: .infinity)
     }
 
-    /// 最近几条成对字幕：原文 + 蓝色译文。
+    /// 成对字幕：原文 + 蓝色译文；始终自动滚到最新一句。
+    private var translateItems: [AppModel.HomeChatItem] {
+        model.homeItems.filter { $0.kind == .translate }
+    }
+
     private var subtitles: some View {
-        ScrollView(showsIndicators: false) {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                ForEach(model.homeItems.filter { $0.kind == .translate }.suffix(6)) { item in
+                ForEach(translateItems) { item in
                     let cn = isChinese(item.text)
                     VStack(alignment: cn ? .trailing : .leading, spacing: 5) {
                         Text(item.text)
@@ -91,11 +97,20 @@ struct TranslateCallView: View {
                             .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
                         }
                     }
+                    .id(item.id)
                 }
+                Color.clear.frame(height: 1).id("translate-bottom")
             }
             .padding(.horizontal, 24).padding(.top, 16)
+            }
+            // 新句到达就滚到底，保证永远看得到最新一句（此前新句在可视区外）
+            .onChange(of: translateItems.count) { _, _ in
+                withAnimation { proxy.scrollTo("translate-bottom", anchor: .bottom) }
+            }
+            .onChange(of: translateItems.last?.translation) { _, _ in
+                withAnimation { proxy.scrollTo("translate-bottom", anchor: .bottom) }
+            }
         }
-        .frame(maxHeight: 320)
     }
 
     private func replay(_ text: String) -> some View {
@@ -525,8 +540,7 @@ struct ImmersivePracticeView: View {
             VStack(spacing: 0) {
                 header
                 statusLine.padding(.top, 12)
-                subtitles
-                Spacer(minLength: 12)
+                subtitles.frame(maxHeight: .infinity)   // 占满中间，避免新内容把麦克风挤出屏幕
                 micIndicator.padding(.bottom, 26)
                 Text("严格按真实对话练 · 说错会当场纠正")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))

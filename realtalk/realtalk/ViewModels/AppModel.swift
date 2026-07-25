@@ -242,6 +242,8 @@ final class AppModel: ObservableObject {
         // 翻译流式：连续上行、不手动提交（服务端 VAD 自动分句、每句边说边出）
         freeStream.liveMode = isTranslate ? true : liveTurn
         freeStream.manualCommit = isTranslate ? false : (liveTurn == false && (showTutor == false || tutorImmersive == false))
+        // 翻译时 AI 朗读期间不收音：否则扬声器放出的译文被拾回，又被翻译一遍（自循环）
+        freeStream.gateWhileAISpeaking = isTranslate
         freeStream.onFreeTalkHistory = { [weak self] items in
             guard let self else { return }
             self.homeConnected = true

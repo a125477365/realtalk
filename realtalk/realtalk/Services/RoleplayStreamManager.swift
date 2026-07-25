@@ -49,6 +49,11 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// 本地不做静音提交、不做语音抢话。由连接参数请求、后端 live_mode 事件最终确认。
     var liveMode = false
 
+    /// AI 朗读期间【不上行音频】。实时翻译必须开：否则扬声器放出的译文被麦克风拾回，
+    /// 又被当成用户说的新一句转写+翻译，形成「AI 把自己刚说的话再翻译一遍」的自循环。
+    /// （私教/沉浸对话不开——那里需要靠上行音频实现"开口打断"。）
+    var gateWhileAISpeaking = false
+
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
 
@@ -272,9 +277,14 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
 
         if liveMode {
             // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
-            if isAISpeaking, let p = aiPlayer, p.isPlaying {
-                p.updateMeters()
-                aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
+            if isAISpeaking {
+                if let p = aiPlayer, p.isPlaying {
+                    p.updateMeters()
+                    aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
+                }
+                // 翻译模式：AI 正在朗读译文 → 本段音频必是扬声器回声，绝不上行，
+                // 否则会把 AI 自己的译文当成新一句再翻译（自循环）。
+                if gateWhileAISpeaking { return }
             }
             sendFrame(data)
             return
@@ -470,6 +480,11 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             isAISpeaking = false
             aiAudioLevel = 0
             stopAiLevelTimer()
+            // 翻译模式：朗读刚结束，丢掉服务端在此期间可能缓存到的回声片段，
+            // 避免 AI 说完后立刻蹦出一条「自己译文的再翻译」。
+            if wasSpeaking, gateWhileAISpeaking, active, isConnected {
+                sendJSON(["type": "reset_audio"])
+            }
             // 关键：AI 刚说完 → 沉浸式立刻重开一段干净录音（否则 AI 外放混进转写）。
             // 手动模式不重开——用户没按说话就不占麦克风（系统录音灯熄灭）。
             if wasSpeaking, active, isConnected, manualCommit == false { startRecording() }
