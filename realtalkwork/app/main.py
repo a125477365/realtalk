@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64 as _b64
+import difflib
 import hashlib
 import hmac
 from contextvars import ContextVar
@@ -3906,7 +3907,9 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
     recent_spoken: list[str] = []
 
     def _norm_echo(s: str) -> str:
-        return re.sub(r"[^\w]+", "", s.lower())
+        # 必须转简体：TTS 念的是简体译文，但 ASR 回来常是繁体（实测「怎么样」→「怎麼樣」），
+        # 不归一化就比不中。标点/空白一并去掉（半角全角差异同理）。
+        return re.sub(r"[^\w]+", "", to_simplified(s).lower())
 
     def _is_echo(text: str) -> bool:
         n = _norm_echo(text)
@@ -3918,6 +3921,9 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
                 continue
             # 完全包含即判回声（识别可能只截到译文的一部分）
             if n in p or p in n:
+                return True
+            # 相似度兜底：ASR 与 TTS 文本常有个别字/词差异，不必逐字相同
+            if difflib.SequenceMatcher(None, n, p).ratio() >= 0.75:
                 return True
         return False
     try:
