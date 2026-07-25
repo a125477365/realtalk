@@ -3902,7 +3902,10 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
         await websocket.close()
         return
 
-    await _sj({"type": "live", "enabled": True})
+    # 复用 iOS RoleplayStreamManager 现有协议：live_mode 先到(连续上行帧)，state 触发开麦，
+    # 之后每句 user_text(原文,立即上屏)+ai_text(译文)+译文语音。iOS 翻译界面无需改渲染。
+    await _sj({"type": "live_mode", "enabled": True})
+    await _sj({"type": "state", "messages": []})
 
     async def _keepalive() -> None:
         try:
@@ -3915,29 +3918,30 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             pass
 
     async def _consumer() -> None:
-        """按到达顺序逐句翻译 + 合成译文语音，保持字幕顺序，不与音频上行争抢。"""
+        """按到达顺序逐句翻译 + 合成译文语音，保持字幕顺序，不与音频上行争抢。
+        译文用 ai_text 下发（iOS 翻译界面按 FIFO 补进对应原文那条成对字幕）。"""
         while True:
-            seg_id, original = await seg_queue.get()
+            _seg_id, original = await seg_queue.get()
             try:
                 translation = await generate_translation(original, user_id=user.id)
             except Exception as exc:  # noqa: BLE001 — 单句翻译失败不影响后续
                 print(f"[translate] 逐句翻译失败：{str(exc)[:160]}", flush=True)
-                await _sj({"type": "translation", "id": seg_id, "text": "", "detail": "翻译失败"})
+                await _sj({"type": "ai_text", "text": "", "translation": ""})
                 continue
-            await _sj({"type": "translation", "id": seg_id, "text": translation})
+            await _sj({"type": "ai_text", "text": translation, "translation": ""})
             if not translation:
                 continue
             try:
                 audio, ct = await voice_io.synthesize(translation, voice, use_cache=False, user_id=user.id)
-                await _sj({"type": "ai_audio_begin", "content_type": ct, "id": seg_id})
+                await _sj({"type": "ai_audio_begin", "content_type": ct})
                 for i in range(0, len(audio), 16384):
                     await _sb(audio[i:i + 16384])
-                await _sj({"type": "ai_audio_end", "id": seg_id})
+                await _sj({"type": "ai_audio_end"})
             except Exception as exc:  # noqa: BLE001 — 合成失败字幕仍在
-                await _sj({"type": "ai_audio_error", "id": seg_id, "detail": str(exc)[:120]})
+                await _sj({"type": "ai_audio_error", "detail": str(exc)[:120]})
 
     async def _pump() -> None:
-        """泵上游转写事件：每句转写立即上屏原文，并排队等翻译。"""
+        """泵上游转写事件：每句转写立即以 user_text 上屏原文，并排队等翻译。"""
         nonlocal seg_seq
         while True:
             ev = await upstream.recv_event(timeout=600)
@@ -3950,7 +3954,7 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
                     await _sj({"type": "terminated", "reason": "涉及敏感话题，本次翻译已结束"})
                     raise WebSocketDisconnect()
                 seg_seq += 1
-                await _sj({"type": "segment", "id": seg_seq, "original": text})
+                await _sj({"type": "user_text", "text": text, "translation": "", "words": [], "wpm": 0})
                 await seg_queue.put((seg_seq, text))
             elif t == "error":
                 await _sj({"type": "notice", "detail": "没听清，请再说一次"})
