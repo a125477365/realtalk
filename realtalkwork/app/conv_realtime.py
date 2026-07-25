@@ -61,8 +61,11 @@ class ConvRealtimeSession:
         if self.is_openai:
             self.url = f"{url}{sep}model={self.model or 'gpt-realtime'}"
         else:
+            # 只转写(实时翻译)：语种必须自动判定——用户可能说中文/英文，强制某一语种会把中文
+            # 误识别成英文，导致翻译方向反了(说中文却念中文)。用 auto 让 whisper 自动判语种。
+            lang = "auto" if transcribe_only else language
             extra = "&mode=transcribe" if transcribe_only else ""
-            self.url = f"{url}{sep}session={session_id}&language={language}{extra}"
+            self.url = f"{url}{sep}session={session_id}&language={lang}{extra}"
         self.ws = None
         self.restored = False
 

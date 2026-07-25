@@ -44,6 +44,7 @@ from .ark_client import (
     update_freetalk_memory,
     generate_preset_scenario,
     generate_scenario,
+    segment_transcript_topics,
     resolve_ai_config,
     test_ai_connection,
 )
@@ -2092,8 +2093,17 @@ def _scenario_batches(items: list[TranscriptItem]) -> list[list[TranscriptItem]]
 
 
 async def _generate_and_save_capture_scenarios(user_id: str, items: list[TranscriptItem]) -> list[ScenarioResponse]:
+    # 先按【话题/场合】智能切分（一次实时翻译可能先吃饭后打车 → 应生成两个独立场景），
+    # 再在每个话题内按长度分批（超长内容一个报文放不下时仍归属同一话题）。
+    topic_groups = await segment_transcript_topics(items, user_id=user_id)
+    batches: list[list[TranscriptItem]] = []
+    for group in topic_groups:
+        topic_items = [items[i] for i in group if 0 <= i < len(items)]
+        if topic_items:
+            batches.extend(_scenario_batches(topic_items))
+
     saved: list[ScenarioResponse] = []
-    for batch in _scenario_batches(items):
+    for batch in batches:
         # 内容哈希幂等：相同采集内容若已生成过未过期的场景，直接复用，避免重复上传产生重复场景
         digest = hashlib.sha256(
             "\n".join((item.text or "").strip() for item in batch).encode("utf-8")

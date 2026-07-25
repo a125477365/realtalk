@@ -111,6 +111,8 @@ async def handle_session(ws: WebSocket) -> None:
     ctx = _load_ctx(session)
     voice = ""
     language = ws.query_params.get("language") or "en"
+    # 语种传给 whisper：auto(实时翻译，用户可能中/英切换)→None 让其自动判定，避免误识别翻转方向
+    asr_language = None if language == "auto" else language
     audio_buf = bytearray()
     pending_user_text: str | None = None
     response_task: asyncio.Task | None = None
@@ -208,7 +210,7 @@ async def handle_session(ws: WebSocket) -> None:
         voiced_ms = 0.0
         silent_ms = 0.0
         await _sj({"type": "input_audio_buffer.speech_stopped"})
-        text, words, duration = await engine.transcribe_verbose(_pcm16_to_wav(audio, live_rate), language)
+        text, words, duration = await engine.transcribe_verbose(_pcm16_to_wav(audio, live_rate), asr_language)
         await _sj({"type": "conversation.item.input_audio_transcription.completed",
                    "transcript": text, "words": words, "duration": duration})
         # 只转写模式：到此为止，不生成 AI 回复（翻译由 api 后端对该句另做）
@@ -322,7 +324,7 @@ async def handle_session(ws: WebSocket) -> None:
                     continue
                 if (ev.get("format") or "").lstrip(".") in ("pcm16", "pcm"):
                     audio = _pcm16_to_wav(audio, int(ev.get("sample_rate") or 16000))
-                text, words, duration = await engine.transcribe_verbose(audio, language)
+                text, words, duration = await engine.transcribe_verbose(audio, asr_language)
                 # words/duration：词级置信度与时长（发音标色/语速分析），调用方可忽略
                 await _sj({"type": "conversation.item.input_audio_transcription.completed",
                            "transcript": text, "words": words, "duration": duration})
