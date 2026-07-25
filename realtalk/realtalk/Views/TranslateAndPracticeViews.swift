@@ -156,8 +156,20 @@ struct ScenePracticeView: View {
     @FocusState private var draftFocused: Bool
 
     private var immersive: Bool { model.scenePracticeImmersive }
+    @State private var guidanceItem: AppModel.HomeChatItem?
 
     var body: some View {
+        Group {
+            if immersive {
+                // 沉浸式：与实时翻译同款的深色语音界面（圆形麦克风 + 随音量呼吸）
+                ImmersivePracticeView(rpStream: rpStream)
+            } else {
+                manualBody
+            }
+        }
+    }
+
+    private var manualBody: some View {
         ZStack {
             RTTheme.background.ignoresSafeArea()
             VStack(spacing: 0) {
@@ -173,6 +185,7 @@ struct ScenePracticeView: View {
                 footer
             }
         }
+        .sheet(item: $guidanceItem) { GuidanceDetailSheet(item: $0) }
     }
 
     private var header: some View {
@@ -205,7 +218,7 @@ struct ScenePracticeView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(model.homeItems) { item in
-                        ScenePracticeRow(item: item).id(item.id)
+                        ScenePracticeRow(item: item, onDetail: { guidanceItem = $0 }).id(item.id)
                     }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
@@ -354,6 +367,7 @@ struct ScenePracticeView: View {
 private struct ScenePracticeRow: View {
     @EnvironmentObject private var model: AppModel
     let item: AppModel.HomeChatItem
+    var onDetail: (AppModel.HomeChatItem) -> Void = { _ in }
 
     var body: some View {
         switch item.kind {
@@ -361,7 +375,7 @@ private struct ScenePracticeRow: View {
         case .user:     userBubble
         case .hint:     hintCard
         case .guidance: guidanceCard
-        case .score:    scoreCard
+        case .score:    EmptyView()      // 评分已并入用户句下方的小按钮，不再单独占卡
         case .translate: EmptyView()
         }
     }
@@ -391,13 +405,47 @@ private struct ScenePracticeRow: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(RTTheme.hairline))
     }
 
+    /// 用户句：气泡 + 下方一排小按钮（评分/发音指导），点开才看详情——不占屏。
     private var userBubble: some View {
-        Text(item.text)
-            .font(.system(size: 15 * model.fontScale))
-            .foregroundStyle(RTTheme.textPrimary)
-            .padding(11)
-            .background(RTTheme.userBubble, in: RoundedRectangle(cornerRadius: 14))
-            .frame(maxWidth: .infinity, alignment: .trailing)
+        VStack(alignment: .trailing, spacing: 5) {
+            Text(item.text)
+                .font(.system(size: 15 * model.fontScale))
+                .foregroundStyle(RTTheme.textPrimary)
+                .padding(11)
+                .background(RTTheme.userBubble, in: RoundedRectangle(cornerRadius: 14))
+            if item.scores != nil || item.words.isEmpty == false {
+                Button { onDetail(item) } label: {
+                    HStack(spacing: 5) {
+                        if let avg = averageScore {
+                            Circle().fill(scoreColor(avg)).frame(width: 6, height: 6)
+                            Text("本句 \(avg) 分")
+                                .font(.system(size: 11 * model.fontScale, weight: .semibold))
+                                .foregroundStyle(scoreColor(avg))
+                        }
+                        Text("发音与指导")
+                            .font(.system(size: 11 * model.fontScale))
+                            .foregroundStyle(RTTheme.textSecondary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(RTTheme.textSecondary.opacity(0.7))
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(RTTheme.surface, in: Capsule())
+                    .overlay(Capsule().stroke(RTTheme.hairline))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看本句评分与发音指导")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// 四维均分（小按钮上显示一个总印象分）。
+    private var averageScore: Int? {
+        guard let s = item.scores, s.isEmpty == false else { return nil }
+        let vals = s.values.filter { $0 > 0 }
+        guard vals.isEmpty == false else { return nil }
+        return vals.reduce(0, +) / vals.count
     }
 
     /// 中文提示：接下来该说什么（英文答案默认打码，点开才显示）
@@ -428,51 +476,198 @@ private struct ScenePracticeRow: View {
         .background(RTTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 
+    /// 老师纠正：像对话里的一句话那样内联展示（左侧小灯泡 + 文字），不再是整块橙色卡片。
     private var guidanceCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: "lightbulb.fill").font(.system(size: 12)).foregroundStyle(.orange)
-                Text("老师指导").font(.system(size: 12 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(.orange)
-            }
-            Text(item.text).font(.system(size: 14 * model.fontScale)).foregroundStyle(RTTheme.textPrimary)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lightbulb.fill")
+                .font(.system(size: 12)).foregroundStyle(.orange)
+                .padding(.top, 2)
+            Text(item.text)
+                .font(.system(size: 14 * model.fontScale))
+                .foregroundStyle(RTTheme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var scoreCard: some View {
-        let dims: [(String, String)] = [("pronunciation", "发音"), ("grammar", "语法"),
-                                        ("naturalness", "自然度"), ("vocabulary", "词汇")]
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "chart.bar.fill").font(.system(size: 12)).foregroundStyle(RTTheme.accent)
-                Text("本句评分").font(.system(size: 12 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(RTTheme.accent)
-            }
-            HStack(spacing: 10) {
-                ForEach(dims, id: \.0) { key, label in
-                    let v = item.scores?[key] ?? 0
-                    VStack(spacing: 4) {
-                        Text("\(v)").font(.system(size: 18 * model.fontScale, weight: .bold, design: .rounded))
-                            .foregroundStyle(color(v))
-                        Text(label).font(.system(size: 11 * model.fontScale))
-                            .foregroundStyle(RTTheme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-        }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(RTTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func color(_ v: Int) -> Color {
+    private func scoreColor(_ v: Int) -> Color {
         switch v {
         case 85...: return .green
         case 70..<85: return RTTheme.accent
         case 50..<70: return .orange
         default: return .red
+        }
+    }
+}
+
+// MARK: - 沉浸式场景练习（与实时翻译同款深色语音界面）
+
+/// 沉浸式：深色底 + 底部光晕随音量呼吸 + 中央大圆形麦克风（随说话频率跳动）。
+/// 严格按剧本：中文提示下一句、AI 台词打码点开、说错内联纠正。麦克风是开/关开关。
+struct ImmersivePracticeView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var rpStream: RoleplayStreamManager
+
+    private var liveLevel: Double { rpStream.isAISpeaking ? rpStream.aiAudioLevel : rpStream.audioLevel }
+
+    var body: some View {
+        ZStack {
+            Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
+            RadialGradient(
+                colors: [Color(red: 0.25, green: 0.47, blue: 0.85).opacity(0.28 + 0.5 * liveLevel),
+                         Color(red: 0.16, green: 0.30, blue: 0.62).opacity(0.10 + 0.25 * liveLevel), .clear],
+                center: UnitPoint(x: 0.5, y: 1.12), startRadius: 10, endRadius: 330 + 260 * liveLevel
+            )
+            .ignoresSafeArea().allowsHitTesting(false)
+            .animation(.easeOut(duration: 0.12), value: liveLevel)
+
+            VStack(spacing: 0) {
+                header
+                statusLine.padding(.top, 12)
+                subtitles
+                Spacer(minLength: 12)
+                micIndicator.padding(.bottom, 26)
+                Text("严格按真实对话练 · 说错会当场纠正")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                    .padding(.bottom, 10)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Button { model.exitScenePractice() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
+                    .padding(10).background(.white.opacity(0.12), in: Circle())
+            }
+            .accessibilityLabel("退出练习")
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.homeSceneName ?? "场景练习")
+                    .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text("沉浸式 · 严格按剧本")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+            }
+            Spacer()
+            if let rp = model.roleplay {
+                Text("\(rp.progress)/\(rp.total)")
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+        }
+        .padding(.horizontal, 18).padding(.top, 10)
+    }
+
+    private var statusLine: some View {
+        Text(statusText)
+            .font(.system(size: 15 * model.fontScale, weight: .medium))
+            .foregroundStyle(.white.opacity(0.7))
+            .frame(maxWidth: .infinity)
+    }
+
+    private var statusText: String {
+        if rpStream.isConnected == false { return "连接中…" }
+        if rpStream.isAISpeaking { return "对方正在说…" }
+        if rpStream.isPaused { return "麦克风已关闭" }
+        if model.homeStatus.isEmpty == false { return model.homeStatus }
+        return "按提示开口说英语"
+    }
+
+    /// 最近几条：中文提示 / AI 台词（打码点开）/ 纠正。
+    private var subtitles: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(model.homeItems.suffix(5)) { item in
+                    switch item.kind {
+                    case .hint:
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(item.text)
+                                .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.36, green: 0.66, blue: 1.0))
+                            if item.translation.isEmpty == false {
+                                ZStack(alignment: .leading) {
+                                    Text(item.translation)
+                                        .font(.system(size: 14 * model.fontScale))
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .blur(radius: item.masked ? 6 : 0)
+                                    if item.masked {
+                                        Text("🙈 英文答案已隐藏 · 点击显示")
+                                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture { model.toggleItemMasked(item.id) }
+                            }
+                        }
+                    case .ai:
+                        ZStack(alignment: .leading) {
+                            Text(item.text)
+                                .font(.system(size: 16 * model.fontScale))
+                                .foregroundStyle(.white)
+                                .blur(radius: item.masked ? 6 : 0)
+                            if item.masked {
+                                Text("🙈 先听 · 点击显示英文")
+                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.toggleItemMasked(item.id) }
+                    case .user:
+                        Text(item.text)
+                            .font(.system(size: 15 * model.fontScale))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    case .guidance:
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: "lightbulb.fill")
+                                .font(.system(size: 11)).foregroundStyle(.orange).padding(.top, 2)
+                            Text(item.text)
+                                .font(.system(size: 14 * model.fontScale))
+                                .foregroundStyle(.orange.opacity(0.95))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    default:
+                        EmptyView()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24).padding(.top, 14)
+        }
+        .frame(maxHeight: 300)
+    }
+
+    /// 中央圆形麦克风：随音量呼吸跳动；断线时变重连。
+    @ViewBuilder
+    private var micIndicator: some View {
+        if rpStream.isConnected == false {
+            Button { model.toggleHomeTalk() } label: {
+                HStack(spacing: 8) { Image(systemName: "arrow.clockwise"); Text("重连") }
+                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 40).padding(.vertical, 15)
+                    .background(.white, in: Capsule())
+            }
+        } else {
+            Button { rpStream.togglePause() } label: {
+                ZStack {
+                    Circle()
+                        .stroke((rpStream.isAISpeaking ? RTTheme.success : RTTheme.accent)
+                            .opacity(0.35 + 0.4 * liveLevel), lineWidth: 2)
+                        .frame(width: 96 + 34 * liveLevel, height: 96 + 34 * liveLevel)
+                    Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
+                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                    Image(systemName: rpStream.isPaused ? "mic.slash.fill" : "mic.fill")
+                        .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
+                        .scaleEffect(1 + 0.18 * liveLevel)
+                }
+                .animation(.easeOut(duration: 0.1), value: liveLevel)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(rpStream.isPaused ? "开启麦克风" : "关闭麦克风")
         }
     }
 }

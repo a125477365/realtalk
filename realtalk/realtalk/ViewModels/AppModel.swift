@@ -156,7 +156,8 @@ final class AppModel: ObservableObject {
         /// 键盘发送的本地回显：发出瞬间先上屏（网络异常也可见），服务端回显到达后原位合并
         var localEcho: Bool = false
         var tone: String = ""               // 情绪标签：重播按同样语气重新合成（实时通道即兴语音为空）
-        var scores: [String: Int]? = nil    // 四维评分卡：发音/语法/自然度/词汇(0-100)
+        var scores: [String: Int]? = nil    // 四维评分(0-100)：挂在用户句上，点句下小按钮才展开看
+        var feedback: String = ""           // 本句的老师点评（挂在用户句上，详情浮层里展示）
     }
 
     @Published var homeItems: [HomeChatItem] = []
@@ -752,29 +753,42 @@ final class AppModel: ObservableObject {
                 masked: msg.speaker == "ai" && revealed.contains(msg.content) == false
             ))
         }
-        // 四维评分卡（训练系统）：本轮刚打过分就显示发音/语法/自然度/词汇四个维度分数，
-        // 让「聊天」变成「有反馈的训练」。只在本轮确有评分时出现（latestScores 非空）。
-        if let sc = state.latestScores, sc.values.contains(where: { $0 > 0 }) {
-            items.append(HomeChatItem(kind: .score, text: "", scores: sc))
+        // 评分/发音词级/点评【挂到刚说的那句用户字幕上】——不再单独占一张大卡。
+        // 用户句下方只留一个小按钮，点开才看详细评分与语境润色（与旧版体验一致）。
+        if let lastUser = items.lastIndex(where: { $0.kind == .user }) {
+            if let sc = state.latestScores, sc.values.contains(where: { $0 > 0 }) {
+                items[lastUser].scores = sc
+            }
+            if let fb = state.latestFeedback, fb.isEmpty == false, state.latestAccepted != false {
+                items[lastUser].feedback = fb
+            }
+            // 词级发音详情（供详情浮层逐词标色）：ok→高置信，未命中→低置信
+            if state.pronunciation.isEmpty == false {
+                items[lastUser].words = state.pronunciation.map {
+                    RoleplayStreamManager.WordScore(word: $0.word, probability: $0.ok ? 0.95 : 0.25)
+                }
+            }
         }
-        // #8 顺序：先出「下一句该说什么」的中文提示（英文答案默认打码，点击才显示——不点也知道说什么），
-        // 指导（对刚才那句的纠正）紧随其后显示在提示下方，符合"提示→尝试→纠正"的先后顺序。
-        if state.completed == false, let next = state.nextLine {
-            let hintText = "提示：接下来你说「\(next.sourceText)」"
-            items.append(HomeChatItem(kind: .hint, text: hintText, translation: next.english,
-                                      masked: revealedHints.contains(hintText) == false))
-        }
-        // 指导卡：本句没通过 → 评语 + 发音未命中词（显示在提示下方）
+        // 说错了的指导：作为老师的一条字幕【直接内联在对话流里】（和 AI 台词并排出现），
+        // 而不是另起一张突兀的大卡片——用户「说错→老师当场纠正」应该像对话一样自然。
         if state.latestAccepted == false, let fb = state.latestFeedback, fb.isEmpty == false {
             var text = fb
             let missed = state.pronunciation.filter { $0.ok == false }.map(\.word)
             if missed.isEmpty == false { text += "\n发音再注意：\(missed.joined(separator: "、"))" }
             items.append(HomeChatItem(kind: .guidance, text: text))
         }
+        // 最后才是「下一句该说什么」的中文提示（英文答案默认打码，点击才显示）
+        if state.completed == false, let next = state.nextLine {
+            let hintText = "提示：接下来你说「\(next.sourceText)」"
+            items.append(HomeChatItem(kind: .hint, text: hintText, translation: next.english,
+                                      masked: revealedHints.contains(hintText) == false))
+        }
         if state.completed {
             items.append(HomeChatItem(kind: .guidance, text: "🎉 场景对话完成！综合得分 \(Int(state.score * 100))"))
         }
         homeItems = items
+        // 连上并拿到状态后清掉「连接中…」，否则状态行会一直挂着（实测问题）
+        if homeStatus == "连接中…" || homeStatus == "正在重新连接…" { homeStatus = "" }
     }
     @Published var autoCaptureEnabled = false
     /// 自动采集时段列表（支持多个）。

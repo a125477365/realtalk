@@ -286,18 +286,17 @@ struct ScenarioPickerView: View {
     /// 底部主行动按钮：进入实时翻译（做成独立大按钮，取代原来顶栏那个小胶囊）。
     private var translateBar: some View {
         Button { model.enterTranslate() } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "waveform.and.mic")
-                    .font(.system(size: 17, weight: .semibold))
-                VStack(alignment: .leading, spacing: 1) {
+            // 居中对称排版：图标+标题一行居中，副标题第二行居中
+            VStack(spacing: 3) {
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform.and.mic")
+                        .font(.system(size: 17, weight: .semibold))
                     Text("实时翻译")
-                        .font(.system(size: 16 * model.fontScale, weight: .bold))
-                    Text("说中文听英文 · 对话自动变成练习场景")
-                        .font(.system(size: 11 * model.fontScale))
-                        .opacity(0.85)
+                        .font(.system(size: 17 * model.fontScale, weight: .bold))
                 }
-                Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).opacity(0.9)
+                Text("说中文听英文 · 自动生成练习场景")
+                    .font(.system(size: 11.5 * model.fontScale))
+                    .opacity(0.9)
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 18).padding(.vertical, 14)

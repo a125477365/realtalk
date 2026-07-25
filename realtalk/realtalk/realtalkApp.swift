@@ -57,8 +57,7 @@ struct realtalkApp: App {
                     case .active:
                         Task {
                             await model.handlePendingShortcutAction()
-                            // 从通知点开/回到前台：立即补一次学习提醒判定（前台弹「私教来电」）
-                            await model.checkPracticeReminder()
+                            // 学习提醒（智能来电）功能已下线：不再做提醒判定
                             #if DEBUG
                             // UI 自动化验证钩子（仅 Debug 构建）：xcrun simctl launch 传参直开私教/翻译界面
                             let uiArgs = ProcessInfo.processInfo.arguments
@@ -79,7 +78,7 @@ struct realtalkApp: App {
                             #endif
                         }
                     case .background:
-                        if model.practiceReminderEnabled { Self.scheduleReminderRefresh() }
+                        break   // 学习提醒已下线：不再排后台刷新任务
                     default:
                         break
                     }

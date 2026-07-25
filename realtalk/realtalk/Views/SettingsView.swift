@@ -71,103 +71,6 @@ struct SettingsView: View {
                     Button("取消", role: .cancel) {}
                 }
 
-                Section {
-                    Toggle("按时间窗自动采集", isOn: $model.autoCaptureEnabled)
-                    if model.autoCaptureEnabled {
-                        ForEach($model.captureWindows) { $window in
-                            HStack {
-                                DatePicker("", selection: $window.start, displayedComponents: .hourAndMinute)
-                                    .labelsHidden()
-                                Text("至").foregroundStyle(.secondary)
-                                DatePicker("", selection: $window.end, displayedComponents: .hourAndMinute)
-                                    .labelsHidden()
-                                Spacer()
-                                Button(role: .destructive) {
-                                    model.removeCaptureWindow(window.id)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                        }
-                        Button {
-                            model.addCaptureWindow()
-                        } label: {
-                            Label("添加时段", systemImage: "plus.circle.fill")
-                        }
-                    }
-                } header: {
-                    Text("真实对话采集")
-                        .font(.system(size: 13 * model.fontScale))
-                } footer: {
-                    Text("可添加多个时段，App 前台运行时会在任一时段内自动采集并转写。请在征得在场人员同意后使用。")
-                        .font(.system(size: 12 * model.fontScale))
-                }
-
-                Section {
-                    Toggle("智能电话提醒", isOn: $model.practiceReminderEnabled)
-                    if model.practiceReminderEnabled {
-                        Picker("提醒方式", selection: $model.reminderMode) {
-                            Text("智能通知").tag("smart")
-                            Text("定时通知").tag("timed")
-                        }
-                        if model.reminderMode == "smart" {
-                            ForEach($model.reminderWindows) { $window in
-                                HStack {
-                                    DatePicker("", selection: $window.start, displayedComponents: .hourAndMinute)
-                                        .labelsHidden()
-                                    Text("至").foregroundStyle(.secondary)
-                                    DatePicker("", selection: $window.end, displayedComponents: .hourAndMinute)
-                                        .labelsHidden()
-                                    Spacer()
-                                    Button(role: .destructive) {
-                                        model.reminderWindows.removeAll { $0.id == window.id }
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                            Button {
-                                let cal = Calendar.current
-                                let start = cal.date(bySettingHour: 19, minute: 0, second: 0, of: Date()) ?? Date()
-                                let end = cal.date(bySettingHour: 21, minute: 0, second: 0, of: Date()) ?? Date()
-                                model.reminderWindows.append(AppModel.CaptureWindow(start: start, end: end))
-                            } label: {
-                                Label("添加提醒学习时段", systemImage: "plus.circle.fill")
-                            }
-                        } else {
-                            ForEach(Array(model.reminderTimes.enumerated()), id: \.offset) { index, _ in
-                                HStack {
-                                    DatePicker("", selection: Binding(
-                                        get: { model.reminderTimes[index] },
-                                        set: { model.reminderTimes[index] = $0 }
-                                    ), displayedComponents: .hourAndMinute)
-                                        .labelsHidden()
-                                    Spacer()
-                                    Button(role: .destructive) {
-                                        model.reminderTimes.remove(at: index)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                            Button {
-                                let t = Calendar.current.date(bySettingHour: 20, minute: 0, second: 0, of: Date()) ?? Date()
-                                model.reminderTimes.append(t)
-                            } label: {
-                                Label("添加提醒时间点", systemImage: "plus.circle.fill")
-                            }
-                        }
-                    }
-                } header: {
-                    Text("学习提醒")
-                        .font(.system(size: 13 * model.fontScale))
-                } footer: {
-                    Text("当天有新的未练习场景时，私教会以来电形式邀请你练习。智能：App 每 10 分钟上报信号，后端综合运动/心率/环境音/记忆作息判断空闲后来电——不设时段则 24 小时综合判断（默认避开深夜 23:00-8:00）；设了时段则只在时段内提醒（时段优先，可含深夜）。定时：在设定时间点来电。对话/采集中不打扰；挂断或暂不练习后该场景不再来电。")
-                        .font(.system(size: 12 * model.fontScale))
-                }
 
                 Section("关于") {
                     LabeledContent("版本", value: appVersion)
@@ -180,8 +83,6 @@ struct SettingsView: View {
                     Button("完成") { dismiss() }
                 }
             }
-            .onChange(of: model.autoCaptureEnabled) { _, _ in model.saveCaptureSchedule() }
-            .onChange(of: model.captureWindows) { _, _ in model.saveCaptureSchedule() }
             .onChange(of: model.appearance) { _, _ in model.savePracticePreferences() }
             .onChange(of: model.fontScale) { _, _ in model.savePracticePreferences() }
         }

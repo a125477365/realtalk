@@ -26,29 +26,8 @@ struct ContentView: View {
             if uiArgs.contains("--uiverify-login"), auth.phase != .signedIn {
                 await model.auth.loginWithWeChat()
             }
-            if model.showTutor == false, model.auth.token != nil {
-                if uiArgs.contains("--uiverify-freetalk-translate") {
-                    model.tutorMode = "translate"; model.showTutor = true
-                } else if uiArgs.contains("--uiverify-freetalk") {
-                    model.tutorMode = "chat"; model.showTutor = true
-                } else if uiArgs.contains("--uiverify-scenepicker") {
-                    model.showScenePicker = true
-                } else if uiArgs.contains("--uiverify-record") {
-                    // 手动采集全屏录音页验证
-                    await model.toggleRecording()
-                } else if uiArgs.contains("--uiverify-talk") {
-                    // 「点击说话」按下形态（X+波形+✓）验证：等连上后按下
-                    for _ in 0..<40 where model.homeConnected == false {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                    }
-                    model.toggleHomeTalk()
-                } else if let i = uiArgs.firstIndex(of: "--uiverify-sendtext"), i + 1 < uiArgs.count {
-                    // 键盘发送链路验证：等连接（最多 15s，连不上也照发——验证离线本地回显）
-                    for _ in 0..<30 where model.homeConnected == false {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                    }
-                    model.sendHomeText(uiArgs[i + 1])
-                }
+            if model.auth.token != nil, uiArgs.contains("--uiverify-translate") {
+                model.enterTranslate()   // 直开实时翻译全屏，供 UI 自动化验证
             }
             #endif
         }

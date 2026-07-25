@@ -26,12 +26,10 @@ struct AccountPanelView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                // 全部功能免费：不再有会员卡/升级/高级专属/账单
                 VStack(alignment: .leading, spacing: 16) {
-                    memberCard
-                    upgradeEntry
-                    premiumFeatures
+                    profileCard
                     supportEntry
-                    ledger
                     accountInfoCard
                     StatusBanner(text: model.statusMessage)
                 }
@@ -49,17 +47,37 @@ struct AccountPanelView: View {
                 }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            .sheet(isPresented: $showingUpload) { UploadRecordingView() }
-            .sheet(isPresented: $showingMembership) { MembershipView(premiumOnly: membershipPremiumOnly) }
             .sheet(isPresented: $showingTickets) { SupportTicketsView() }
-            .task {
-                await model.loadBillingAccount()
-                if model.planCatalog.isEmpty { await model.loadPlanCatalog() }
-            }
         }
     }
 
-    // MARK: 会员卡（不显示余额，用量以百分比展示）
+    // MARK: 个人卡（全部功能免费，不再展示会员等级/额度）
+
+    private var profileCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(.white.opacity(0.25))
+                Text((auth.user?.displayName ?? "我").prefix(1))
+                    .font(.system(size: 20 * model.fontScale, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(auth.user?.displayName ?? "微信用户")
+                    .font(.system(size: 17 * model.fontScale, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("全部功能免费使用")
+                    .font(.system(size: 12 * model.fontScale))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            Spacer()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RTTheme.brandGradient, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    // MARK: 会员卡（已停用，保留代码不再引用）
 
     private var memberCard: some View {
         VStack(alignment: .leading, spacing: 10) {
