@@ -6,6 +6,15 @@ private struct ResumeChoice: Identifiable {
     let id = UUID()
     let summary: ScenarioSummary
     let roleId: String
+    let immersive: Bool
+}
+
+/// 选角色弹窗载荷：把「手动触发/沉浸式」一起带上，避免分散的 @State 在弹窗切换时读到旧值
+/// （曾导致选了沉浸式却进手动触发界面）。
+private struct RoleChoice: Identifiable {
+    let id = UUID()
+    let summary: ScenarioSummary
+    let immersive: Bool
 }
 
 /// Claude 风格的对话主界面：内容区背景跟随外观主题（浅色/深色/系统），
@@ -63,7 +72,7 @@ struct ScenarioPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var modeChoice: ModeChoice?
-    @State private var roleDialogScenario: ScenarioSummary?
+    @State private var roleChoice: RoleChoice?
     /// 选完角色后、若该场景有未完成进度，弹「继续 / 重新开始」二选一。
     @State private var resumeChoice: ResumeChoice?
     /// 选角色前记住本次选的是「沉浸式」还是「手动触发」。
@@ -83,6 +92,7 @@ struct ScenarioPickerView: View {
                     header
                     scenarioScopePicker
                     scenarioStrip
+                    if asHome { translateBar }
                 }
             }
             .task {
@@ -107,40 +117,39 @@ struct ScenarioPickerView: View {
                     // 两种都严格按剧本，区别只在说话方式
                     Button("手动触发（点击说话，逐句练）") {
                         modeChoice = nil
-                        pendingImmersive = false
-                        roleDialogScenario = choice.summary
+                        roleChoice = RoleChoice(summary: choice.summary, immersive: false)
                     }
                     Button("沉浸式（麦克风常开，连着说）") {
                         modeChoice = nil
-                        pendingImmersive = true
-                        roleDialogScenario = choice.summary
+                        roleChoice = RoleChoice(summary: choice.summary, immersive: true)
                     }
                     Button("取消", role: .cancel) { modeChoice = nil }
                 }
             }
             .confirmationDialog(
-                roleDialogScenario.map { "练习「\($0.title)」，你想扮演谁？" } ?? "选择角色",
+                roleChoice.map { "练习「\($0.summary.title)」，你想扮演谁？" } ?? "选择角色",
                 isPresented: Binding(
-                    get: { roleDialogScenario != nil },
-                    set: { if $0 == false { roleDialogScenario = nil } }
+                    get: { roleChoice != nil },
+                    set: { if $0 == false { roleChoice = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                if let summary = roleDialogScenario {
-                    ForEach(summary.roles.filter(\.isUserCandidate)) { role in
+                if let choice = roleChoice {
+                    ForEach(choice.summary.roles.filter(\.isUserCandidate)) { role in
                         Button("\(role.name)（\(role.description)）") {
-                            roleDialogScenario = nil
-                            if summary.inProgress {
-                                // 有未完成进度：先问继续还是重新开始
-                                resumeChoice = ResumeChoice(summary: summary, roleId: role.id)
+                            roleChoice = nil
+                            if choice.summary.inProgress {
+                                // 有未完成进度：先问继续还是重新开始（默认从头开始新对话）
+                                resumeChoice = ResumeChoice(summary: choice.summary, roleId: role.id,
+                                                            immersive: choice.immersive)
                             } else {
-                                let immersive = pendingImmersive
-                                Task { await model.startStrictScene(summary, roleId: role.id, immersive: immersive) }
+                                Task { await model.startStrictScene(choice.summary, roleId: role.id,
+                                                                    immersive: choice.immersive) }
                                 if asHome == false { dismiss() }
                             }
                         }
                     }
-                    Button("取消", role: .cancel) { roleDialogScenario = nil }
+                    Button("取消", role: .cancel) { roleChoice = nil }
                 }
             }
             .confirmationDialog(
@@ -154,14 +163,14 @@ struct ScenarioPickerView: View {
                 if let choice = resumeChoice {
                     Button("继续上次进度") {
                         resumeChoice = nil
-                        let immersive = pendingImmersive
-                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: true, immersive: immersive) }
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId,
+                                                            resume: true, immersive: choice.immersive) }
                         if asHome == false { dismiss() }
                     }
                     Button("从头重新开始") {
                         resumeChoice = nil
-                        let immersive = pendingImmersive
-                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: false, immersive: immersive) }
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId,
+                                                            resume: false, immersive: choice.immersive) }
                         if asHome == false { dismiss() }
                     }
                     Button("取消", role: .cancel) { resumeChoice = nil }
@@ -188,37 +197,50 @@ struct ScenarioPickerView: View {
 
     // MARK: 顶栏
 
+    /// 顶栏：左=头像+问候（点开进「我的」），右=刷新。头像固定在左侧。
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("选择场景")
-                    .font(.headline)
-                    .foregroundStyle(RTTheme.textPrimary)
-                Text("选一个场景，按真实对话逐句练")
-                    .font(.system(size: 11 * model.fontScale))
-                    .foregroundStyle(RTTheme.textSecondary)
-            }
-            Spacer()
+        HStack(spacing: 12) {
             if asHome {
-                // 右上角「A中」：进入实时翻译（翻译过程的真实对话会自动生成英文场景回到这个列表）
-                Button { model.enterTranslate() } label: {
-                    HStack(spacing: 3) {
-                        Text("A").font(.system(size: 15 * model.fontScale, weight: .bold))
-                        Image(systemName: "arrow.left.arrow.right").font(.system(size: 11, weight: .semibold))
-                        Text("中").font(.system(size: 15 * model.fontScale, weight: .bold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RTTheme.accent, in: Capsule())
-                }
-                .accessibilityLabel("实时翻译")
                 Button { showingAccount = true } label: {
-                    Image(systemName: "person.crop.circle")
-                        .font(.system(size: 20))
+                    HStack(spacing: 10) {
+                        avatarCircle
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(greeting)
+                                .font(.system(size: 18 * model.fontScale, weight: .bold))
+                                .foregroundStyle(RTTheme.textPrimary)
+                            Text("选个场景，按真实对话练英语")
+                                .font(.system(size: 12 * model.fontScale))
+                                .foregroundStyle(RTTheme.textSecondary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("我的")
+                Spacer(minLength: 8)
+                Button {
+                    Task {
+                        if scenarioScope == "preset" { await model.loadPresetCatalog() }
+                        else { await model.loadScenarioList() }
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(RTTheme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isLoadingScenarios)
+                .accessibilityLabel("刷新")
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("选择场景").font(.headline).foregroundStyle(RTTheme.textPrimary)
+                    Text("选一个场景，按真实对话逐句练")
+                        .font(.system(size: 11 * model.fontScale))
                         .foregroundStyle(RTTheme.textSecondary)
                 }
-                .accessibilityLabel("我的")
-            } else {
+                Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 13, weight: .semibold))
@@ -229,7 +251,64 @@ struct ScenarioPickerView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 14)
+    }
+
+    /// 左侧头像：有网络头像就显示，否则用品牌渐变 + 首字母。
+    private var avatarCircle: some View {
+        let name = auth.user?.displayName ?? ""
+        let initial = name.isEmpty ? "我" : String(name.prefix(1))
+        return ZStack {
+            Circle().fill(RTTheme.brandGradient).frame(width: 42, height: 42)
+            if let urlString = auth.user?.avatarUrl, let url = URL(string: urlString) {
+                AsyncImage(url: url) { img in
+                    img.resizable().scaledToFill()
+                } placeholder: {
+                    Text(initial).font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
+                }
+                .frame(width: 42, height: 42)
+                .clipShape(Circle())
+            } else {
+                Text(initial).font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
+            }
+        }
+        .overlay(Circle().stroke(.white.opacity(0.6), lineWidth: 1))
+    }
+
+    private var greeting: String {
+        let h = Calendar.current.component(.hour, from: Date())
+        let name = auth.user?.displayName ?? ""
+        let period = h < 6 ? "夜深了" : (h < 12 ? "早上好" : (h < 18 ? "下午好" : "晚上好"))
+        return name.isEmpty ? period : "\(period)，\(name)"
+    }
+
+    /// 底部主行动按钮：进入实时翻译（做成独立大按钮，取代原来顶栏那个小胶囊）。
+    private var translateBar: some View {
+        Button { model.enterTranslate() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.and.mic")
+                    .font(.system(size: 17, weight: .semibold))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("实时翻译")
+                        .font(.system(size: 16 * model.fontScale, weight: .bold))
+                    Text("说中文听英文 · 对话自动变成练习场景")
+                        .font(.system(size: 11 * model.fontScale))
+                        .opacity(0.85)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).opacity(0.9)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18).padding(.vertical, 14)
+            .frame(maxWidth: .infinity)
+            .background(RTTheme.brandGradient, in: RoundedRectangle(cornerRadius: 18))
+            .shadow(color: RTTheme.accent.opacity(0.28), radius: 12, y: 5)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .accessibilityLabel("实时翻译")
     }
 
     private var scenarioScopePicker: some View {
@@ -261,36 +340,23 @@ struct ScenarioPickerView: View {
                     .font(.system(size: 12 * model.fontScale, weight: .semibold))
                     .foregroundStyle(RTTheme.textSecondary)
                 Spacer()
-                Button {
-                    Task {
-                        if scenarioScope == "preset" { await model.loadPresetCatalog() }
-                        else { await model.loadScenarioList() }
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                        .foregroundStyle(RTTheme.textSecondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isLoadingScenarios)
+                if model.isLoadingScenarios { ProgressView().controlSize(.mini) }
             }
             .padding(.horizontal, 16)
 
             if scenarioScope == "preset" {
                 presetCatalogView
             } else if (scenarioScope == "all" ? model.todayScenarios.isEmpty : todayScenarioItems.isEmpty) {
-                // 空态：引导用户先采集真实对话或上传录音（场景只能来自真实对话）
-                Button {
-                    Task { await model.toggleRecording() }
-                } label: {
+                // 空态：场景来自实时翻译过程的真实对话 → 引导去用底部「实时翻译」
+                Button { model.enterTranslate() } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: "waveform.badge.plus")
+                        Image(systemName: "waveform.and.mic")
                             .foregroundStyle(RTTheme.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(model.isLoadingScenarios ? "正在加载今日场景…" : "今天还没有场景")
                                 .font(.system(size: 15 * model.fontScale, weight: .semibold))
                                 .foregroundStyle(RTTheme.textPrimary)
-                            Text("点底部按钮采集今天的真实对话，停止后自动生成英语场景")
+                            Text("用下方「实时翻译」聊几句，结束后会自动生成今天的英语场景")
                                 .font(.system(size: 12 * model.fontScale))
                                 .foregroundStyle(RTTheme.textSecondary)
                         }
@@ -349,14 +415,8 @@ struct ScenarioPickerView: View {
             .sorted { $0.day > $1.day }
     }
 
-    /// 不同会员可见历史窗口的说明。
-    private var historyWindowHint: String {
-        switch auth.user?.effectiveTier {
-        case "premium": return "高级会员可查看近 1 个月的历史场景"
-        case "basic": return "基础会员可查看近 2 周的历史场景；升级高级会员可看近 1 个月"
-        default: return "非会员仅显示近 2 天的场景；开通会员可保存更久（基础 2 周 / 高级 1 个月）"
-        }
-    }
+    /// 历史说明（全部功能免费，不再有会员分级）。
+    private var historyWindowHint: String { "按日期查看历史场景" }
 
     @ViewBuilder
     private func dateGroupCard(_ group: (day: Date, items: [ScenarioSummary])) -> some View {

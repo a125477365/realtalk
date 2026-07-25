@@ -151,6 +151,9 @@ struct ScenePracticeView: View {
     @ObservedObject var rpStream: RoleplayStreamManager
 
     @State private var showVoicePanel = false
+    @State private var keyboardMode = false
+    @State private var draft = ""
+    @FocusState private var draftFocused: Bool
 
     private var immersive: Bool { model.scenePracticeImmersive }
 
@@ -215,62 +218,135 @@ struct ScenePracticeView: View {
         }
     }
 
+    /// 底部输入区：与原主界面一致的对称三段式。
+    /// 常态「+ | 点击说话 | 键盘」；说话中「✕ | 波形 | ✓」；键盘态「输入框 | 发送 | 麦克风」。
+    /// 沉浸式则中间换成「麦克风开关」（开着就一直听、自动判停成句）。
+    @ViewBuilder
     private var footer: some View {
-        HStack(spacing: 12) {
-            // 「+」只保留音色与语速，且直接在本面板内联展示（不再跳子界面）
-            Button { withAnimation(.easeOut(duration: 0.2)) { showVoicePanel.toggle() } } label: {
-                Image(systemName: showVoicePanel ? "xmark" : "plus")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(RTTheme.textSecondary)
-                    .frame(width: 38, height: 38)
-                    .background(RTTheme.surface, in: Circle())
-                    .overlay(Circle().stroke(RTTheme.hairline))
-            }
-            .accessibilityLabel("音色与语速")
-
-            if model.homeConnected == false {
-                Button { model.reconnectTutor() } label: {
-                    Text("连接中断，点击重连")
-                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .background(RTTheme.accent, in: Capsule())
-                }
-            } else if immersive {
-                // 沉浸式：麦克风就是「开/关」开关，开着就一直听、自动判停成句
-                Button { rpStream.togglePause() } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: rpStream.isPaused ? "mic.slash.fill" : "mic.fill")
-                        Text(rpStream.isPaused ? "麦克风已关闭 · 点击开启" : "聆听中 · 点击关闭麦克风")
-                    }
-                    .font(.system(size: 15 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(rpStream.isPaused ? RTTheme.textSecondary : .white)
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-                    .background(rpStream.isPaused ? AnyShapeStyle(RTTheme.surface) : AnyShapeStyle(RTTheme.accent),
-                                in: Capsule())
-                    .overlay(Capsule().stroke(rpStream.isPaused ? RTTheme.hairline : Color.clear))
-                }
-            } else {
-                // 手动触发：按下说、再点发送
+        HStack(spacing: 10) {
+            if keyboardMode {
+                TextField("输入这一句的英文…", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 16 * model.fontScale))
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                    .overlay(RoundedRectangle(cornerRadius: 22).stroke(RTTheme.hairline, lineWidth: 1))
+                    .focused($draftFocused)
                 Button {
-                    if rpStream.manualRecording { rpStream.endManualUtterance() }
-                    else { rpStream.beginManualUtterance() }
+                    let t = draft; draft = ""
+                    model.sendHomeText(t)
                 } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: rpStream.manualRecording ? "arrow.up.circle.fill" : "mic.fill")
-                        Text(rpStream.manualRecording ? "点击发送" : "点击说话")
-                    }
-                    .font(.system(size: 15 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(rpStream.manualRecording ? .white : RTTheme.textPrimary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-                    .background(rpStream.manualRecording ? AnyShapeStyle(RTTheme.accent) : AnyShapeStyle(RTTheme.surface),
-                                in: Capsule())
-                    .overlay(Capsule().stroke(rpStream.manualRecording ? Color.clear : RTTheme.hairline))
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 17)).foregroundStyle(.white)
+                        .frame(width: 44, height: 44).background(RTTheme.accent, in: Circle())
                 }
+                .buttonStyle(.plain)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button { keyboardMode = false; draftFocused = false } label: {
+                    Image(systemName: "mic")
+                        .font(.system(size: 18)).foregroundStyle(RTTheme.textSecondary)
+                        .frame(width: 40, height: 44)
+                }
+                .buttonStyle(.plain)
+            } else if rpStream.manualRecording {
+                // 说话中：左 ✕ 取消 / 中间波形 / 右侧 ✓ 发送
+                Button { model.cancelHomeTalk() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 18, weight: .semibold)).foregroundStyle(RTTheme.textSecondary)
+                        .frame(width: 48, height: 48).background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain).accessibilityLabel("取消这句话")
+
+                TalkWaveBar(level: rpStream.audioLevel)
+                    .frame(maxWidth: .infinity).frame(height: 50)
+                    .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 25))
+                    .overlay(RoundedRectangle(cornerRadius: 25).stroke(RTTheme.hairline, lineWidth: 1.5))
+
+                Button { model.toggleHomeTalk() } label: {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 19, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 48, height: 48).background(RTTheme.accent, in: Circle())
+                }
+                .buttonStyle(.plain).accessibilityLabel("发送这句话")
+            } else {
+                // 左：「+」音色与语速（内联展开）
+                Button { withAnimation(.easeOut(duration: 0.2)) { showVoicePanel.toggle() } } label: {
+                    Image(systemName: showVoicePanel ? "xmark" : "plus")
+                        .font(.system(size: 19, weight: .semibold)).foregroundStyle(RTTheme.textPrimary)
+                        .frame(width: 48, height: 48).background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain).accessibilityLabel("音色与语速")
+
+                centerButton
+
+                // 右：键盘输入（沉浸式也保留，方便打字补一句）
+                Button { keyboardMode = true; draftFocused = true } label: {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 18)).foregroundStyle(RTTheme.textPrimary)
+                        .frame(width: 48, height: 48).background(RTTheme.surface, in: Circle())
+                        .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain).accessibilityLabel("键盘输入")
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 14).padding(.top, 4).padding(.bottom, 10)
         .background(RTTheme.background)
+    }
+
+    /// 中间主按钮：断线=重连；沉浸式=麦克风开关；手动触发=点击说话。
+    @ViewBuilder
+    private var centerButton: some View {
+        if rpStream.isConnected == false {
+            // 注意：这里必须看 roleplay 流的连接状态（不是自由聊天的 homeConnected），
+            // 否则一进来就误报断线，点重连还会连到自由聊天把旧聊天记录拉进来。
+            Button { model.toggleHomeTalk() } label: {   // 内部会 afterTokenRefresh + reconnectStrictStream
+                HStack(spacing: 8) {
+                    ProgressView().tint(RTTheme.textSecondary)
+                    Text("连接中…点击重试").foregroundStyle(RTTheme.textSecondary)
+                }
+                .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: 50)
+                .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 25))
+                .overlay(RoundedRectangle(cornerRadius: 25).stroke(RTTheme.hairline, lineWidth: 1.5))
+            }
+            .buttonStyle(.plain)
+        } else if immersive {
+            Button { rpStream.togglePause() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: rpStream.isPaused ? "mic.slash.fill" : "mic.fill")
+                        .foregroundStyle(rpStream.isPaused ? RTTheme.textSecondary : .white)
+                    Text(rpStream.isPaused ? "麦克风已关 · 点击开启" : "聆听中 · 点击关闭")
+                        .foregroundStyle(rpStream.isPaused ? RTTheme.textPrimary : .white)
+                }
+                .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: 50)
+                .background(rpStream.isPaused ? AnyShapeStyle(RTTheme.surface) : AnyShapeStyle(RTTheme.accent),
+                            in: RoundedRectangle(cornerRadius: 25))
+                .overlay(RoundedRectangle(cornerRadius: 25)
+                    .stroke(rpStream.isPaused ? RTTheme.hairline : .clear, lineWidth: 1.5))
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button { model.toggleHomeTalk() } label: {
+                HStack(spacing: 10) {
+                    if model.homeWorking {
+                        ProgressView().tint(RTTheme.textSecondary)
+                        Text("请稍候…").foregroundStyle(RTTheme.textSecondary)
+                    } else {
+                        Image(systemName: "mic.fill").foregroundStyle(RTTheme.accent)
+                        Text("点击说话").foregroundStyle(RTTheme.textPrimary)
+                    }
+                }
+                .font(.system(size: 16 * model.fontScale, weight: .semibold))
+                .frame(maxWidth: .infinity).frame(height: 50)
+                .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 25))
+                .overlay(RoundedRectangle(cornerRadius: 25).stroke(RTTheme.hairline, lineWidth: 1.5))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.homeWorking)
+        }
     }
 }
 
@@ -430,20 +506,25 @@ struct InlineVoiceSpeedPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("音色").font(.system(size: 13 * model.fontScale, weight: .semibold))
                     .foregroundStyle(RTTheme.textPrimary)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(model.ttsVoices, id: \.self) { v in
-                            let selected = model.ttsCurrentVoice == v
-                            Button { model.changeTutorVoice(v) } label: {
-                                Text("\(v) · \(VoiceInfo.langBadge(v))")
-                                    .font(.system(size: 12 * model.fontScale, weight: .medium))
-                                    .foregroundStyle(selected ? .white : RTTheme.textPrimary)
-                                    .padding(.horizontal, 12).padding(.vertical, 7)
-                                    .background(selected ? AnyShapeStyle(RTTheme.accent) : AnyShapeStyle(RTTheme.surface),
-                                                in: Capsule())
-                                    .overlay(Capsule().stroke(selected ? Color.clear : RTTheme.hairline))
+                // 换行平铺：所有音色一眼看全，不用左右滑
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(model.ttsVoices, id: \.self) { v in
+                        let selected = model.ttsCurrentVoice == v
+                        Button { model.changeTutorVoice(v) } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: VoiceInfo.isFemale(v) ? "person.fill" : "person")
+                                    .font(.system(size: 11))
+                                Text(v).lineLimit(1)
                             }
+                            .font(.system(size: 12 * model.fontScale, weight: .medium))
+                            .foregroundStyle(selected ? .white : RTTheme.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(selected ? AnyShapeStyle(RTTheme.accent) : AnyShapeStyle(RTTheme.background),
+                                        in: Capsule())
+                            .overlay(Capsule().stroke(selected ? Color.clear : RTTheme.hairline))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
