@@ -52,9 +52,12 @@ private struct ModeChoice: Identifiable {
     let summary: ScenarioSummary
 }
 
-/// 场景选择二级页（原主界面列表下沉）：今天/全部/通用场景 → 点卡片 →
-/// 「严格按剧本 / 自由发挥」→ 严格再选角色（含续练判断）→ 回常规主界面进入场景对话。
+/// 主界面（场景选择）：今天/全部/通用场景 → 点卡片 → 「手动触发 / 沉浸式」（两者都严格按剧本）
+/// → 选角色（含续练判断）→ 全屏进入场景练习。右上角「A中」进入实时翻译。
+/// asHome=true 时作为 App 根界面（顶栏显示账户与 A中，不显示关闭按钮）。
 struct ScenarioPickerView: View {
+    var asHome = false
+
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var auth: AuthStore
     @Environment(\.dismiss) private var dismiss
@@ -63,6 +66,9 @@ struct ScenarioPickerView: View {
     @State private var roleDialogScenario: ScenarioSummary?
     /// 选完角色后、若该场景有未完成进度，弹「继续 / 重新开始」二选一。
     @State private var resumeChoice: ResumeChoice?
+    /// 选角色前记住本次选的是「沉浸式」还是「手动触发」。
+    @State private var pendingImmersive = false
+    @State private var showingAccount = false
     @State private var scenarioScope = "today"
     @State private var expandedPresetGroupID: String?
     @State private var expandedDate: Date?
@@ -82,7 +88,12 @@ struct ScenarioPickerView: View {
             .task {
                 await model.loadScenarioList()
                 await model.loadPracticeHistory()
+                if asHome {
+                    // 登录后补传：上次翻译没来得及上送的内容，这次继续送后台生成场景
+                    await model.flushPendingTranslations()
+                }
             }
+            .modifier(ScenarioHomeCovers(asHome: asHome, showingAccount: $showingAccount))
             // 选场景 → 第一问：严格按剧本 / 围绕场景自由发挥（两种都全程纠错指导）
             .confirmationDialog(
                 modeChoice.map { "「\($0.summary.title)」怎么练？" } ?? "选择方式",
@@ -93,14 +104,16 @@ struct ScenarioPickerView: View {
                 titleVisibility: .visible
             ) {
                 if let choice = modeChoice {
-                    Button("严格按剧本对话（逐句提示与纠正）") {
+                    // 两种都严格按剧本，区别只在说话方式
+                    Button("手动触发（点击说话，逐句练）") {
                         modeChoice = nil
+                        pendingImmersive = false
                         roleDialogScenario = choice.summary
                     }
-                    Button("围绕场景自由发挥（不按死流程）") {
+                    Button("沉浸式（麦克风常开，连着说）") {
                         modeChoice = nil
-                        model.startFreeScene(choice.summary)
-                        dismiss()
+                        pendingImmersive = true
+                        roleDialogScenario = choice.summary
                     }
                     Button("取消", role: .cancel) { modeChoice = nil }
                 }
@@ -121,8 +134,9 @@ struct ScenarioPickerView: View {
                                 // 有未完成进度：先问继续还是重新开始
                                 resumeChoice = ResumeChoice(summary: summary, roleId: role.id)
                             } else {
-                                Task { await model.startStrictScene(summary, roleId: role.id) }
-                                dismiss()
+                                let immersive = pendingImmersive
+                                Task { await model.startStrictScene(summary, roleId: role.id, immersive: immersive) }
+                                if asHome == false { dismiss() }
                             }
                         }
                     }
@@ -140,13 +154,15 @@ struct ScenarioPickerView: View {
                 if let choice = resumeChoice {
                     Button("继续上次进度") {
                         resumeChoice = nil
-                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: true) }
-                        dismiss()
+                        let immersive = pendingImmersive
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: true, immersive: immersive) }
+                        if asHome == false { dismiss() }
                     }
                     Button("从头重新开始") {
                         resumeChoice = nil
-                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: false) }
-                        dismiss()
+                        let immersive = pendingImmersive
+                        Task { await model.startStrictScene(choice.summary, roleId: choice.roleId, resume: false, immersive: immersive) }
+                        if asHome == false { dismiss() }
                     }
                     Button("取消", role: .cancel) { resumeChoice = nil }
                 }
@@ -178,17 +194,38 @@ struct ScenarioPickerView: View {
                 Text("选择场景")
                     .font(.headline)
                     .foregroundStyle(RTTheme.textPrimary)
-                Text("选一个场景，严格按剧本或自由发挥地练")
+                Text("选一个场景，按真实对话逐句练")
                     .font(.system(size: 11 * model.fontScale))
                     .foregroundStyle(RTTheme.textSecondary)
             }
             Spacer()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(RTTheme.textSecondary)
-                    .padding(9)
-                    .background(RTTheme.hairline, in: Circle())
+            if asHome {
+                // 右上角「A中」：进入实时翻译（翻译过程的真实对话会自动生成英文场景回到这个列表）
+                Button { model.enterTranslate() } label: {
+                    HStack(spacing: 3) {
+                        Text("A").font(.system(size: 15 * model.fontScale, weight: .bold))
+                        Image(systemName: "arrow.left.arrow.right").font(.system(size: 11, weight: .semibold))
+                        Text("中").font(.system(size: 15 * model.fontScale, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(RTTheme.accent, in: Capsule())
+                }
+                .accessibilityLabel("实时翻译")
+                Button { showingAccount = true } label: {
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(RTTheme.textSecondary)
+                }
+                .accessibilityLabel("我的")
+            } else {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(RTTheme.textSecondary)
+                        .padding(9)
+                        .background(RTTheme.hairline, in: Circle())
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -538,10 +575,38 @@ struct ScenarioPickerView: View {
             } label: { Label("删除场景", systemImage: "trash") }
         }
     }
+}
 
+/// 主界面（asHome）挂的全屏页：实时翻译 / 场景练习 / 账户。抽成 modifier 保持列表视图本身简洁。
+private struct ScenarioHomeCovers: ViewModifier {
+    let asHome: Bool
+    @Binding var showingAccount: Bool
+    @EnvironmentObject private var model: AppModel
 
-
-
+    func body(content: Content) -> some View {
+        if asHome {
+            content
+                .fullScreenCover(isPresented: $model.showTranslate) {
+                    TranslateCallView(stream: model.freeStream)
+                }
+                .fullScreenCover(isPresented: $model.showScenePractice) {
+                    ScenePracticeView(rpStream: model.stream)
+                }
+                .sheet(isPresented: $showingAccount) {
+                    AccountPanelView().presentationDetents([.large])
+                }
+                .alert(item: $model.failureAlert) { alert in
+                    Alert(title: Text(alert.title), message: Text(alert.message),
+                          dismissButton: .default(Text("我知道了")))
+                }
+                .alert(item: $model.infoAlert) { alert in
+                    Alert(title: Text(alert.title), message: Text(alert.message),
+                          dismissButton: .default(Text("好的")))
+                }
+        } else {
+            content
+        }
+    }
 }
 
 /// 「对话前询问」：指导/对话方式设为每次询问时，开练前选择本次方式（可勾选以后不再询问）。

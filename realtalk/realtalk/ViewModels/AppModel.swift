@@ -261,6 +261,7 @@ final class AppModel: ObservableObject {
             // 实时翻译：原文先上屏成一条 translate（译文稍后由 onAIText 补上），不走普通用户气泡。
             if self.tutorMode == "translate" {
                 self.homeItems.append(HomeChatItem(kind: .translate, text: t, translation: "", translating: true))
+                self.recordTranslateLine(t)   // 同时记入素材：退出翻译后生成英文场景
                 return
             }
             // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡。
@@ -440,11 +441,88 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 从主界面「+」进入实时翻译：清场景 + 翻译模式 + 打开私教式全屏界面。
+    // ==== 实时翻译（主界面右上角「A中」进入，全屏）====
+    // 翻译过程的真实对话内容 = 场景素材：退出翻译时上送后台智能生成英文场景
+    // （不再有单独的「录音上送生成场景」入口）。上送失败/用户直接杀 App → 本地留存，下次登录补传。
+
+    @Published var showTranslate = false
+    /// 本次翻译会话累积的原文（用户与对方说的每一句，中英混说都留原文，由后台还原成英文场景）。
+    private var translateTranscript: [TranscriptSegment] = []
+
+    /// 从主界面「A中」进入实时翻译：清场景、清字幕、开始新的一次翻译素材累积。
     func enterTranslate() {
-        homeSceneId = nil; homeSceneName = nil
+        homeSceneId = nil; homeSceneName = nil; homeSceneStrict = false
         tutorMode = "translate"
-        showTutor = true
+        homeItems = []
+        translateTranscript = []
+        showTranslate = true
+    }
+
+    /// 翻译过程中每识别出一句原文就记入素材（退出时整批上送生成场景）。
+    func recordTranslateLine(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.isEmpty == false else { return }
+        translateTranscript.append(TranscriptSegment(text: t, source: "translate"))
+    }
+
+    /// 退出实时翻译：断流 → 本次内容入待上送队列 → 立即尝试上送后台生成英文场景。
+    func exitTranslate() {
+        showTranslate = false
+        freeStream.stop()
+        tutorMode = "chat"
+        let session = translateTranscript
+        translateTranscript = []
+        homeItems = []
+        guard session.count >= 2 else { return }   // 太短不值得生成场景
+        enqueuePendingTranslation(session)
+        Task { await flushPendingTranslations() }
+    }
+
+    // ---- 待上送翻译素材（本地持久化，支持下次登录补传）----
+
+    private var pendingTranslationKey: String { "pendingTranslationSessions" }
+
+    private func loadPendingTranslations() -> [[TranscriptSegment]] {
+        guard let data = defaults.data(forKey: pendingTranslationKey),
+              let sessions = try? JSONDecoder().decode([[TranscriptSegment]].self, from: data) else { return [] }
+        return sessions
+    }
+
+    private func savePendingTranslations(_ sessions: [[TranscriptSegment]]) {
+        if sessions.isEmpty {
+            defaults.removeObject(forKey: pendingTranslationKey)
+        } else if let data = try? JSONEncoder().encode(sessions) {
+            defaults.set(data, forKey: pendingTranslationKey)
+        }
+    }
+
+    private func enqueuePendingTranslation(_ session: [TranscriptSegment]) {
+        var all = loadPendingTranslations()
+        all.append(session)
+        if all.count > 20 { all.removeFirst(all.count - 20) }   // 防无限堆积
+        savePendingTranslations(all)
+    }
+
+    /// 上送所有待生成场景的翻译素材（登录后 & 每次退出翻译时各调一次）。
+    /// 单次内容过长由 APIClient 分块上送（init/chunk/complete），后台聚合后按话题智能切分成一个或多个场景。
+    func flushPendingTranslations() async {
+        guard let token = auth.token else { return }
+        var remaining = loadPendingTranslations()
+        guard remaining.isEmpty == false else { return }
+        var stillPending: [[TranscriptSegment]] = []
+        for session in remaining {
+            do {
+                _ = try await api.uploadCaptureSegments(session, token: token)
+            } catch {
+                stillPending.append(session)   // 失败留着，下次登录/下次退出翻译再补传
+            }
+        }
+        remaining = stillPending
+        savePendingTranslations(remaining)
+        if remaining.isEmpty {
+            // 生成是后台异步的，稍后刷新一次场景列表让新场景出现在主界面
+            Task { try? await Task.sleep(nanoseconds: 3_000_000_000); await loadScenarioList() }
+        }
     }
 
     /// 私教右上角「A中」实时翻译开关：在 私教对话 / 实时翻译 之间切换（清场景、翻译走点按 turn-based）。
@@ -557,8 +635,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。
-    func startStrictScene(_ summary: ScenarioSummary, roleId: String, resume: Bool = false) async {
+    // ==== 场景练习（主界面选场景 → 手动触发 / 沉浸式，两者都严格按剧本）====
+    /// 本次练习是否沉浸式（麦克风开关式连续听说）；false = 手动触发（点击说话）。
+    @Published var scenePracticeImmersive = false
+    /// 场景练习全屏页开关（手动触发与沉浸式共用一个入口，内部按形态渲染）。
+    @Published var showScenePractice = false
+
+    /// 严格按剧本的场景练习：建 roleplay 会话 + WS 流；状态映射进聊天流（打码/中文提示/指导卡/四维评分）。
+    /// immersive=true → 麦克风开关式（本地 VAD 自动判停成句）；false → 点击说话手动提交。
+    func startStrictScene(_ summary: ScenarioSummary, roleId: String,
+                          resume: Bool = false, immersive: Bool = false) async {
         stopHomeChat()                      // 与自由聊天互斥（共用麦克风）
         homeItems = []
         homeSceneName = summary.title
@@ -566,8 +652,22 @@ final class AppModel: ObservableObject {
         homeStatus = "连接中…"
         conversationMode = .immersive       // 复用后端语音流（WS：流式+打断）
         guidanceMode = .realtime
+        scenePracticeImmersive = immersive
         await beginPractice(summary, roleId: roleId, resume: resume)
-        stream.manualCommit = true          // 常规界面 = 点击说话手动提交
+        // 沉浸式 = 不手动提交（麦克风开着就持续听、自动判停成句）；手动触发 = 点击说话
+        stream.manualCommit = immersive == false
+        showScenePractice = true
+    }
+
+    /// 退出场景练习：断开 roleplay 流，回到主界面（场景选择）。
+    func exitScenePractice() {
+        showScenePractice = false
+        stream.stop()
+        roleplay = nil
+        homeSceneStrict = false
+        homeSceneName = nil
+        homeSceneId = nil
+        homeItems = []
     }
 
     // ---- 训练系统：今日训练路径 + 底部气泡 ----

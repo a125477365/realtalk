@@ -12,7 +12,8 @@ struct ContentView: View {
                 // 安全：本地有 token 也不直接进主界面，先向服务端校验会话有效性
                 SessionCheckingView()
             case .signedIn:
-                ChatHomeView(freeStream: model.freeStream, rpStream: model.stream)
+                // 主界面 = 场景选择（右上角「A中」进实时翻译；选场景 → 手动触发/沉浸式练习）
+                ScenarioPickerView(asHome: true)
             case .signedOut:
                 LoginView()
             }
