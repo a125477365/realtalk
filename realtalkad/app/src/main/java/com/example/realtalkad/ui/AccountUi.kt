@@ -112,6 +112,25 @@ fun AccountSheet(model: AppViewModel) {
                 }
             }
         }
+        // 设置入口（外观/字体/音色语速/存储）
+        item {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(14.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
+                    .clickable { showSettings = true }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("设置", fontWeight = FontWeight.SemiBold, fontSize = (15 * fontScale).sp,
+                        color = RT.TextPrimary)
+                    Text("外观、字体、音色与语速、存储", fontSize = (11 * fontScale).sp,
+                        color = RT.TextSecondary)
+                }
+                Text("›", color = RT.TextSecondary, fontSize = 18.sp)
+            }
+        }
 
         item {
             Column(

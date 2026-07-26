@@ -20,6 +20,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,7 +64,12 @@ fun PulsingMic(level: Float, paused: Boolean, ringColor: Color = RT.Accent, onCl
                 .clickable { onClick() },
             contentAlignment = Alignment.Center,
         ) {
-            Text(if (paused) "🔇" else "🎤", fontSize = 30.sp)
+            Icon(
+                if (paused) Icons.Filled.MicOff else Icons.Filled.Mic,
+                contentDescription = if (paused) "麦克风已关闭" else "麦克风",
+                tint = Color.White,
+                modifier = Modifier.size(32.dp),
+            )
         }
     }
 }
@@ -73,7 +83,8 @@ fun DarkPlusButton(onClick: () -> Unit) {
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Text("＋", color = Color.White.copy(alpha = 0.9f), fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        Icon(Icons.Filled.Add, contentDescription = "音色与语速",
+            tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(24.dp))
     }
 }
 
@@ -86,6 +97,27 @@ fun VoiceSpeedSheet(model: AppViewModel, onDismiss: () -> Unit) {
     LaunchedEffect(Unit) { model.loadTtsVoices() }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            val speed by model.playbackSpeed.collectAsState()
+            Text("语速", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("正常" to 1.0f, "慢 0.5×" to 0.5f, "快 1.5×" to 1.5f, "快 2×" to 2.0f)
+                    .forEach { (label, v) ->
+                        val sel = kotlin.math.abs(speed - v) < 0.01f
+                        Box(
+                            Modifier.weight(1f).clip(RoundedCornerShape(50))
+                                .background(if (sel) RT.Accent else RT.Background)
+                                .border(1.dp, if (sel) Color.Transparent else RT.Hairline, RoundedCornerShape(50))
+                                .clickable { model.setPlaybackSpeed(v) }
+                                .padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, color = if (sel) Color.White else RT.TextPrimary,
+                                fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        }
+                    }
+            }
+            Spacer(Modifier.height(16.dp))
             Text("音色", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
             Spacer(Modifier.height(8.dp))
             // 换行平铺：所有音色一眼看全，不用左右滑

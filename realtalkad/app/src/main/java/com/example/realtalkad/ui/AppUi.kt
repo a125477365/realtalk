@@ -288,7 +288,11 @@ fun RealTalkApp(model: AppViewModel) {
         // 账户面板（主界面头像点开）
         val account by model.showAccount.collectAsState()
         if (account) {
-            ModalBottomSheet(onDismissRequest = { model.showAccount.value = false }) { AccountSheet(model) }
+            ModalBottomSheet(
+                onDismissRequest = { model.showAccount.value = false },
+                sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                modifier = Modifier.fillMaxSize(),
+            ) { AccountSheet(model) }
         }
     }
     // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
