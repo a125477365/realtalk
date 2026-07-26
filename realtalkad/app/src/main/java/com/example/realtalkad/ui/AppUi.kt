@@ -277,14 +277,19 @@ fun RealTalkApp(model: AppViewModel) {
     if (user == null) {
         LoginScreen(model)
     } else {
-        ScenarioPickerOverlay(model, asHome = true)
-        // 场景练习全屏：沉浸式=深色语音界面；手动触发=浅色聊天流(ChatHomeScreen)
+        // 必须用 Box 层叠：此前这些界面直接并列写在 else 里，会被按 Column 纵向堆叠——
+        // 主界面和练习界面同时占屏，点击落到下面那层（表现为「点波形跳沉浸式、点发送跳旧字幕」）。
         val practicing by model.showScenePractice.collectAsState()
         val immersive by model.scenePracticeImmersive.collectAsState()
-        if (practicing) { if (immersive) ImmersivePracticeScreen(model) else ChatHomeScreen(model) }
-        // 实时翻译全屏
         val translating by model.showTranslate.collectAsState()
-        if (translating) TranslateScreen(model)
+        Box(Modifier.fillMaxSize()) {
+            when {
+                translating -> TranslateScreen(model)
+                practicing && immersive -> ImmersivePracticeScreen(model)
+                practicing -> ChatHomeScreen(model)
+                else -> ScenarioPickerOverlay(model, asHome = true)
+            }
+        }
         // 账户面板（主界面头像点开）
         val account by model.showAccount.collectAsState()
         if (account) {

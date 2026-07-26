@@ -217,28 +217,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                 }
             }
 
-            // 场景条（名字 + 严格/自由 + 退出）
-            sceneName?.let { name ->
-                Row(
-                    Modifier.fillMaxWidth().background(RT.Surface).padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Filled.Movie, contentDescription = null, tint = RT.TextPrimary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(name, fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (sceneStrict) "严格按剧本" else "自由发挥",
-                        color = Color.White, fontSize = (11 * fontScale).sp,
-                        modifier = Modifier
-                            .background(if (sceneStrict) Color(0xFFF59F00) else RT.Success, RoundedCornerShape(50))
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text("✕", color = RT.TextSecondary, fontSize = 15.sp,
-                        modifier = Modifier.clickable { model.exitHomeScene() }.padding(8.dp))
-                }
-            }
+
 
             // 「+」内联展开的音色/语速面板（与 iOS 页内展开一致，不弹底部面板）
             if (showAttach) InlineVoiceSpeedPanel(model)
@@ -276,8 +255,8 @@ fun ChatHomeScreen(model: AppViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    // 左：+（附加功能上拉面板）；采集中变成红色停止按钮，一眼可见正在采集
-                    Box(
+                    // 左：+（音色/语速内联面板）。录音中隐藏，只留 ✕|波形|✓ 三段（与 iOS 一致）
+                    if (!manualRecording) Box(
                         Modifier.size(48.dp)
                             .background(if (isRecording) Color.Red else RT.Surface, CircleShape)
                             .border(1.dp, if (isRecording) Color.Transparent else RT.Hairline, CircleShape)
