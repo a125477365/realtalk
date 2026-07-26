@@ -46,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import android.widget.Toast
@@ -85,6 +86,13 @@ private fun sceneLocalDate(iso: String): String = try {
 }
 
 /// 不同会员可见历史窗口说明。
+/** 顶栏问候语（对齐 iOS）。 */
+private fun greetingText(name: String?): String {
+    val h = java.time.LocalTime.now().hour
+    val period = when { h < 6 -> "夜深了"; h < 12 -> "早上好"; h < 18 -> "下午好"; else -> "晚上好" }
+    return if (name.isNullOrBlank()) period else "$period，$name"
+}
+
 private fun historyWindowHint(tier: String?): String = when (tier) {
     "premium" -> "高级会员可查看近 1 个月的历史场景"
     "basic" -> "基础会员可查看近 2 周的历史场景；升级高级会员可看近 1 个月"
@@ -263,7 +271,16 @@ private fun PresetCatalogList(
 @Composable
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
-    if (user == null) LoginScreen(model) else ChatHomeScreen(model)
+    // 主界面 = 场景选择（对齐 iOS）：右上角不再是关闭，而是头像/刷新；底部「实时翻译」大按钮。
+    // 原聊天首页 ChatHomeScreen 仍作为「场景练习」承载页，由 showScenePractice 全屏打开。
+    if (user == null) {
+        LoginScreen(model)
+    } else {
+        ScenarioPickerOverlay(model, asHome = true)
+        // 场景练习全屏（手动触发 / 沉浸式共用；内部按 scenePracticeImmersive 渲染）
+        val practicing by model.showScenePractice.collectAsState()
+        if (practicing) ChatHomeScreen(model)
+    }
     // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
     FailureAlertDialog(model)
 }
@@ -319,7 +336,7 @@ fun LoginScreen(model: AppViewModel) {
  * 「严格按剧本 / 自由发挥」→ 严格再选角色（含续练判断）→ 回常规主界面进入场景对话。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScenarioPickerOverlay(model: AppViewModel) {
+fun ScenarioPickerOverlay(model: AppViewModel, asHome: Boolean = false) {
     val scenarios by model.todayScenarios.collectAsState()
     val isWorking by model.isWorking.collectAsState()
     val user by model.user.collectAsState()
@@ -329,7 +346,8 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
     // 等待后台处理时禁用其它操作按钮，避免误触发新请求
     val busy = isWorking
 
-    var modeDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }   // 第一问：严格/自由
+    var modeDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }   // 第一问：手动触发/沉浸式
+    var pendingImmersive by remember { mutableStateOf(false) }                 // 选角色前记住是哪种形态
     var roleDialogFor by remember { mutableStateOf<ScenarioSummary?>(null) }
     var resumeChoiceFor by remember { mutableStateOf<Pair<ScenarioSummary, String>?>(null) }  // (场景,角色)：选完角色若有进度，弹「继续/重新开始」
     var scenarioScope by remember { mutableStateOf("today") }
@@ -355,12 +373,36 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 44.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("选择场景", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
-                Text("选一个场景，严格按剧本或自由发挥地练", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+            if (asHome) {
+                // 左侧头像 + 问候（点开进「我的」）
+                Box(
+                    Modifier.size(42.dp).clip(CircleShape).background(RT.Accent)
+                        .clickable { model.showAccount.value = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text((user?.displayName ?: "我").take(1), color = Color.White,
+                        fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(greetingText(user?.displayName), fontSize = (18 * fontScale).sp,
+                        fontWeight = FontWeight.Bold, color = RT.TextPrimary)
+                    Text("选个场景，按真实对话练英语", fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Text("⟳", color = RT.TextSecondary, fontSize = 18.sp,
+                    modifier = Modifier
+                        .clickable {
+                            if (scenarioScope == "preset") model.loadPresetCatalog() else model.loadScenarioList()
+                        }
+                        .padding(10.dp))
+            } else {
+                Column(Modifier.weight(1f)) {
+                    Text("选择场景", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary)
+                    Text("选一个场景，按真实对话逐句练", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Text("✕", color = RT.TextSecondary, fontSize = 16.sp,
+                    modifier = Modifier.clickable { close() }.padding(10.dp))
             }
-            Text("✕", color = RT.TextSecondary, fontSize = 16.sp,
-                modifier = Modifier.clickable { close() }.padding(10.dp))
         }
         Spacer(Modifier.height(2.dp))
 
@@ -470,9 +512,26 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
             }
         }
 
+        // 底部主行动：进入实时翻译（翻译过程的真实对话会自动生成英文场景回到这个列表）
+        if (asHome) {
+            Box(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)
+                    .clip(RoundedCornerShape(18.dp)).background(RT.Accent)
+                    .clickable { model.enterTranslate() }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("实时翻译", color = Color.White,
+                        fontSize = (17 * fontScale).sp, fontWeight = FontWeight.Bold)
+                    Text("说中文听英文 · 自动生成练习场景", color = Color.White.copy(alpha = 0.9f),
+                        fontSize = (11.5f * fontScale).sp)
+                }
+            }
+        }
     }
 
-    // 第一问：严格按剧本 / 围绕场景自由发挥（两种都全程纠错指导）
+    // 第一问：手动触发 / 沉浸式（两种都严格按剧本、全程纠错指导）
     modeDialogFor?.let { summary ->
         AlertDialog(
             onDismissRequest = { modeDialogFor = null },
@@ -480,14 +539,14 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
             text = {
                 Column {
                     OutlinedButton(
-                        onClick = { modeDialogFor = null; roleDialogFor = summary },
+                        onClick = { modeDialogFor = null; pendingImmersive = false; roleDialogFor = summary },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("严格按剧本对话（逐句提示与纠正）") }
+                    ) { Text("手动触发（点击说话，逐句练）") }
                     Spacer(Modifier.height(6.dp))
                     OutlinedButton(
-                        onClick = { modeDialogFor = null; model.startFreeScene(summary); close() },
+                        onClick = { modeDialogFor = null; pendingImmersive = true; roleDialogFor = summary },
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("围绕场景自由发挥（不按死流程）") }
+                    ) { Text("沉浸式（麦克风常开，连着说）") }
                 }
             },
             confirmButton = {},
@@ -511,7 +570,7 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
                                 if (summary.inProgress) {
                                     resumeChoiceFor = summary to role.id   // 有未完成进度：先问继续/重新开始
                                 } else {
-                                    model.startStrictScene(summary, role.id)
+                                    model.startStrictScene(summary, role.id, immersive = pendingImmersive)
                                     close()
                                 }
                             },
@@ -533,12 +592,12 @@ fun ScenarioPickerOverlay(model: AppViewModel) {
             text = {
                 Column {
                     OutlinedButton(
-                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = true); close() },
+                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = true, immersive = pendingImmersive); if (!asHome) close() },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("继续上次进度") }
                     Spacer(Modifier.height(6.dp))
                     OutlinedButton(
-                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = false); close() },
+                        onClick = { resumeChoiceFor = null; model.startStrictScene(summary, roleId, resume = false, immersive = pendingImmersive); if (!asHome) close() },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("从头重新开始") }
                 }

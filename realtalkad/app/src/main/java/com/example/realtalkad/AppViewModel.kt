@@ -108,6 +108,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val homeSceneName = MutableStateFlow<String?>(null)
     val homeSceneStrict = MutableStateFlow(false)
     val showTutor = MutableStateFlow(false)
+    // ==== 对齐 iOS 新架构：账户面板 / 实时翻译全屏 / 场景练习全屏 ====
+    val showAccount = MutableStateFlow(false)
+    val showTranslate = MutableStateFlow(false)
+    val showScenePractice = MutableStateFlow(false)
+    val scenePracticeImmersive = MutableStateFlow(false)
     val showScenePicker = MutableStateFlow(false)
     val tutorImmersive = MutableStateFlow(true)     // 私教：沉浸式(自动) / 常规式(点击说话)
     val tutorMode = MutableStateFlow("chat")        // 私教：chat / translate
@@ -262,6 +267,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。 */
+    /** 主界面底部「实时翻译」：清场景、清字幕，进入翻译全屏。 */
+    fun enterTranslate() {
+        homeSceneId = null
+        homeSceneName.value = null
+        homeSceneStrict.value = false
+        tutorMode.value = "translate"
+        homeItems.value = emptyList()
+        showTranslate.value = true
+    }
+
+    /** 退出场景练习：断开 roleplay 流，回主界面。 */
+    fun exitScenePractice() {
+        showScenePractice.value = false
+        stream.stop()
+        homeSceneStrict.value = false
+        homeSceneName.value = null
+        homeSceneId = null
+        homeItems.value = emptyList()
+    }
+
     fun startFreeScene(summary: ScenarioSummary) {
         freeStream.stop()
         stream.stop()
@@ -337,7 +362,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 常规界面·严格场景：建 roleplay 会话 + WS 流；状态映射进主界面聊天流（打码/中文提示/指导卡）。 */
-    fun startStrictScene(summary: ScenarioSummary, roleId: String, resume: Boolean = false) {
+    fun startStrictScene(summary: ScenarioSummary, roleId: String, resume: Boolean = false, immersive: Boolean = false) {
+        scenePracticeImmersive.value = immersive
         stopHomeChat()
         homeItems.value = emptyList()
         homeSceneName.value = summary.title
@@ -356,7 +382,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 handleRoleplayState(state, drivenByStream = true)
                 applyStrictState(state)
                 startImmersiveStream()
-                stream.manualCommit = true          // 常规界面 = 点击说话手动提交
+                // 沉浸式 = 不手动提交（麦克风开着就持续听、自动判停成句）；手动触发 = 点击说话
+                stream.manualCommit = !immersive
+                showScenePractice.value = true
                 homeStatus.value = ""
             }.onFailure {
                 presentFailure(it.message, title = "无法开始练习")
