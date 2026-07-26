@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -103,7 +104,10 @@ fun ChatHomeScreen(model: AppViewModel) {
     var guidanceFor by remember { mutableStateOf<AppViewModel.HomeChatItem?>(null) }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(Unit) { if (!connected && !showTutor) model.startHomeChat() }
+    // 场景练习由 startStrictScene 建 roleplay 流，这里绝不能再启自由聊天流——
+    // 否则自由聊天历史会把剧本字幕整个盖掉（表现为「进来还是上次的对话记录」）。
+    val practicing by model.showScenePractice.collectAsState()
+    LaunchedEffect(Unit) { if (!connected && !showTutor && !practicing) model.startHomeChat() }
     LaunchedEffect(items.size) { if (items.isNotEmpty()) listState.animateScrollToItem(items.size - 1) }
 
     Box(Modifier.fillMaxSize().background(RT.Background)) {
@@ -207,7 +211,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                         AppViewModel.HomeKind.AI -> AiCard(model, item, fontScale)
                         AppViewModel.HomeKind.USER -> UserBubble(model, item, fontScale) { guidanceFor = item }
                         AppViewModel.HomeKind.GUIDANCE -> GuidanceCard(item, fontScale)
-                        AppViewModel.HomeKind.HINT -> HintCard(item, fontScale)
+                        AppViewModel.HomeKind.HINT -> HintCard(model, item, fontScale)
                         AppViewModel.HomeKind.TRANSLATE -> TranslateRow(model, item, fontScale)
                     }
                 }
@@ -257,8 +261,14 @@ fun ChatHomeScreen(model: AppViewModel) {
                         Modifier.size(46.dp).background(RT.Accent, CircleShape)
                             .clickable { model.sendHomeText(draft); draft = "" },
                         contentAlignment = Alignment.Center,
-                    ) { Text("➤", color = Color.White, fontSize = 18.sp) }
-                    Text("🎙", fontSize = 20.sp, modifier = Modifier.clickable { keyboardMode = false }.padding(6.dp))
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送", tint = Color.White,
+                            modifier = Modifier.size(20.dp)) }
+                    // 返回语音输入：与 iOS 一致用麦克风图标（此前是 emoji 🎙）
+                    Box(
+                        Modifier.size(46.dp).clickable { keyboardMode = false },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Filled.Mic, contentDescription = "语音输入", tint = RT.TextSecondary,
+                            modifier = Modifier.size(22.dp)) }
                 }
             } else {
                 Row(
@@ -290,6 +300,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                                 .clickable { model.cancelHomeTalk() },
                             contentAlignment = Alignment.Center,
                         ) { Icon(Icons.Filled.Close, contentDescription = "取消这句话", tint = RT.TextSecondary) }
+                        // 中间只做波形展示，不可点击（此前误落到外层点击区，点了会跳沉浸式）
                         Box(
                             Modifier.weight(1f).height(50.dp)
                                 .background(RT.Surface, RoundedCornerShape(25.dp))
@@ -470,14 +481,22 @@ private fun GuidanceCard(item: AppViewModel.HomeChatItem, fontScale: Float) {
 
 /** 中文提示卡（严格场景：下一句该说什么）。 */
 @Composable
-private fun HintCard(item: AppViewModel.HomeChatItem, fontScale: Float) {
+private fun HintCard(model: AppViewModel, item: AppViewModel.HomeChatItem, fontScale: Float) {
     Column(
         Modifier.fillMaxWidth().background(Color(0x142997F5), RoundedCornerShape(14.dp)).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(item.text, fontSize = (14 * fontScale).sp, fontWeight = FontWeight.Medium, color = RT.Accent)
         if (item.translation.isNotBlank()) {
-            Text(item.translation, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
+            // 英文答案默认打码：先按中文自己组织，卡住了再点开看（与 iOS 一致）
+            if (item.masked) {
+                Text("🙈 英文答案已隐藏 · 点击显示", fontSize = (11 * fontScale).sp,
+                    color = RT.TextSecondary,
+                    modifier = Modifier.clickable { model.toggleItemMasked(item.id) })
+            } else {
+                Text(item.translation, fontSize = (13 * fontScale).sp, color = RT.TextPrimary,
+                    modifier = Modifier.clickable { model.toggleItemMasked(item.id) })
+            }
         }
     }
 }

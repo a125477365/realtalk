@@ -530,7 +530,7 @@ fun ScenarioPickerOverlay(model: AppViewModel, asHome: Boolean = false) {
         if (asHome) {
             Box(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(18.dp)).background(RT.Accent)
+                    .clip(RoundedCornerShape(18.dp)).background(RT.BrandBrush)
                     .clickable { model.enterTranslate() }
                     .padding(vertical = 14.dp),
                 contentAlignment = Alignment.Center,
