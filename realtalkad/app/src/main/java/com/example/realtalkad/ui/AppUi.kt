@@ -268,6 +268,7 @@ private fun PresetCatalogList(
     }
 }
 
+@kotlin.OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun RealTalkApp(model: AppViewModel) {
     val user by model.user.collectAsState()
@@ -277,9 +278,13 @@ fun RealTalkApp(model: AppViewModel) {
         LoginScreen(model)
     } else {
         ScenarioPickerOverlay(model, asHome = true)
-        // 场景练习全屏（手动触发 / 沉浸式共用；内部按 scenePracticeImmersive 渲染）
+        // 场景练习全屏：沉浸式=深色语音界面；手动触发=浅色聊天流(ChatHomeScreen)
         val practicing by model.showScenePractice.collectAsState()
-        if (practicing) ChatHomeScreen(model)
+        val immersive by model.scenePracticeImmersive.collectAsState()
+        if (practicing) { if (immersive) ImmersivePracticeScreen(model) else ChatHomeScreen(model) }
+        // 实时翻译全屏
+        val translating by model.showTranslate.collectAsState()
+        if (translating) TranslateScreen(model)
     }
     // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
     FailureAlertDialog(model)
