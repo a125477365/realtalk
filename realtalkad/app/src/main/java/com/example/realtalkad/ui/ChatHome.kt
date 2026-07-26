@@ -93,6 +93,7 @@ fun ChatHomeScreen(model: AppViewModel) {
     val showPicker by model.showScenePicker.collectAsState()
     val manualRecording by model.homeManualRecording.collectAsState()
     val userLevel by model.homeUserLevel.collectAsState()
+    val roleplay by model.roleplayState.collectAsState()
     val isRecording by model.isRecording.collectAsState()
     val user by model.user.collectAsState()
     val fontScale by model.fontScale.collectAsState()
@@ -146,14 +147,15 @@ fun ChatHomeScreen(model: AppViewModel) {
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                // 退出场景练习（私教通话入口已下线）
-                Box(
-                    Modifier.size(42.dp).background(RT.Surface, CircleShape)
-                        .clickable { model.exitScenePractice() },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Filled.Close, contentDescription = "退出练习",
-                        tint = RT.TextSecondary, modifier = Modifier.size(20.dp))
+                // 进度：已练句数/总句数（与 iOS 一致）。退出走左上角「‹」，不再另放关闭按钮。
+                roleplay?.let {
+                    Text(
+                        "${it.progress}/${it.total}",
+                        fontWeight = FontWeight.SemiBold, fontSize = (13 * fontScale).sp, color = RT.Accent,
+                        modifier = Modifier
+                            .background(RT.Accent.copy(alpha = 0.12f), RoundedCornerShape(50))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
                 }
             }
 
