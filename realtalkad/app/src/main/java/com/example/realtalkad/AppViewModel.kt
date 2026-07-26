@@ -500,6 +500,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun applyStrictState(state: RoleplayState) {
         // 每轮整体重建列表：把用户已手动揭示的 AI 台词记下来，重建后保持揭示状态
         val revealed = homeItems.value.filter { it.kind == HomeKind.AI && !it.masked }.map { it.text }.toSet()
+        val revealedHints = homeItems.value.filter { it.kind == HomeKind.HINT && !it.masked }.map { it.text }.toSet()
         val items = mutableListOf<HomeChatItem>()
         for (msg in state.messages) {
             items.add(HomeChatItem(
@@ -517,8 +518,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (!state.completed) {
             state.nextLine?.let { next ->
+                // 英文答案默认打码（先按中文自己组织，卡住了再点开看），与 iOS 一致
+                val hintText = "提示：接下来你说「${next.sourceText}」"
                 items.add(HomeChatItem(kind = HomeKind.HINT,
-                    text = "提示：接下来你说「${next.sourceText}」", translation = next.english))
+                    text = hintText, translation = next.english,
+                    masked = !revealedHints.contains(hintText)))
             }
         } else {
             items.add(HomeChatItem(kind = HomeKind.GUIDANCE, text = "🎉 场景对话完成！综合得分 ${(state.score * 100).toInt()}"))

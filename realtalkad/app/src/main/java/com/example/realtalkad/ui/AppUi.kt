@@ -285,6 +285,11 @@ fun RealTalkApp(model: AppViewModel) {
         // 实时翻译全屏
         val translating by model.showTranslate.collectAsState()
         if (translating) TranslateScreen(model)
+        // 账户面板（主界面头像点开）
+        val account by model.showAccount.collectAsState()
+        if (account) {
+            ModalBottomSheet(onDismissRequest = { model.showAccount.value = false }) { AccountSheet(model) }
+        }
     }
     // 全局失败提示框：放在根部，覆盖任意界面（主页/对练/语音/上传等）
     FailureAlertDialog(model)
@@ -457,7 +462,7 @@ fun ScenarioPickerOverlay(model: AppViewModel, asHome: Boolean = false) {
                 ) {
                     Text("今天还没有场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
                     Spacer(Modifier.height(2.dp))
-                    Text("点底部按钮采集今天的真实对话，停止后自动生成练习场景",
+                    Text("用下方「实时翻译」聊几句，结束后会自动生成今天的英语场景",
                         fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Spacer(Modifier.weight(1f))
