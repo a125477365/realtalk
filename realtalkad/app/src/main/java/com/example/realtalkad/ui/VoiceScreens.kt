@@ -45,8 +45,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.realtalkad.AppViewModel
 
-/** 深色语音界面底色（与 iOS 一致）。 */
-private val VoiceBg = Color(0xFF12141A)
+/** 语音界面底色：跟随外观主题（浅色/深色/系统），不再写死深色——
+ *  否则同一 App 里有的界面浅有的深，观感割裂。 */
+private val VoiceBg: Color
+    @Composable get() = RT.Background
+
+/** 语音界面上的「弱化前景」（图标底、胶囊底）：深浅主题各取合适的叠加色。 */
+private val VoiceChip: Color
+    @Composable get() = if (LocalRtDark.current) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.06f)
 
 /**
  * 会呼吸的圆形麦克风。关键：外层【固定 140dp】占位，脉冲只在内部涨落，
@@ -61,15 +67,15 @@ fun PulsingMic(level: Float, paused: Boolean, ringColor: Color = RT.Accent, onCl
                 .border(2.dp, ringColor.copy(alpha = 0.35f + 0.4f * level.coerceIn(0f, 1f)), CircleShape)
         )
         Box(
-            Modifier.size(84.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.10f))
-                .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+            Modifier.size(84.dp).clip(CircleShape).background(VoiceChip)
+                .border(1.dp, RT.Hairline, CircleShape)
                 .clickable { onClick() },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 if (paused) Icons.Filled.MicOff else Icons.Filled.Mic,
                 contentDescription = if (paused) "麦克风已关闭" else "麦克风",
-                tint = Color.White,
+                tint = RT.TextPrimary,
                 modifier = Modifier.size(32.dp),
             )
         }
@@ -81,7 +87,7 @@ fun PulsingMic(level: Float, paused: Boolean, ringColor: Color = RT.Accent, onCl
 fun DarkSpeakerToggle(model: AppViewModel) {
     val on by model.autoPlayAI.collectAsState()
     Box(
-        Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+        Modifier.size(40.dp).clip(CircleShape).background(VoiceChip)
             .clickable { model.toggleAutoPlayAI() },
         contentAlignment = Alignment.Center,
     ) {
@@ -98,13 +104,13 @@ fun DarkSpeakerToggle(model: AppViewModel) {
 @Composable
 fun DarkPlusButton(onClick: () -> Unit) {
     Box(
-        Modifier.size(48.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.10f))
-            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+        Modifier.size(48.dp).clip(CircleShape).background(VoiceChip)
+            .border(1.dp, RT.Hairline, CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center,
     ) {
         Icon(Icons.Filled.Add, contentDescription = "音色与语速",
-            tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(24.dp))
+            tint = RT.TextPrimary, modifier = Modifier.size(24.dp))
     }
 }
 
@@ -197,28 +203,28 @@ fun TranslateScreen(model: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
-                Modifier.clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.10f))
+                Modifier.clip(RoundedCornerShape(50)).background(VoiceChip)
                     .padding(horizontal = 12.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.size(7.dp).clip(CircleShape)
                     .background(if (connected) RT.Success else Color.Red))
                 Spacer(Modifier.width(5.dp))
-                Text("实时翻译", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                Text("实时翻译", color = RT.TextPrimary, fontSize = 13.sp)
             }
             Spacer(Modifier.weight(1f))
             DarkSpeakerToggle(model)
             Spacer(Modifier.width(8.dp))
             Box(
-                Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+                Modifier.size(40.dp).clip(CircleShape).background(VoiceChip)
                     .clickable { model.exitTranslate() },
                 contentAlignment = Alignment.Center,
-            ) { Text("✕", color = Color.White.copy(alpha = 0.9f), fontSize = 15.sp) }
+            ) { Text("✕", color = RT.TextPrimary, fontSize = 15.sp) }
         }
 
         Text(
             if (!connected) "连接中…" else status.ifBlank { "直接开口说话，中英自动互译" },
-            color = Color.White.copy(alpha = 0.7f), fontSize = (15 * fontScale).sp,
+            color = RT.TextSecondary, fontSize = (15 * fontScale).sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -247,7 +253,7 @@ fun TranslateScreen(model: AppViewModel) {
         }
         Text(
             "翻译内容会自动整理成英文场景，可回主界面练习",
-            color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp,
+            color = RT.TextSecondary, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
@@ -271,10 +277,10 @@ private fun DarkTranslateRow(model: AppViewModel, item: AppViewModel.HomeChatIte
         Modifier.fillMaxWidth(),
         horizontalAlignment = if (cn) Alignment.End else Alignment.Start,
     ) {
-        Text(item.text, color = Color.White, fontSize = (17 * fontScale).sp, fontWeight = FontWeight.Medium)
+        Text(item.text, color = RT.TextPrimary, fontSize = (17 * fontScale).sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(5.dp))
         if (item.translating || item.translation.isBlank()) {
-            Text("正在翻译…", color = Color.White.copy(alpha = 0.6f), fontSize = (13 * fontScale).sp)
+            Text("正在翻译…", color = RT.TextSecondary, fontSize = (13 * fontScale).sp)
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (!cn) {
@@ -321,23 +327,23 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+                Modifier.size(40.dp).clip(CircleShape).background(VoiceChip)
                     .clickable { model.exitScenePractice() },
                 contentAlignment = Alignment.Center,
-            ) { Text("‹", color = Color.White.copy(alpha = 0.9f), fontSize = 20.sp) }
+            ) { Text("‹", color = RT.TextPrimary, fontSize = 20.sp) }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(sceneName ?: "场景练习", color = Color.White,
+                Text(sceneName ?: "场景练习", color = RT.TextPrimary,
                     fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                Text("沉浸式 · 严格按剧本", color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
+                Text("沉浸式 · 严格按剧本", color = RT.TextSecondary, fontSize = 11.sp)
             }
             DarkSpeakerToggle(model)
             Spacer(Modifier.width(8.dp))
             rp?.let {
-                Text("${it.progress}/${it.total}", color = Color.White.copy(alpha = 0.9f),
+                Text("${it.progress}/${it.total}", color = RT.TextPrimary,
                     fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = 0.12f))
+                        .background(VoiceChip)
                         .padding(horizontal = 10.dp, vertical = 6.dp))
             }
         }
@@ -349,7 +355,7 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
                 status.isNotBlank() -> status
                 else -> "按提示开口说英语"
             },
-            color = Color.White.copy(alpha = 0.7f), fontSize = (15 * fontScale).sp,
+            color = RT.TextSecondary, fontSize = (15 * fontScale).sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -369,10 +375,10 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
                             Spacer(Modifier.height(4.dp))
                             if (item.masked) {
                                 Text("🙈 英文答案已隐藏 · 点击显示",
-                                    color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp,
+                                    color = RT.TextSecondary, fontSize = 11.sp,
                                     modifier = Modifier.clickable { model.toggleItemMasked(item.id) })
                             } else {
-                                Text(item.translation, color = Color.White.copy(alpha = 0.85f),
+                                Text(item.translation, color = RT.TextPrimary,
                                     fontSize = (14 * fontScale).sp,
                                     modifier = Modifier.clickable { model.toggleItemMasked(item.id) })
                             }
@@ -382,13 +388,13 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
                         .clickable { model.toggleItemMasked(item.id) }) {
                         if (item.masked) {
                             Text("🙈 先听 · 点击显示英文",
-                                color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
+                                color = RT.TextSecondary, fontSize = 11.sp)
                         } else {
-                            Text(item.text, color = Color.White, fontSize = (16 * fontScale).sp)
+                            Text(item.text, color = RT.TextPrimary, fontSize = (16 * fontScale).sp)
                         }
                     }
                     AppViewModel.HomeKind.USER -> Text(
-                        item.text, color = Color.White.copy(alpha = 0.75f),
+                        item.text, color = RT.TextSecondary,
                         fontSize = (15 * fontScale).sp,
                         modifier = Modifier.fillMaxWidth(),
                         textAlign = androidx.compose.ui.text.style.TextAlign.End,
@@ -417,7 +423,7 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
         }
         Text(
             "严格按真实对话练 · 说错会当场纠正",
-            color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp,
+            color = RT.TextSecondary, fontSize = 11.sp,
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )

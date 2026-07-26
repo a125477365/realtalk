@@ -466,7 +466,7 @@ fun ScenarioPickerOverlay(model: AppViewModel, asHome: Boolean = false) {
                     Modifier.fillMaxWidth().padding(16.dp, 8.dp)
                         .background(RT.Surface, RoundedCornerShape(14.dp))
                         .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
-                        .clickable(enabled = !busy) { model.toggleRecording() }
+                        .clickable(enabled = !busy) { model.enterTranslate() }
                         .padding(12.dp),
                 ) {
                     Text("今天还没有场景", fontWeight = FontWeight.SemiBold, fontSize = (14 * fontScale).sp, color = RT.TextPrimary)
