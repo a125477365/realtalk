@@ -410,6 +410,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 取消本句说话（说话条左侧 ✕）：丢弃录音，不发送。 */
     fun cancelHomeTalk() {
         if (homeSceneStrict.value) stream.cancelManualUtterance() else freeStream.cancelManualUtterance()
+        // 必须复位 UI 状态：此前只调了流客户端，界面一直停在录音态 → 看起来「取消键没反应」
+        homeManualRecording.value = false
+        setHomeWorking(false)
     }
 
     fun toggleHomeTalk() {

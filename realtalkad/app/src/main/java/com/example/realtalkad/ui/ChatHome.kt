@@ -117,29 +117,18 @@ fun ChatHomeScreen(model: AppViewModel) {
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 40.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val displayName = user?.displayName?.trim().takeUnless { it.isNullOrEmpty() } ?: "微信用户"
-                Row(
-                    Modifier.background(RT.Surface, RoundedCornerShape(50)).clickable { showAccount = true }
-                        .padding(start = 4.dp, end = 11.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val avatarUrl = user?.avatarUrl
-                    if (!avatarUrl.isNullOrBlank()) {
-                        // 微信授权登录带回的头像（headimgurl）
-                        coil.compose.AsyncImage(
-                            model = avatarUrl,
-                            contentDescription = "用户头像",
-                            modifier = Modifier.size(34.dp).clip(CircleShape),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        )
-                    } else {
-                        Box(Modifier.size(34.dp).background(RT.BrandBrush, CircleShape), contentAlignment = Alignment.Center) {
-                            Text(displayName.take(1), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Text(displayName, fontSize = (14 * fontScale).sp, fontWeight = FontWeight.SemiBold,
-                        color = RT.TextPrimary, maxLines = 1)
+                // 返回 + 场景名（与沉浸式一致，不显示用户头像）
+                Box(
+                    Modifier.size(40.dp).background(RT.Surface, CircleShape)
+                        .border(1.dp, RT.Hairline, CircleShape)
+                        .clickable { model.exitScenePractice() },
+                    contentAlignment = Alignment.Center,
+                ) { Text("‹", color = RT.TextPrimary, fontSize = 20.sp) }
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(sceneName ?: "场景练习", fontWeight = FontWeight.SemiBold,
+                        fontSize = (15 * fontScale).sp, color = RT.TextPrimary, maxLines = 1)
+                    Text("手动触发 · 严格按剧本", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Spacer(Modifier.weight(1f))
                 // AI 语音自动播放开关：开＝彩色喇叭，关＝灰色关闭喇叭（按下立即可见状态变化）
