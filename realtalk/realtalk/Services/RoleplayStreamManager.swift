@@ -39,7 +39,13 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     @Published private(set) var manualRecording = false
     var manualCommit = false
     /// 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。
-    var autoPlayAI = true
+    var autoPlayAI = true {
+        didSet {
+            // 告诉后端要不要合成语音：关掉时后端直接跳过 TTS，不白合成也不白传
+            guard oldValue != autoPlayAI else { return }
+            sendJSON(["type": "set_audio", "enabled": autoPlayAI])
+        }
+    }
     /// 播放语速（客户端倍速：语音服务器不支持 speed 参数）。0.5~2.0，1.0=正常。
     var playbackRate: Float = 1.0 {
         didSet { if let p = aiPlayer { p.enableRate = true; p.rate = playbackRate } }
@@ -549,6 +555,7 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
               let type = obj["type"] as? String else { return }
         switch type {
         case "state":
+            sendJSON(["type": "set_audio", "enabled": autoPlayAI])   // 连上先同步朗读开关
             // 首连/重连：标记已连、复位重试计数，按后端回的完整状态恢复字幕/进度，丢弃断线残留音频，干净重录
             isConnected = true
             if reconnectAttempts > 0 { onStatus?("已重连") }

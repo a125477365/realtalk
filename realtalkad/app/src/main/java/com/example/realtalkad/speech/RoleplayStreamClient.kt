@@ -59,6 +59,21 @@ class RoleplayStreamClient(private val context: Context) {
 
     /** 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。 */
     var autoPlayAI = true
+        set(value) {
+            val changed = field != value
+            field = value
+            // 告诉后端要不要合成语音：关掉时后端直接跳过 TTS，不白合成也不白传
+            if (changed) runCatching {
+                webSocket?.send(JSONObject(mapOf("type" to "set_audio", "enabled" to value)).toString())
+            }
+        }
+
+    /** 连上后同步一次朗读开关（后端建流时默认开）。 */
+    private fun syncAudioEnabled() {
+        runCatching {
+            webSocket?.send(JSONObject(mapOf("type" to "set_audio", "enabled" to autoPlayAI)).toString())
+        }
+    }
 
     /** WS 已连上且收到 state（对外可见：点说话按钮时若已掉线由上层整体重连）。 */
     val isConnected: Boolean get() = connected
@@ -449,6 +464,7 @@ class RoleplayStreamClient(private val context: Context) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
             "state" -> {
+                syncAudioEnabled()   // 连上先同步朗读开关，后端据此决定要不要合成
                 // 首连/重连：标记已连、复位重试，按后端完整状态恢复字幕/进度，丢弃断线残留音频，干净重录
                 connected = true
                 if (reconnectAttempts > 0) onStatus?.invoke("已重连")

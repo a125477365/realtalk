@@ -3042,6 +3042,7 @@ async def roleplay_stream(
     spoken_count = 0
     tts_task: asyncio.Task | None = None
 
+    rp_audio_enabled = True   # 客户端关掉朗读时置 False：跳过 TTS 合成
     async def _sj(obj: dict) -> None:
         async with send_lock:
             await websocket.send_json(obj)
@@ -3065,6 +3066,10 @@ async def roleplay_stream(
 
     async def _speak_new(messages, guidance: str | None = None) -> None:
         nonlocal spoken_count
+        if not rp_audio_enabled:
+            # 用户只看字幕：跳过全部 TTS（连合成都不做），但仍推进已朗读计数保持状态一致
+            spoken_count = len([m for m in messages if m.speaker == "ai"])
+            return
         # 实时指导：本句没通过时先把中文纠正念出来（动态内容不入缓存），再念（不会有的）新 AI 台词
         if guidance:
             await _send_tts(guidance, use_cache=False)
@@ -3147,6 +3152,9 @@ async def roleplay_stream(
             except (ValueError, TypeError):
                 continue
             mtype = data.get("type")
+            if mtype == "set_audio":          # 只看字幕：后端跳过 TTS，不浪费合成与流量
+                rp_audio_enabled = bool(data.get("enabled", True))
+                continue
             if mtype == "interrupt":          # 抢话：用户开始说话 → 立刻停 AI 朗读
                 _cancel_tts()
                 continue
@@ -3908,6 +3916,8 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
     # 否则「你好」这种常用短句以后再说会被误杀。
     recent_spoken: list[tuple[float, str]] = []
     ECHO_WINDOW_SECONDS = 20.0
+    # 客户端关掉「朗读」时置 False：后端直接跳过 TTS，不白合成也不白传
+    audio_enabled = True
 
     def _norm_echo(s: str) -> str:
         # 必须转简体：TTS 念的是简体译文，但 ASR 回来常是繁体（实测「怎么样」→「怎麼樣」），
@@ -3972,6 +3982,11 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             await _sj({"type": "ai_text", "text": translation, "translation": ""})
             if not translation:
                 continue
+            if not audio_enabled:
+                # 用户只看字幕：连合成都不做（此前是照常合成、客户端收到再丢，纯浪费）
+                recent_spoken.append((_time.monotonic(), translation))
+                del recent_spoken[:-4]
+                continue
             try:
                 audio, ct = await voice_io.synthesize(translation, voice, use_cache=False, user_id=user.id)
                 await _sj({"type": "ai_audio_begin", "content_type": ct})
@@ -4032,6 +4047,9 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             if data.get("type") in ("bye", "session.close"):
                 user_ended = True
                 break
+            if data.get("type") == "set_audio":
+                audio_enabled = bool(data.get("enabled", True))
+                continue
             if data.get("type") == "reset_audio":
                 try:
                     await upstream.send({"type": "input_audio_buffer.clear"})
