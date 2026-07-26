@@ -54,6 +54,14 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
     /// （私教/沉浸对话不开——那里需要靠上行音频实现"开口打断"。）
     var gateWhileAISpeaking = false
 
+    /// 当前是否用【内置扬声器】外放：只有外放才会把 AI 的声音送回麦克风。
+    /// 耳机/AirPods/车载等外接输出没有这个回路，可以边听边说边译（真全双工）。
+    static func isUsingBuiltInSpeaker() -> Bool {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        guard outputs.isEmpty == false else { return true }   // 取不到就按最保守处理
+        return outputs.contains { $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver }
+    }
+
     private var task: URLSessionWebSocketTask?
     private var guidanceMode = "realtime"
 
@@ -282,9 +290,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
                     p.updateMeters()
                     aiAudioLevel = max(0, min(1, (Double(p.averagePower(forChannel: 0)) + 50) / 50))
                 }
-                // 翻译模式：AI 正在朗读译文 → 本段音频必是扬声器回声，绝不上行，
+                // 翻译模式且【外放】时：这段音频必然混着扬声器放出的译文，不上行，
                 // 否则会把 AI 自己的译文当成新一句再翻译（自循环）。
-                if gateWhileAISpeaking { return }
+                // 戴耳机时没有回声风险 → 继续上行，保持「一边说一边听一边译」的全双工。
+                if gateWhileAISpeaking, Self.isUsingBuiltInSpeaker() { return }
             }
             sendFrame(data)
             return
@@ -480,9 +489,10 @@ final class RoleplayStreamManager: NSObject, ObservableObject {
             isAISpeaking = false
             aiAudioLevel = 0
             stopAiLevelTimer()
-            // 翻译模式：朗读刚结束，丢掉服务端在此期间可能缓存到的回声片段，
+            // 外放时：朗读刚结束，丢掉服务端在此期间可能缓存到的回声片段，
             // 避免 AI 说完后立刻蹦出一条「自己译文的再翻译」。
-            if wasSpeaking, gateWhileAISpeaking, active, isConnected {
+            // 戴耳机则不清——那期间用户可能真的在说话，不能把人家的话丢了。
+            if wasSpeaking, gateWhileAISpeaking, active, isConnected, Self.isUsingBuiltInSpeaker() {
                 sendJSON(["type": "reset_audio"])
             }
             // 关键：AI 刚说完 → 沉浸式立刻重开一段干净录音（否则 AI 外放混进转写）。

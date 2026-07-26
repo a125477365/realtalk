@@ -3991,7 +3991,8 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
             ev = await upstream.recv_event(timeout=600)
             t = ev.get("type")
             if t == "conversation.item.input_audio_transcription.completed":
-                text = (ev.get("transcript") or "").strip()
+                # 全程简体：ASR 识别中文常回繁体（实测「怎麼樣」），字幕/素材一律转简体
+                text = to_simplified((ev.get("transcript") or "").strip())
                 if not text:
                     continue
                 if _is_echo(text):

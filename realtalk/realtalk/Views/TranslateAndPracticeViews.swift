@@ -8,6 +8,8 @@ struct TranslateCallView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var stream: RoleplayStreamManager
 
+    @State private var showVoiceSheet = false
+
     private var liveLevel: Double { stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel }
 
     var body: some View {
@@ -27,13 +29,40 @@ struct TranslateCallView: View {
                 // 字幕区占满中间剩余空间（此前固定高度 + Spacer 会把新句挤到可视区之外，
                 // 表现为「界面只显示上边一部分」）；内部自动滚到最新一句。
                 subtitles.frame(maxHeight: .infinity)
-                micIndicator.padding(.bottom, 26)
+                // 麦克风一排：左侧音色选择（与旧沉浸式一致），中间大麦克风
+                HStack(spacing: 26) {
+                    voiceButton
+                    micIndicator
+                    // 右侧留等宽占位，保证麦克风严格居中
+                    Color.clear.frame(width: 46, height: 46)
+                }
+                .padding(.bottom, 26)
                 Text("翻译内容会自动整理成英文场景，可回主界面练习")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
             }
         }
         .onAppear { model.startTutor() }
+        .sheet(isPresented: $showVoiceSheet) {
+            VoiceSpeedSheet().environmentObject(model)
+        }
+    }
+
+    /// 音色/语速入口（麦克风左侧）。
+    private var voiceButton: some View {
+        Button { showVoiceSheet = true } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "person.wave.2.fill")
+                    .font(.system(size: 17, weight: .medium))
+                Text("音色").font(.system(size: 10))
+            }
+            .foregroundStyle(.white.opacity(0.85))
+            .frame(width: 46, height: 46)
+            .background(.white.opacity(0.10), in: Circle())
+            .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("选择音色与语速")
     }
 
     private var header: some View {
@@ -121,10 +150,16 @@ struct TranslateCallView: View {
         .accessibilityLabel("重播译文")
     }
 
+    /// 左右对齐只看【第一个有效字】：中文开头→靠右（用户说中文），否则靠左。
+    /// 一句话中英混说时不再按字数比例摇摆，显示位置稳定。
     private func isChinese(_ s: String) -> Bool {
-        let cjk = s.unicodeScalars.filter { $0.value >= 0x4E00 && $0.value <= 0x9FFF }.count
-        let letters = s.unicodeScalars.filter { ("a"..."z").contains(Character($0)) || ("A"..."Z").contains(Character($0)) }.count
-        return cjk > 0 && cjk >= letters
+        for ch in s {
+            for u in ch.unicodeScalars {
+                if u.value >= 0x4E00 && u.value <= 0x9FFF { return true }          // 汉字
+                if ("a"..."z").contains(Character(u)) || ("A"..."Z").contains(Character(u)) { return false }
+            }
+        }
+        return false   // 全是标点/数字：按英文侧
     }
 
     @ViewBuilder
