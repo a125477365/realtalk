@@ -29,6 +29,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -90,6 +96,25 @@ fun AccountSheet(model: AppViewModel) {
         return
     }
 
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 左上角齿轮 → 设置（与 iOS 一致）
+        Box(
+            Modifier.size(40.dp).clip(CircleShape).background(RT.Surface)
+                .border(1.dp, RT.Hairline, CircleShape)
+                .clickable { showSettings = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Settings, contentDescription = "设置",
+                tint = RT.TextSecondary, modifier = Modifier.size(20.dp))
+        }
+        Text("账户", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary,
+            modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        TextButton(onClick = { model.showAccount.value = false }) { Text("完成") }
+    }
+
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -112,21 +137,20 @@ fun AccountSheet(model: AppViewModel) {
                 }
             }
         }
-        // 设置入口（外观/字体/音色语速/存储）
+        // 客服工单（反馈问题）
         item {
             Row(
                 Modifier.fillMaxWidth()
                     .background(RT.Surface, RoundedCornerShape(14.dp))
                     .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
-                    .clickable { showSettings = true }
+                    .clickable { showTickets = true }
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("设置", fontWeight = FontWeight.SemiBold, fontSize = (15 * fontScale).sp,
-                        color = RT.TextPrimary)
-                    Text("外观、字体、音色与语速、存储", fontSize = (11 * fontScale).sp,
-                        color = RT.TextSecondary)
+                    Text("客服工单", fontWeight = FontWeight.SemiBold,
+                        fontSize = (15 * fontScale).sp, color = RT.TextPrimary)
+                    Text("反馈问题、提交建议", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Text("›", color = RT.TextSecondary, fontSize = 18.sp)
             }
@@ -188,6 +212,7 @@ private fun MembershipSheetContent(model: AppViewModel, premiumOnly: Boolean = f
             else -> "开通"
         }
     }
+
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -418,6 +443,7 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
     val ttsVoice by model.ttsCurrentVoice.collectAsState()
     LaunchedEffect(Unit) { model.loadTtsVoices() }
 
+
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -426,7 +452,8 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onBack) { Text("‹ 返回") }
-                Text("设置", fontWeight = FontWeight.SemiBold)
+                Text("设置", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = { model.showAccount.value = false }) { Text("完成") }
             }
         }
         // 音色 / 语速：与三个对话界面「+」同一份状态(ttsCurrentVoice/playbackSpeed)、
