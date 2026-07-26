@@ -401,3 +401,59 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
 
     if (showVoice) VoiceSpeedSheet(model) { showVoice = false }
 }
+
+
+/** 「+」页内内联展开的音色/语速面板（浅色，用于手动触发练习界面；与 iOS 一致）。 */
+@Composable
+fun InlineVoiceSpeedPanel(model: AppViewModel) {
+    val voices by model.ttsVoices.collectAsState()
+    val current by model.ttsCurrentVoice.collectAsState()
+    val speed by model.playbackSpeed.collectAsState()
+    LaunchedEffect(Unit) { model.loadTtsVoices() }
+    Column(
+        Modifier.fillMaxWidth().background(RT.Surface).padding(14.dp),
+    ) {
+        Text("语速", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("正常" to 1.0f, "慢 0.5×" to 0.5f, "快 1.5×" to 1.5f, "快 2×" to 2.0f)
+                .forEach { (label, v) ->
+                    val sel = kotlin.math.abs(speed - v) < 0.01f
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(50))
+                            .background(if (sel) RT.Accent else RT.Background)
+                            .border(1.dp, if (sel) Color.Transparent else RT.Hairline, RoundedCornerShape(50))
+                            .clickable { model.setPlaybackSpeed(v) }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, color = if (sel) Color.White else RT.TextPrimary,
+                            fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
+                }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text("音色", fontWeight = FontWeight.SemiBold, color = RT.TextPrimary, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        voices.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { v ->
+                    val sel = v == current
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(50))
+                            .background(if (sel) RT.Accent else RT.Background)
+                            .border(1.dp, if (sel) Color.Transparent else RT.Hairline, RoundedCornerShape(50))
+                            .clickable { model.changeTutorVoice(v) }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(v, color = if (sel) Color.White else RT.TextPrimary,
+                            fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    }
+                }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}

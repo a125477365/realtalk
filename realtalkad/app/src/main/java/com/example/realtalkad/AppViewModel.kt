@@ -407,6 +407,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 常规「点击说话」：未连接/已掉线则先整体重连（此前掉线后点按无反应，只能重启 App）；
      *  再按手动模式开始/结束录音。严格场景走 roleplay 流。 */
+    /** 取消本句说话（说话条左侧 ✕）：丢弃录音，不发送。 */
+    fun cancelHomeTalk() {
+        if (homeSceneStrict.value) stream.cancelManualUtterance() else freeStream.cancelManualUtterance()
+    }
+
     fun toggleHomeTalk() {
         if (homeSceneStrict.value) {
             if (!stream.isConnected) {

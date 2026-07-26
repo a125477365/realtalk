@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -89,6 +91,7 @@ fun ChatHomeScreen(model: AppViewModel) {
     val tutorImmersive by model.tutorImmersive.collectAsState()
     val showPicker by model.showScenePicker.collectAsState()
     val manualRecording by model.homeManualRecording.collectAsState()
+    val userLevel by model.homeUserLevel.collectAsState()
     val isRecording by model.isRecording.collectAsState()
     val user by model.user.collectAsState()
     val fontScale by model.fontScale.collectAsState()
@@ -150,16 +153,14 @@ fun ChatHomeScreen(model: AppViewModel) {
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                // 私教电话：进入全屏私教通话
+                // 退出场景练习（私教通话入口已下线）
                 Box(
                     Modifier.size(42.dp).background(RT.Surface, CircleShape)
-                        .clickable {
-                            model.tutorMode.value = "chat"
-                            model.showTutor.value = true
-                        },
+                        .clickable { model.exitScenePractice() },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.Call, contentDescription = "私教通话", tint = RT.Success, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Filled.Close, contentDescription = "退出练习",
+                        tint = RT.TextSecondary, modifier = Modifier.size(20.dp))
                 }
             }
 
@@ -235,6 +236,9 @@ fun ChatHomeScreen(model: AppViewModel) {
                 }
             }
 
+            // 「+」内联展开的音色/语速面板（与 iOS 页内展开一致，不弹底部面板）
+            if (showAttach) InlineVoiceSpeedPanel(model)
+
             // 输入区：等宽左右控制区保证“点击说话”严格居中；采集按钮移到同一行最左。
             if (keyboardMode) {
                 Row(
@@ -268,7 +272,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                             .background(if (isRecording) Color.Red else RT.Surface, CircleShape)
                             .border(1.dp, if (isRecording) Color.Transparent else RT.Hairline, CircleShape)
                             .clickable {
-                                if (isRecording) model.toggleRecording() else showAttach = true
+                                if (isRecording) model.toggleRecording() else showAttach = !showAttach
                             },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -278,7 +282,36 @@ fun ChatHomeScreen(model: AppViewModel) {
                             tint = if (isRecording) Color.White else RT.TextPrimary,
                         )
                     }
-                    // 说话按钮：描边样式（与背景区分即可）；录音中红色实心
+                    // 说话中：左 ✕ 取消 / 中间波形 / 右侧 ✓ 发送（与 iOS 一致）
+                    if (manualRecording) {
+                        Box(
+                            Modifier.size(48.dp).background(RT.Surface, CircleShape)
+                                .border(1.dp, RT.Hairline, CircleShape)
+                                .clickable { model.cancelHomeTalk() },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.Close, contentDescription = "取消这句话", tint = RT.TextSecondary) }
+                        Box(
+                            Modifier.weight(1f).height(50.dp)
+                                .background(RT.Surface, RoundedCornerShape(25.dp))
+                                .border(1.5.dp, RT.Hairline, RoundedCornerShape(25.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                repeat(9) { i ->
+                                    val h = (8 + (userLevel * 26f) * (if (i % 3 == 0) 1f else 0.6f)).coerceIn(6f, 34f)
+                                    Box(Modifier.width(3.dp).height(h.dp)
+                                        .background(RT.Accent, RoundedCornerShape(2.dp)))
+                                }
+                            }
+                        }
+                        Box(
+                            Modifier.size(48.dp).background(RT.Accent, CircleShape)
+                                .clickable { model.toggleHomeTalk() },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.Check, contentDescription = "发送这句话", tint = Color.White) }
+                    } else {
+                    // 说话按钮：描边样式（与背景区分即可）
                     Box(
                         Modifier.weight(1f).height(50.dp)
                             .background(if (manualRecording) Color.Red else RT.Surface, RoundedCornerShape(25.dp))
@@ -313,6 +346,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                             .clickable { keyboardMode = true },
                         contentAlignment = Alignment.Center,
                     ) { Icon(Icons.Filled.Keyboard, contentDescription = "键盘输入", tint = RT.TextPrimary) }
+                    }
                 }
             }
         }
@@ -325,7 +359,7 @@ fun ChatHomeScreen(model: AppViewModel) {
         incomingReminder?.let { ReminderCallScreen(model, it) }
     }
 
-    if (showAttach) {
+    if (false) {
         ModalBottomSheet(onDismissRequest = { showAttach = false }) {
             AttachmentSheet(model, isRecording) { showAttach = false }
         }
