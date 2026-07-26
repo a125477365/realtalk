@@ -303,14 +303,14 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             self.setHomeWorking(false)
             // 实时翻译：把译文按 FIFO 补进【最早】一条待译的 translate（后端逐句顺序回译文），
-            // 原文+译文合成一条，不新增气泡。firstIndex 保证多句连说时译文与原文一一对应不错位。
+            // 原文+译文合成一条，不新增气泡。
             if self.tutorMode == "translate" {
-                if let i = self.homeItems.firstIndex(where: { $0.kind == .translate && $0.translating }) {
-                    self.homeItems[i].translation = t
-                    self.homeItems[i].translating = false
-                } else {
-                    self.homeItems.append(HomeChatItem(kind: .translate, text: "", translation: t))
-                }
+                guard let i = self.homeItems.firstIndex(where: { $0.kind == .translate && $0.translating })
+                else { return }   // 没有待译项就丢弃：绝不追加「只有译文没有原文」的字幕（那正是错行的来源）
+                // 后端翻译失败会回一条空 ai_text；若把空串当译文写进去，渲染条件会判定
+                // 「还在翻译」而永远转圈，同时又占掉了一个待译槽 → 之后每条译文整体错位一行。
+                self.homeItems[i].translation = t.isEmpty ? "（这句没能翻译）" : t
+                self.homeItems[i].translating = false
                 return
             }
             // AI 台词默认打码（先听后看），点击文字才显示；已揭示过的同句保持揭示（#四）
