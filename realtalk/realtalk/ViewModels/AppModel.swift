@@ -249,6 +249,13 @@ final class AppModel: ObservableObject {
             self.homeConnected = true
             // 历史回放不打码（都是看过的）；重连回包必须清掉转圈，否则静默重连后按钮永远转圈。
             // 尚未被服务端确认的本地回显气泡要保留在末尾（重连不吞用户刚发的话）
+            // 实时翻译：服务端 state 不带历史，重连(如换音色)时不能把已出的成对字幕冲掉
+            if self.tutorMode == "translate" {
+                self.homeConnected = true
+                self.homeStatus = ""
+                self.setHomeWorking(false)
+                return
+            }
             let pendingEcho = self.homeItems.filter { $0.localEcho }
             // #四：历史里的 AI 台词按「上次是否揭示」恢复打码状态（默认打码，先听后看）
             self.homeItems = items.map { m in
@@ -437,10 +444,18 @@ final class AppModel: ObservableObject {
     }
 
     /// 换音色：入库（后端 TTS/实时通道都按用户音色下发）后按当前形态重连即刻生效。
+    /// 换音色：入库后【重连当前真正在用的那条流】即刻生效。
+    /// 后端在建流时读一次用户音色，所以必须重连；但过去无论在哪个界面都去重连自由对话流——
+    /// 在场景练习里那是错的流：会把 roleplay 字幕冲掉、且 roleplay 仍用旧音色，
+    /// 表现为「换了音色后 AI 就不播报了」。现在按当前界面选择要重连的流。
     func changeTutorVoice(_ v: String) {
         Task { @MainActor in
             await setTtsVoice(v)
-            reconnectTutor()
+            if showScenePractice || homeSceneStrict {
+                afterTokenRefresh { [weak self] in self?.reconnectStrictStream() }
+            } else {
+                reconnectTutor()
+            }
         }
     }
 

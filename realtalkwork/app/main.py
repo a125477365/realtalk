@@ -4224,99 +4224,36 @@ def estimate_text_cost_cents(input_chars: int = 0) -> float:
     )
 
 
-def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> None:
-    """模型功能门禁：会员（或试用期）+ 当月费用额度（会员月费的 50%）。
+# ==== 收费模式已下线：全部功能对所有用户免费 ====
+# 下面几个门禁函数保留签名（几十处调用点不动），但一律放行、绝不再抛 402。
+# 用量记账（record_ai_usage 等）仍在别处照常进行，管理台可看成本，只是不再据此拦截。
 
-    每次调模型前：检查「当月已用(文字+语音)费用 + 本次预估费用 > 额度」则拦截，
-    并停止生成场景/对话；只拦截需要大模型的功能，采集/回看历史等不受影响。
-    免费档（试用结束）→ 提示订阅；额度用尽→ 基础提示升级高级、高级暂时禁止（充值功能后续上线）。
-    """
-    if user.plan_tier == "free":
-        # 非会员：每日固定 token 的文字模型用量（管理台可配置），用尽提示升级
-        limit = db.get_nonmember_daily_chat_tokens()
-        used_tokens = db.tokens_used_today(user.id)
-        if limit > 0 and used_tokens >= limit:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="今天的 AI 对话额度已用完，升级会员可获得更多用量，或明天再来。",
-            )
-        return
-    budget = monthly_budget_cents(user)
-    used = db.cost_used_this_cycle(user.id)
-    estimate = estimate_text_cost_cents() if estimated_cents is None else max(0.0, estimated_cents)
-    if budget > 0 and used + estimate > budget:
-        budget_yuan = budget / 100
-        used_yuan = used / 100
-        if user.plan_tier == "premium":
-            detail = (
-                f"本月语音/文字大模型用量已达额度上限（约 ¥{used_yuan:.2f} / ¥{budget_yuan:.2f}），"
-                "高级会员额度充值功能即将上线，本月暂无法继续调用模型，下月自动恢复。"
-            )
-        else:
-            detail = (
-                f"本月 AI 用量已达额度上限（约 ¥{used_yuan:.2f} / ¥{budget_yuan:.2f}），"
-                "升级高级会员可获得更高额度；本月额度下月自动恢复。"
-            )
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=detail)
+
+def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> None:
+    """全部免费：不再检查会员/额度，永远放行。"""
+    return
 
 
 def require_premium(user: UserOut) -> None:
-    if user.plan_tier != "premium":
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="上传录音文件生成场景是高级会员功能，请升级高级会员",
-        )
+    """全部免费：原「高级会员专属」功能对所有人开放。"""
+    return
 
 
 def enforce_capture_quota(user: UserOut, items: list[TranscriptItem]) -> None:
-    """非会员每日采集文字输入上限（token≈字符，管理台可配置）；会员不限。通过则记账。"""
-    if user.plan_tier != "free":
-        return
+    """全部免费：不限采集量。仍记一笔输入量供管理台观察用量。"""
     char_count = sum(len((item.text or "").strip()) for item in items)
-    if char_count <= 0:
-        return
-    limit = db.get_nonmember_daily_capture_tokens()
-    used = db.capture_tokens_used_today(user.id)
-    if limit > 0 and used + char_count > limit:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"非会员每日可采集的对话有限（每天约 {limit} 字），升级会员可解锁更多，或明天再来。",
-        )
-    db.record_capture_input(user.id, char_count)
+    if char_count > 0:
+        db.record_capture_input(user.id, char_count)
 
 
 def capture_quota_info(user: UserOut) -> CaptureQuotaResponse:
-    """估算用户还能用于采集→生成场景的 token 余量（采集会调文本模型生成场景）。"""
-    from .ark_client import resolve_ai_config
-
-    sentence_tokens = 30  # 估算：平均每句对话约 30 token
-    if user.plan_tier == "free":
-        chat_left = max(0, db.get_nonmember_daily_chat_tokens() - db.tokens_used_today(user.id))
-        cap_left = max(0, db.get_nonmember_daily_capture_tokens() - db.capture_tokens_used_today(user.id))
-        remaining = min(chat_left, cap_left)
-        is_member = False
-    else:
-        remaining_cents = max(0.0, monthly_budget_cents(user) - db.cost_used_this_cycle(user.id))
-        price = resolve_ai_config().input_price_per_1m_cents or 80.0
-        remaining = int(remaining_cents / price * 1_000_000) if price > 0 else 0
-        is_member = True
-    can = remaining > 0
-    approx = remaining // sentence_tokens
-    if not can:
-        message = (
-            "已超过当月可用额度，暂时无法采集；本月额度下月恢复，或升级会员获得更多额度。"
-            if is_member else "今日免费额度已用尽，明天恢复，或升级会员获得更多额度。"
-        )
-    elif remaining < 1000:
-        message = f"额度不足，大约还能采集 {approx} 句，请尽快升级会员或留意用量。"
-    else:
-        message = ""
+    """全部免费：永远返回「可采集、无限制」。"""
     return CaptureQuotaResponse(
-        remaining_tokens=remaining,
-        can_capture=can,
-        approx_sentences=approx,
-        is_member=is_member,
-        message=message,
+        remaining_tokens=1_000_000_000,
+        can_capture=True,
+        approx_sentences=1_000_000,
+        is_member=True,
+        message="",
     )
 
 
@@ -4332,37 +4269,15 @@ def nonmember_limits_info() -> NonmemberLimits:
 
 
 def token_usage_info(user: UserOut) -> TokenUsageInfo:
-    used_tokens = db.tokens_used_today(user.id)
-    # 客户端只展示「已用百分比」，不暴露具体金额（避免用户对「月费一半」的疑惑，金额属内部口径）
-    if user.plan_tier == "free":
-        # 非会员：每日 token 用量百分比
-        limit = db.get_nonmember_daily_chat_tokens()
-        pct = round(used_tokens / limit * 100, 1) if limit > 0 else 0.0
-        over = limit > 0 and used_tokens >= limit
-        return TokenUsageInfo(
-            today_tokens=used_tokens,
-            daily_limit=limit,
-            remaining_tokens=max(0, limit - used_tokens),
-            over_limit=over,
-            over_budget=over,
-            usage_percent=min(100.0, pct),
-            is_member=False,
-        )
-    budget = monthly_budget_cents(user)
-    cycle_cost = db.cost_used_this_cycle(user.id)
-    over_budget = budget > 0 and cycle_cost >= budget
-    pct = round(cycle_cost / budget * 100, 1) if budget > 0 else 0.0
+    """收费模式已下线：只回报「今天用了多少 token」供观察，永不判超限。"""
     return TokenUsageInfo(
-        today_tokens=used_tokens,
-        daily_limit=0,
+        today_tokens=db.tokens_used_today(user.id),
+        daily_limit=0,          # 0 = 不限
         remaining_tokens=0,
-        over_limit=over_budget,
-        over_budget=over_budget,
-        usage_percent=min(100.0, pct),
-        is_member=True,
-        month_cost_cents=round(cycle_cost, 2),
-        month_budget_cents=round(budget, 2),
-        month_remaining_cents=round(max(0.0, budget - cycle_cost), 2),
+        over_limit=False,
+        over_budget=False,
+        usage_percent=0.0,
+        is_member=True,         # 全部功能免费：一律按「有权限」对待
     )
 
 
