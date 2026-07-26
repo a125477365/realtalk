@@ -54,6 +54,9 @@ class RoleplayStreamClient(private val context: Context) {
     /** live 全双工（GPT-Live 式）：帧持续上行（含 AI 说话期间），轮次判定/打断全在服务端。 */
     var liveMode = false
 
+    /** AI 朗读期间不上行音频（实时翻译必开）：否则扬声器放出的译文被拾回，又被当成新一句翻译，形成自循环。 */
+    var gateWhileAISpeaking = false
+
     /** 顶栏「自动播放 AI 语音」总开关：关闭时丢弃推来的 AI 音频（字幕不受影响，卡内波形按钮可单句重听）。 */
     var autoPlayAI = true
 
@@ -240,7 +243,9 @@ class RoleplayStreamClient(private val context: Context) {
         onUserLevel?.invoke(level)
         if (!connected) return
         if (liveMode) {
-            // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停
+            // live 全双工：帧永远上行（AI 说话期间也发——服务端 VAD 据此打断），本地零判停。
+            // 但翻译模式下 AI 正在朗读时不上行：那段必是扬声器回声，放行会把自己的译文再翻一遍。
+            if (gateWhileAISpeaking && aiSpeaking) return
             runCatching { webSocket?.send(chunk.toByteString()) }
             return
         }

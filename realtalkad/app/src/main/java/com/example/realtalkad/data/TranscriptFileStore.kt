@@ -17,6 +17,26 @@ class TranscriptFileStore(context: Context) {
         items = readItems().toMutableList()
     }
 
+    // ---- 待上送的翻译素材（退出翻译时入队；上送失败留到下次登录补传）----
+    private val pendingFile: File = File(context.filesDir, "realtalk/pending-translations.json")
+
+    fun savePendingTranslations(sessions: List<List<TranscriptItem>>) {
+        synchronized(lock) {
+            runCatching {
+                pendingFile.parentFile?.mkdirs()
+                if (sessions.isEmpty()) pendingFile.delete()
+                else pendingFile.writeText(json.encodeToString(sessions))
+            }
+        }
+    }
+
+    fun loadPendingTranslations(): List<List<TranscriptItem>> = synchronized(lock) {
+        runCatching {
+            if (!pendingFile.exists()) emptyList()
+            else json.decodeFromString<List<List<TranscriptItem>>>(pendingFile.readText())
+        }.getOrDefault(emptyList())
+    }
+
     fun add(item: TranscriptItem) {
         synchronized(lock) {
             items.add(item)

@@ -86,7 +86,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ==== 常规主界面（聊天流）：自由聊天 / 自由场景 / 严格场景 统一渲染管道 ====
     // 主界面与私教共享同一条 freetalk 流与同一份消息（私教只是同一对话的头像可视化，进出不断线）。
 
-    enum class HomeKind { USER, AI, GUIDANCE, HINT }   // GUIDANCE=指导卡；HINT=严格场景下一句中文提示
+    enum class HomeKind { USER, AI, GUIDANCE, HINT, TRANSLATE }   // GUIDANCE=指导卡；HINT=严格场景下一句中文提示；TRANSLATE=实时翻译(原文+译文一条)
     data class HomeChatItem(
         val id: Long = nextItemId++,
         val kind: HomeKind,
@@ -182,6 +182,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         freeStream.onCommitted = { setHomeWorking(true); homeManualRecording.value = false }
         freeStream.onUserText = { t, tr, words, wpm ->
+            if (tutorMode.value == "translate") {
+                // 实时翻译：原文先上屏成一条待译字幕，译文稍后由 onAIText 补上
+                homeItems.value = homeItems.value +
+                    HomeChatItem(kind = HomeKind.TRANSLATE, text = t, translation = "", translating = true)
+                recordTranslateLine(t)
+            } else {
             // 键盘发送的本地回显已在屏上：服务端回显到达后原位合并（规整文本/补翻译），不追加重复气泡。
             // 连发多条时按「文本匹配优先，其次先进先出」合并——服务端排队逐条处理、回包有序，
             // 绝不能取最后一条（会把第一条的规整结果盖到第二条气泡上，内容互换）。
@@ -196,11 +202,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.USER, text = t, translation = tr, words = words, wpm = wpm)
             }
+            }
         }
         freeStream.onAIText = { t, tr, tone ->
             setHomeWorking(false)
+            if (tutorMode.value == "translate") {
+                // 译文按 FIFO 补进【最早】一条待译项。找不到就丢弃——绝不追加「只有译文没原文」的字幕；
+                // 空译文(后端翻译失败)也必须结束等待，否则会永远转圈并让后续译文整体错位一行。
+                val i = homeItems.value.indexOfFirst { it.kind == HomeKind.TRANSLATE && it.translating }
+                if (i >= 0) {
+                    homeItems.value = homeItems.value.mapIndexed { k, item ->
+                        if (k == i) item.copy(translation = if (t.isBlank()) "（这句没能翻译）" else t, translating = false)
+                        else item
+                    }
+                }
+            } else {
             // AI 台词默认打码（先听后看），点击文字才显示（所有模式一致）
             homeItems.value = homeItems.value + HomeChatItem(kind = HomeKind.AI, text = t, translation = tr, masked = true, tone = tone)
+            }
         }
         freeStream.onError = { msg -> setHomeWorking(false); homeStatus.value = msg; homeConnected.value = false }
         freeStream.onResultMessage = { msg -> setHomeWorking(false); homeStatus.value = msg }
@@ -214,7 +233,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             homeStatus.value = "对话已结束，点击说话重新开始"
             presentFailure(reason, title = "对话已结束")
         }
-        freeStream.start(api.freeTalkStreamUrl(token, tutorMode.value, sceneId ?: "", liveTurn), "realtime")
+        val isTranslate = tutorMode.value == "translate"
+        // 翻译：连续上行，服务端 VAD 自动分句；AI 朗读期间外放静音防回声(自己译文被拾回再翻译)
+        freeStream.liveMode = isTranslate || liveTurn
+        freeStream.manualCommit = if (isTranslate) false else freeStream.manualCommit
+        freeStream.gateWhileAISpeaking = isTranslate
+        val streamUrl = if (isTranslate) api.translateStreamUrl(token)
+                        else api.freeTalkStreamUrl(token, tutorMode.value, sceneId ?: "", liveTurn)
+        freeStream.start(streamUrl, "realtime")
     }
 
     fun stopHomeChat() {
@@ -267,6 +293,58 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 自由发挥式场景对话：freetalk 带 scene_id 进场（剧本注入，老师先问扮演角色，随后围绕场景即兴）。 */
+    // ---- 翻译素材：退出时整批上送后台生成英文场景；失败本地留存，下次登录补传 ----
+    private val translateTranscript = mutableListOf<TranscriptItem>()
+
+    fun recordTranslateLine(text: String) {
+        val t = text.trim()
+        if (t.isNotEmpty()) {
+            translateTranscript += TranscriptItem(
+                id = java.util.UUID.randomUUID().toString(),
+                timestamp = java.time.OffsetDateTime.now().toString(),
+                text = t,
+            )
+        }
+    }
+
+    /** 退出实时翻译：断流 → 本次内容入待上送队列 → 立即尝试上送生成场景。 */
+    fun exitTranslate() {
+        showTranslate.value = false
+        freeStream.stop()
+        tutorMode.value = "chat"
+        val session = translateTranscript.toList()
+        translateTranscript.clear()
+        homeItems.value = emptyList()
+        if (session.size >= 2) {
+            pendingTranslations.add(session)
+            savePendingTranslations()
+            viewModelScope.launch { flushPendingTranslations() }
+        }
+    }
+
+    private val pendingTranslations: MutableList<List<TranscriptItem>> by lazy {
+        transcriptStore.loadPendingTranslations().toMutableList()
+    }
+
+    private fun savePendingTranslations() {
+        runCatching { transcriptStore.savePendingTranslations(pendingTranslations) }
+    }
+
+    /** 上送所有待生成场景的翻译素材（登录后 & 每次退出翻译各调一次）。分块上送由 ApiClient 负责。 */
+    suspend fun flushPendingTranslations() {
+        val token = auth.token ?: return
+        if (pendingTranslations.isEmpty()) return
+        val remaining = mutableListOf<List<TranscriptItem>>()
+        for (session in pendingTranslations.toList()) {
+            val ok = runCatching { api.uploadCaptureItems(session, token) }.isSuccess
+            if (!ok) remaining += session
+        }
+        pendingTranslations.clear()
+        pendingTranslations.addAll(remaining)
+        savePendingTranslations()
+        if (remaining.isEmpty()) { kotlinx.coroutines.delay(3000); loadScenarioList() }
+    }
+
     /** 主界面底部「实时翻译」：清场景、清字幕，进入翻译全屏。 */
     fun enterTranslate() {
         homeSceneId = null

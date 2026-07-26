@@ -207,6 +207,7 @@ fun ChatHomeScreen(model: AppViewModel) {
                         AppViewModel.HomeKind.USER -> UserBubble(model, item, fontScale) { guidanceFor = item }
                         AppViewModel.HomeKind.GUIDANCE -> GuidanceCard(item, fontScale)
                         AppViewModel.HomeKind.HINT -> HintCard(item, fontScale)
+                        AppViewModel.HomeKind.TRANSLATE -> TranslateRow(model, item, fontScale)
                     }
                 }
             }
@@ -1004,6 +1005,44 @@ private fun AttachRow(
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, fontSize = (16 * fontScale).sp, fontWeight = FontWeight.Medium, color = RT.TextPrimary)
             Text(subtitle, fontSize = (12 * fontScale).sp, color = RT.TextSecondary, maxLines = 2)
+        }
+    }
+}
+
+
+/** 实时翻译成对字幕：原文(第一行) + 蓝色译文(第二行)。左右只看【第一个有效字】：中文开头靠右。 */
+private fun startsWithChinese(s: String): Boolean {
+    for (ch in s) {
+        if (ch in '\u4E00'..'\u9FFF') return true
+        if (ch in 'a'..'z' || ch in 'A'..'Z') return false
+    }
+    return false
+}
+
+@Composable
+fun TranslateRow(model: AppViewModel, item: AppViewModel.HomeChatItem, fontScale: Float) {
+    val cn = startsWithChinese(item.text)
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalAlignment = if (cn) Alignment.End else Alignment.Start,
+    ) {
+        Text(item.text, fontSize = (17 * fontScale).sp, fontWeight = FontWeight.Medium, color = RT.TextPrimary)
+        Spacer(Modifier.height(4.dp))
+        if (item.translating || item.translation.isBlank()) {
+            Text("正在翻译…", fontSize = (13 * fontScale).sp, color = RT.TextSecondary)
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (!cn) {
+                    Text("🔊", fontSize = 14.sp,
+                        modifier = Modifier.clickable { model.speakText(item.translation) }.padding(end = 8.dp))
+                }
+                Text(item.translation, fontSize = (16 * fontScale).sp,
+                    fontWeight = FontWeight.SemiBold, color = RT.Accent)
+                if (cn) {
+                    Text("🔊", fontSize = 14.sp,
+                        modifier = Modifier.clickable { model.speakText(item.translation) }.padding(start = 8.dp))
+                }
+            }
         }
     }
 }

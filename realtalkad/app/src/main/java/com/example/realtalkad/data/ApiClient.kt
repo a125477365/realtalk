@@ -213,6 +213,17 @@ class ApiClient(private val baseUrlProvider: () -> String) {
 
     /** 自由对话（一对一语音老师）流地址；协议同沉浸式流。
      *  mode: chat=对话（默认）/ translate=实时翻译；sceneId 非空 = 带场景剧本进场（自由发挥式场景对话）。 */
+    /** 实时翻译·流式（边说边出）：连续上行，服务端只转写通道自动分句，逐句回原文/译文/译文语音。 */
+    fun translateStreamUrl(token: String): String {
+        val q = java.net.URLEncoder.encode(token, "UTF-8")
+        val base = url("/translate/stream?token=$q")
+        return when {
+            base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+            base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+            else -> base
+        }
+    }
+
     fun freeTalkStreamUrl(token: String, mode: String = "chat", sceneId: String = "", live: Boolean = false): String {
         val q = java.net.URLEncoder.encode(token, "UTF-8")
         val scenePart = if (sceneId.isBlank()) "" else "&scene_id=" + java.net.URLEncoder.encode(sceneId, "UTF-8")
