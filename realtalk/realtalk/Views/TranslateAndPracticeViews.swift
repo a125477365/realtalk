@@ -8,7 +8,7 @@ struct TranslateCallView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var stream: RoleplayStreamManager
 
-    @State private var showVoiceSheet = false
+    @State private var showVoicePanel = false
 
     private var liveLevel: Double { stream.isAISpeaking ? stream.aiAudioLevel : stream.audioLevel }
 
@@ -25,10 +25,15 @@ struct TranslateCallView: View {
 
             VStack(spacing: 0) {
                 header
-                statusLine.padding(.top, 14)
+                // 状态行紧贴顶栏，与下方字幕拉开距离（否则挤在一起显乱）
+                statusLine.padding(.top, 6).padding(.bottom, 16)
                 // 字幕区占满中间剩余空间（此前固定高度 + Spacer 会把新句挤到可视区之外，
                 // 表现为「界面只显示上边一部分」）；内部自动滚到最新一句。
                 subtitles.frame(maxHeight: .infinity).clipped()   // 裁剪：滚动内容不许盖到状态行上
+                // 「+」内联面板：与手动触发式同款（深色配色），在麦克风上方展开
+                if showVoicePanel {
+                    InlineVoiceSpeedPanel(dark: true).transition(.move(edge: .bottom))
+                }
                 // 麦克风一排：左「+」(音色/语速) + 中间大麦克风；右侧等宽占位保证麦克风居中。
                 // 整行高度固定(140)，不随音量变化，字幕才不会被顶。
                 HStack(spacing: 22) {
@@ -44,14 +49,13 @@ struct TranslateCallView: View {
             }
         }
         .onAppear { model.startTutor() }
-        .sheet(isPresented: $showVoiceSheet) {
-            VoiceSpeedSheet().environmentObject(model)
-        }
     }
 
-    /// 音色/语速入口：与其它对话界面统一用「+」。固定大小，绝不随音量跳动。
+    /// 音色/语速入口：与其它对话界面统一用「+」，点击内联展开（与手动触发式同款面板）。
     private var voiceButton: some View {
-        DarkPlusButton { showVoiceSheet = true }
+        DarkPlusButton(rotated: showVoicePanel) {
+            withAnimation(.easeOut(duration: 0.2)) { showVoicePanel.toggle() }
+        }
     }
 
     private var header: some View {
@@ -199,8 +203,10 @@ struct PulsingMic: View {
     }
 }
 
-/// 深色语音界面的「+」按钮（音色/语速入口）：固定大小，不随音量跳动。
+/// 深色语音界面的「+」按钮（音色/语速入口）：固定大小，不随音量跳动；
+/// 面板展开时旋转 45° 变「×」（与手动触发式的 +/× 切换一致）。
 struct DarkPlusButton: View {
+    var rotated = false
     var action: () -> Void
 
     var body: some View {
@@ -208,12 +214,14 @@ struct DarkPlusButton: View {
             Image(systemName: "plus")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.9))
+                .rotationEffect(.degrees(rotated ? 45 : 0))
+                .animation(.easeOut(duration: 0.2), value: rotated)
                 .frame(width: 48, height: 48)
                 .background(.white.opacity(0.10), in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("音色与语速")
+        .accessibilityLabel(rotated ? "收起音色与语速" : "音色与语速")
     }
 }
 
@@ -584,7 +592,7 @@ struct ImmersivePracticeView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var rpStream: RoleplayStreamManager
 
-    @State private var showVoiceSheet = false
+    @State private var showVoicePanel = false
 
     private var liveLevel: Double { rpStream.isAISpeaking ? rpStream.aiAudioLevel : rpStream.audioLevel }
 
@@ -601,11 +609,18 @@ struct ImmersivePracticeView: View {
 
             VStack(spacing: 0) {
                 header
-                statusLine.padding(.top, 12)
+                // 状态行紧贴顶栏，与下方字幕拉开距离
+                statusLine.padding(.top, 6).padding(.bottom, 16)
                 subtitles.frame(maxHeight: .infinity).clipped()   // 占满中间并裁剪，不盖住状态行
+                // 「+」内联面板：与手动触发式同款（深色配色）
+                if showVoicePanel {
+                    InlineVoiceSpeedPanel(dark: true).transition(.move(edge: .bottom))
+                }
                 // 左「+」(音色/语速) + 中间大麦克风；整行固定高度，字幕不会被脉冲顶动
                 HStack(spacing: 22) {
-                    DarkPlusButton { showVoiceSheet = true }
+                    DarkPlusButton(rotated: showVoicePanel) {
+                        withAnimation(.easeOut(duration: 0.2)) { showVoicePanel.toggle() }
+                    }
                     micIndicator
                     Color.clear.frame(width: 48, height: 48)
                 }
@@ -615,9 +630,6 @@ struct ImmersivePracticeView: View {
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
             }
-        }
-        .sheet(isPresented: $showVoiceSheet) {
-            VoiceSpeedSheet().environmentObject(model)
         }
     }
 
@@ -757,32 +769,39 @@ struct ImmersivePracticeView: View {
 /// 「+」面板内联的音色 / 语速选择（不再跳子界面）。
 struct InlineVoiceSpeedPanel: View {
     @EnvironmentObject private var model: AppModel
+    /// dark=true：深色语音界面（实时翻译/沉浸式）用的配色；false=手动触发式浅色界面。
+    var dark = false
 
     private let speeds: [(String, Double)] = [("正常", 1.0), ("慢 0.5×", 0.5), ("快 1.5×", 1.5), ("快 2×", 2.0)]
+
+    private var labelColor: Color { dark ? .white.opacity(0.9) : RTTheme.textPrimary }
+    private var chipText: Color { dark ? .white.opacity(0.9) : RTTheme.textPrimary }
+    private var chipFill: AnyShapeStyle { dark ? AnyShapeStyle(.white.opacity(0.10)) : AnyShapeStyle(RTTheme.background) }
+    private var chipStroke: Color { dark ? .white.opacity(0.18) : RTTheme.hairline }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("语速").font(.system(size: 13 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(RTTheme.textPrimary)
+                    .foregroundStyle(labelColor)
                 HStack(spacing: 8) {
                     ForEach(speeds, id: \.1) { name, value in
                         let selected = abs(model.playbackSpeed - value) < 0.01
                         Button { model.playbackSpeed = value } label: {
                             Text(name)
                                 .font(.system(size: 12 * model.fontScale, weight: .medium))
-                                .foregroundStyle(selected ? .white : RTTheme.textPrimary)
+                                .foregroundStyle(selected ? .white : chipText)
                                 .padding(.horizontal, 12).padding(.vertical, 7)
-                                .background(selected ? AnyShapeStyle(RTTheme.accent) : AnyShapeStyle(RTTheme.surface),
-                                            in: Capsule())
-                                .overlay(Capsule().stroke(selected ? Color.clear : RTTheme.hairline))
+                                .background(selected ? AnyShapeStyle(RTTheme.accent) : chipFill, in: Capsule())
+                                .overlay(Capsule().stroke(selected ? Color.clear : chipStroke))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text("音色").font(.system(size: 13 * model.fontScale, weight: .semibold))
-                    .foregroundStyle(RTTheme.textPrimary)
+                    .foregroundStyle(labelColor)
                 // 换行平铺：所有音色一眼看全，不用左右滑
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], alignment: .leading, spacing: 8) {
                     ForEach(model.ttsVoices, id: \.self) { v in
@@ -794,12 +813,11 @@ struct InlineVoiceSpeedPanel: View {
                                 Text(v).lineLimit(1)
                             }
                             .font(.system(size: 12 * model.fontScale, weight: .medium))
-                            .foregroundStyle(selected ? .white : RTTheme.textPrimary)
+                            .foregroundStyle(selected ? .white : chipText)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
-                            .background(selected ? AnyShapeStyle(RTTheme.accent) : AnyShapeStyle(RTTheme.background),
-                                        in: Capsule())
-                            .overlay(Capsule().stroke(selected ? Color.clear : RTTheme.hairline))
+                            .background(selected ? AnyShapeStyle(RTTheme.accent) : chipFill, in: Capsule())
+                            .overlay(Capsule().stroke(selected ? Color.clear : chipStroke))
                         }
                         .buttonStyle(.plain)
                     }
@@ -808,8 +826,8 @@ struct InlineVoiceSpeedPanel: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RTTheme.surface)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(RTTheme.hairline), alignment: .top)
+        .background(dark ? AnyShapeStyle(Color.white.opacity(0.06)) : AnyShapeStyle(RTTheme.surface))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(chipStroke), alignment: .top)
         .task { await model.loadTtsVoices() }
     }
 }
