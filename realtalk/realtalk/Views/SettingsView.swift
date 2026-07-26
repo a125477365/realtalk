@@ -19,13 +19,11 @@ struct SettingsView: View {
                 }
 
                 Section("对话与字幕") {
+                    // 与各对话界面「+」用同一个组件、同一份状态(ttsCurrentVoice / playbackSpeed)，
+                    // 且走同一条 changeTutorVoice 通道(存库+重连当前流)，两边永远同步。
                     if model.ttsConfigured, model.ttsVoices.isEmpty == false {
-                        Picker("AI 朗读音色", selection: $model.ttsCurrentVoice) {
-                            ForEach(model.ttsVoices, id: \.self) { Text($0).tag($0) }
-                        }
-                        .onChange(of: model.ttsCurrentVoice) { _, newValue in
-                            Task { await model.setTtsVoice(newValue) }
-                        }
+                        InlineVoiceSpeedPanel()
+                            .listRowInsets(EdgeInsets())
                     }
                     Slider(value: $model.fontScale, in: 0.85...1.35, step: 0.05) {
                         Text("字体大小")

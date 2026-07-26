@@ -451,9 +451,12 @@ final class AppModel: ObservableObject {
     func changeTutorVoice(_ v: String) {
         Task { @MainActor in
             await setTtsVoice(v)
-            if showScenePractice || homeSceneStrict {
+            // 只重连【当前确实在跑】的那条流：设置页可能在没有会话时打开，
+            // 无脑重连会凭空拉起一条自由对话/翻译流。没有活跃流时不动，
+            // 音色已入库，下次建流自然生效。
+            if (showScenePractice || homeSceneStrict), stream.isConnected {
                 afterTokenRefresh { [weak self] in self?.reconnectStrictStream() }
-            } else {
+            } else if freeStream.isConnected {
                 reconnectTutor()
             }
         }
