@@ -28,15 +28,16 @@ struct TranslateCallView: View {
                 statusLine.padding(.top, 14)
                 // 字幕区占满中间剩余空间（此前固定高度 + Spacer 会把新句挤到可视区之外，
                 // 表现为「界面只显示上边一部分」）；内部自动滚到最新一句。
-                subtitles.frame(maxHeight: .infinity)
-                // 麦克风一排：左侧音色选择（与旧沉浸式一致），中间大麦克风
-                HStack(spacing: 26) {
+                subtitles.frame(maxHeight: .infinity).clipped()   // 裁剪：滚动内容不许盖到状态行上
+                // 麦克风一排：左「+」(音色/语速) + 中间大麦克风；右侧等宽占位保证麦克风居中。
+                // 整行高度固定(140)，不随音量变化，字幕才不会被顶。
+                HStack(spacing: 22) {
                     voiceButton
                     micIndicator
-                    // 右侧留等宽占位，保证麦克风严格居中
-                    Color.clear.frame(width: 46, height: 46)
+                    Color.clear.frame(width: 48, height: 48)
                 }
-                .padding(.bottom, 26)
+                .frame(height: 140)
+                .padding(.bottom, 18)
                 Text("翻译内容会自动整理成英文场景，可回主界面练习")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
@@ -48,21 +49,9 @@ struct TranslateCallView: View {
         }
     }
 
-    /// 音色/语速入口（麦克风左侧）。
+    /// 音色/语速入口：与其它对话界面统一用「+」。固定大小，绝不随音量跳动。
     private var voiceButton: some View {
-        Button { showVoiceSheet = true } label: {
-            VStack(spacing: 2) {
-                Image(systemName: "person.wave.2.fill")
-                    .font(.system(size: 17, weight: .medium))
-                Text("音色").font(.system(size: 10))
-            }
-            .foregroundStyle(.white.opacity(0.85))
-            .frame(width: 46, height: 46)
-            .background(.white.opacity(0.10), in: Circle())
-            .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("选择音色与语速")
+        DarkPlusButton { showVoiceSheet = true }
     }
 
     private var header: some View {
@@ -175,20 +164,56 @@ struct TranslateCallView: View {
         } else {
             // 翻译是连续上行（服务端自动分句）：麦克风只作开关
             Button { stream.togglePause() } label: {
-                ZStack {
-                    Circle().stroke(RTTheme.accent.opacity(0.35 + 0.4 * liveLevel), lineWidth: 2)
-                        .frame(width: 96 + 34 * liveLevel, height: 96 + 34 * liveLevel)
-                    Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
-                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
-                    Image(systemName: stream.isPaused ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
-                        .scaleEffect(1 + 0.18 * liveLevel)
-                }
-                .animation(.easeOut(duration: 0.1), value: liveLevel)
+                PulsingMic(level: liveLevel,
+                           symbol: stream.isPaused ? "mic.slash.fill" : "mic.fill",
+                           ringColor: RTTheme.accent)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(stream.isPaused ? "开启麦克风" : "关闭麦克风")
         }
+    }
+}
+
+// MARK: - 语音界面公用小组件
+
+/// 会呼吸的圆形麦克风。关键：外层【固定 140×140】占位，脉冲只在内部涨落，
+/// 绝不改变自身尺寸——否则整行高度随音量变化，会把上方字幕一起顶得上下抖动。
+struct PulsingMic: View {
+    let level: Double
+    let symbol: String
+    var ringColor: Color = RTTheme.accent
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(ringColor.opacity(0.35 + 0.4 * level), lineWidth: 2)
+                .frame(width: 96 + 34 * level, height: 96 + 34 * level)
+            Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+            Image(systemName: symbol)
+                .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
+                .scaleEffect(1 + 0.18 * level)
+        }
+        .animation(.easeOut(duration: 0.1), value: level)
+        .frame(width: 140, height: 140)   // 固定占位：脉冲不外扩、不影响布局
+    }
+}
+
+/// 深色语音界面的「+」按钮（音色/语速入口）：固定大小，不随音量跳动。
+struct DarkPlusButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 48, height: 48)
+                .background(.white.opacity(0.10), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("音色与语速")
     }
 }
 
@@ -559,6 +584,8 @@ struct ImmersivePracticeView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var rpStream: RoleplayStreamManager
 
+    @State private var showVoiceSheet = false
+
     private var liveLevel: Double { rpStream.isAISpeaking ? rpStream.aiAudioLevel : rpStream.audioLevel }
 
     var body: some View {
@@ -575,12 +602,22 @@ struct ImmersivePracticeView: View {
             VStack(spacing: 0) {
                 header
                 statusLine.padding(.top, 12)
-                subtitles.frame(maxHeight: .infinity)   // 占满中间，避免新内容把麦克风挤出屏幕
-                micIndicator.padding(.bottom, 26)
+                subtitles.frame(maxHeight: .infinity).clipped()   // 占满中间并裁剪，不盖住状态行
+                // 左「+」(音色/语速) + 中间大麦克风；整行固定高度，字幕不会被脉冲顶动
+                HStack(spacing: 22) {
+                    DarkPlusButton { showVoiceSheet = true }
+                    micIndicator
+                    Color.clear.frame(width: 48, height: 48)
+                }
+                .frame(height: 140)
+                .padding(.bottom, 18)
                 Text("严格按真实对话练 · 说错会当场纠正")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
             }
+        }
+        .sheet(isPresented: $showVoiceSheet) {
+            VoiceSpeedSheet().environmentObject(model)
         }
     }
 
@@ -625,8 +662,9 @@ struct ImmersivePracticeView: View {
         return "按提示开口说英语"
     }
 
-    /// 最近几条：中文提示 / AI 台词（打码点开）/ 纠正。
+    /// 最近几条：中文提示 / AI 台词（打码点开）/ 纠正。始终滚到最新。
     private var subtitles: some View {
+        ScrollViewReader { proxy in
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(model.homeItems.suffix(5)) { item in
@@ -682,11 +720,15 @@ struct ImmersivePracticeView: View {
                         EmptyView()
                     }
                 }
+                Color.clear.frame(height: 1).id("immersive-bottom")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24).padding(.top, 14)
         }
-        .frame(maxHeight: 300)
+        .onChange(of: model.homeItems.count) { _, _ in
+            withAnimation { proxy.scrollTo("immersive-bottom", anchor: .bottom) }
+        }
+        }
     }
 
     /// 中央圆形麦克风：随音量呼吸跳动；断线时变重连。
@@ -702,18 +744,9 @@ struct ImmersivePracticeView: View {
             }
         } else {
             Button { rpStream.togglePause() } label: {
-                ZStack {
-                    Circle()
-                        .stroke((rpStream.isAISpeaking ? RTTheme.success : RTTheme.accent)
-                            .opacity(0.35 + 0.4 * liveLevel), lineWidth: 2)
-                        .frame(width: 96 + 34 * liveLevel, height: 96 + 34 * liveLevel)
-                    Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
-                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
-                    Image(systemName: rpStream.isPaused ? "mic.slash.fill" : "mic.fill")
-                        .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
-                        .scaleEffect(1 + 0.18 * liveLevel)
-                }
-                .animation(.easeOut(duration: 0.1), value: liveLevel)
+                PulsingMic(level: liveLevel,
+                           symbol: rpStream.isPaused ? "mic.slash.fill" : "mic.fill",
+                           ringColor: rpStream.isAISpeaking ? RTTheme.success : RTTheme.accent)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(rpStream.isPaused ? "开启麦克风" : "关闭麦克风")

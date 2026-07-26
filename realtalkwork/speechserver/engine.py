@@ -188,10 +188,21 @@ def _transcribe_sync(audio_bytes: bytes, language: str | None, prompt: str | Non
     return text, words, float(getattr(info, "duration", 0.0) or 0.0)
 
 
+# 反幻觉阈值：Whisper 对着静音/环境噪音会凭空编出成句的文本（实测「云很白,风很轻…」
+# 这类诗句）。用解码置信度过滤：判为"无人声"的概率过高、或平均对数概率过低的段一律丢弃。
+_NO_SPEECH_MAX = float(os.getenv("SPEECH_ASR_NO_SPEECH_MAX", "0.6"))
+_AVG_LOGPROB_MIN = float(os.getenv("SPEECH_ASR_AVG_LOGPROB_MIN", "-1.0"))
+
+
 def _collect_words(segments) -> tuple[str, list[dict]]:
     parts: list[str] = []
     words: list[dict] = []
     for seg in segments:   # segments 是生成器：迭代即触发实际解码
+        # 丢掉低置信度段：这类几乎全是静音/噪音上的幻觉，放行会不停冒出假字幕并被翻译
+        no_speech = float(getattr(seg, "no_speech_prob", 0.0) or 0.0)
+        avg_lp = float(getattr(seg, "avg_logprob", 0.0) or 0.0)
+        if no_speech > _NO_SPEECH_MAX or avg_lp < _AVG_LOGPROB_MIN:
+            continue
         parts.append(seg.text)
         for w in (seg.words or []):
             words.append({
