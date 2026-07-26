@@ -67,6 +67,7 @@ struct TranslateCallView: View {
             .padding(.horizontal, 12).padding(.vertical, 7)
             .background(.white.opacity(0.10), in: Capsule())
             Spacer()
+            SpeakerToggle(dark: true)
             Button { model.exitTranslate() } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
@@ -285,6 +286,7 @@ struct ScenePracticeView: View {
                     .font(.system(size: 11 * model.fontScale)).foregroundStyle(RTTheme.textSecondary)
             }
             Spacer()
+            SpeakerToggle(dark: false)
             if let rp = model.roleplay {
                 Text("\(rp.progress)/\(rp.total)")
                     .font(.system(size: 12 * model.fontScale, weight: .semibold))
@@ -648,6 +650,7 @@ struct ImmersivePracticeView: View {
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
             }
             Spacer()
+            SpeakerToggle(dark: true)
             if let rp = model.roleplay {
                 Text("\(rp.progress)/\(rp.total)")
                     .font(.system(size: 13, weight: .semibold).monospacedDigit())
@@ -829,5 +832,25 @@ struct InlineVoiceSpeedPanel: View {
         .background(dark ? AnyShapeStyle(Color.white.opacity(0.06)) : AnyShapeStyle(RTTheme.surface))
         .overlay(Rectangle().frame(height: 1).foregroundStyle(chipStroke), alignment: .top)
         .task { await model.loadTtsVoices() }
+    }
+}
+
+/// 小喇叭开关：关掉只看字幕不播语音，默认播放。dark=深色语音界面配色。
+struct SpeakerToggle: View {
+    @EnvironmentObject private var model: AppModel
+    var dark: Bool = true
+
+    var body: some View {
+        Button { model.autoPlayAI.toggle() } label: {
+            Image(systemName: model.autoPlayAI ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(model.autoPlayAI ? RTTheme.accent
+                                                  : (dark ? Color.white.opacity(0.55) : RTTheme.textSecondary))
+                .frame(width: 40, height: 40)
+                .background(dark ? AnyShapeStyle(Color.white.opacity(0.12)) : AnyShapeStyle(RTTheme.surface), in: Circle())
+                .overlay(Circle().stroke(dark ? Color.clear : RTTheme.hairline))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.autoPlayAI ? "关闭语音播放（只看字幕）" : "开启语音播放")
     }
 }

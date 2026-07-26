@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -71,6 +73,24 @@ fun PulsingMic(level: Float, paused: Boolean, ringColor: Color = RT.Accent, onCl
                 modifier = Modifier.size(32.dp),
             )
         }
+    }
+}
+
+/** 小喇叭开关：关掉只打字幕不播语音，默认播放（与手动触发界面一致）。 */
+@Composable
+fun DarkSpeakerToggle(model: AppViewModel) {
+    val on by model.autoPlayAI.collectAsState()
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+            .clickable { model.toggleAutoPlayAI() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            if (on) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+            contentDescription = if (on) "关闭语音播放（只看字幕）" else "开启语音播放",
+            tint = if (on) RT.Accent else Color.White.copy(alpha = 0.55f),
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
@@ -187,6 +207,8 @@ fun TranslateScreen(model: AppViewModel) {
                 Text("实时翻译", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
             }
             Spacer(Modifier.weight(1f))
+            DarkSpeakerToggle(model)
+            Spacer(Modifier.width(8.dp))
             Box(
                 Modifier.size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
                     .clickable { model.exitTranslate() },
@@ -309,6 +331,8 @@ fun ImmersivePracticeScreen(model: AppViewModel) {
                     fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 Text("沉浸式 · 严格按剧本", color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp)
             }
+            DarkSpeakerToggle(model)
+            Spacer(Modifier.width(8.dp))
             rp?.let {
                 Text("${it.progress}/${it.total}", color = Color.White.copy(alpha = 0.9f),
                     fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
