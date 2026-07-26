@@ -76,6 +76,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val conversationPreference = MutableStateFlow(auth.conversationPreference) // ask/voice/immersive/manual
     val pendingPractice = MutableStateFlow<Triple<ScenarioSummary, String, Boolean>?>(null) // (场景, 角色, 是否继续上次)；非空时弹「对话前询问」
     val fontScale = MutableStateFlow(auth.fontScale)
+    /** AI 朗读倍速：与三个对话界面、设置页共用同一份状态。 */
+    val playbackSpeed = MutableStateFlow(1.0f)
     val autoCaptureEnabled = MutableStateFlow(auth.autoCaptureEnabled)
     // 多个自动采集时段（"HH:mm" 起止对）
     val captureWindows = MutableStateFlow(parseCaptureWindows(auth.captureWindows))
@@ -565,7 +567,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun changeTutorVoice(v: String) {
         viewModelScope.launch {
             setTtsVoiceAwait(v)
-            reconnectTutor()
+            // 只重连【当前确实在跑】的那条流：场景练习用的是 roleplay 流，
+            // 无脑重连自由对话流会冲掉字幕且练习仍用旧音色（iOS 上踩过：换音色后 AI 就哑了）。
+            // 设置页在没有会话时打开则什么都不做——音色已入库，下次建流自然生效。
+            when {
+                showScenePractice.value || homeSceneStrict.value -> reconnectStrictStream()
+                showTranslate.value || showTutor.value -> reconnectTutor()
+                else -> {}
+            }
         }
     }
 
@@ -1255,6 +1264,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.showChineseHint = value
     }
 
+
+    fun setPlaybackSpeed(value: Float) {
+        val v = value.coerceIn(0.5f, 2.0f)
+        playbackSpeed.value = v
+        stream.playbackRate = v
+        freeStream.playbackRate = v
+    }
 
     fun setFontScale(value: Float) {
         val normalized = value.coerceIn(0.85f, 1.35f)

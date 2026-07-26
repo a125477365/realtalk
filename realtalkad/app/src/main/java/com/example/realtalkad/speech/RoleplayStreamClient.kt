@@ -104,6 +104,9 @@ class RoleplayStreamClient(private val context: Context) {
 
     private var aiSpeaking = false
     private var player: MediaPlayer? = null
+
+    /** 播放倍速（0.5~2.0）：客户端倍速，语音服务器不支持 speed 参数。 */
+    var playbackRate: Float = 1.0f
     private val aiQueue = ArrayDeque<ByteArray>()
     private var incoming = java.io.ByteArrayOutputStream()
     private var receivingAudio = false
@@ -408,6 +411,11 @@ class RoleplayStreamClient(private val context: Context) {
         f.writeBytes(data)
         try {
             val mp = MediaPlayer()
+            runCatching {
+                if (kotlin.math.abs(playbackRate - 1.0f) > 0.01f) {
+                    mp.playbackParams = mp.playbackParams.setSpeed(playbackRate)
+                }
+            }
             mp.setDataSource(f.absolutePath)
             mp.setOnCompletionListener { runCatching { it.release() }; player = null; f.delete(); playNextAi() }
             mp.setOnErrorListener { _, _, _ -> f.delete(); false }
