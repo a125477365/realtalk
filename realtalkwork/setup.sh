@@ -540,9 +540,11 @@ if $DEPLOY_BACKEND; then
       ask_secret_config ALIPAY_PUBLIC_KEY "支付宝公钥"; ALI_PUB="$REPLY_VALUE"
       ask "支付宝回调地址 NOTIFY_URL" "https://your-domain.com/payment/alipay/webhook"; ALI_NOTIFY="$REPLY_VALUE"
     fi
-    note "未接入官方支付时，可填个人收款码账号，用户转账后在管理台「充值订单」人工确认。"
-    ask_config WECHAT_RECEIVER_ACCOUNT "微信收款账号/备注（可留空）" ""; WX_RECV="$REPLY_VALUE"
+    note "未接入官方支付时，可填个人收款码账号或收款码图 URL（链接到你能 Web 访问的 png/jpg）。用户扫码付款后在管理台「充值订单」人工确认。"
+    ask_config WECHAT_RECEIVER_ACCOUNT "微信收款账号/手机号（可留空）" ""; WX_RECV="$REPLY_VALUE"
+    ask_config WECHAT_PAY_URL "微信收款码图 URL（可留空，例如 https://your-domain/pay/wx.png）" ""; WX_PAY_URL_ENV="$REPLY_VALUE"
     ask_config ALIPAY_RECEIVER_ACCOUNT "支付宝收款账号（可留空）" ""; ALI_RECV="$REPLY_VALUE"
+    ask_config ALIPAY_PAY_URL "支付宝收款码图 URL（可留空，例如 https://your-domain/pay/ali.png）" ""; ALI_PAY_URL_ENV="$REPLY_VALUE"
   fi
 
   # ---- 集成凭据：邮件 SMTP / Apple 内购（多活后端共用，入库；微信登录在上面已单独配过）----
@@ -592,6 +594,7 @@ if $DEPLOY_BACKEND; then
     "# —— 多活共用值（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台维护）——"
     "PAYMENT_RECEIVER_NAME=$RECV_NAME"
     "WECHAT_RECEIVER_ACCOUNT=$WX_RECV" "ALIPAY_RECEIVER_ACCOUNT=$ALI_RECV"
+    "WECHAT_PAY_URL=${WX_PAY_URL_ENV:-}" "ALIPAY_PAY_URL=${ALI_PAY_URL_ENV:-}"
     "WECHAT_MCHID=$WX_MCHID" "WECHAT_API_KEY=$WX_APIKEY" "WECHAT_NOTIFY_URL=$WX_NOTIFY"
     "WECHAT_CERT_SERIAL=$WX_SERIAL" "WECHAT_PLATFORM_CERT=$WX_CERT"
     "WECHAT_MERCHANT_CERT=$WX_MERCH_CERT" "WECHAT_MERCHANT_KEY=$WX_MERCH_KEY"

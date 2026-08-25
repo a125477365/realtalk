@@ -1769,6 +1769,17 @@ def billing_subscribe(
     )
 
 
+def _short_order_code(order_id: str) -> str:
+    """把 UUID 压缩成 6 位短码，便于用户付款备注。同日内碰撞概率极低。"""
+    import hashlib
+    h = hashlib.sha256(order_id.encode()).digest()
+    # base30：去掉易混字 I/L/O/U/0/1，6 位 ≈ 30^6 = 7.3 亿组合
+    alphabet = "ABCDEFGHJKMNPQRSTVWXYZ23456789"  # len=30
+    base = len(alphabet)
+    n = int.from_bytes(h[:8], "big")
+    return "".join(alphabet[(n // (base ** i)) % base] for i in range(6))
+
+
 @app.post("/billing/recharge", response_model=RechargeOrderResponse)
 async def create_recharge(
     request: RechargeCreateRequest,
@@ -1894,8 +1905,17 @@ async def create_recharge(
         receiver_account=method_settings["receiver_account"],
         plan_id=plan_id,
     )
-    order.message = ("请使用" + method_settings["title"] + "支付 " + money_text(amount_cents)
-                     + ("（" + order_desc + "）" if plan_id else "") + "，付款备注订单号。")
+    # 短码方便用户付款备注。同时保留 uuid 放在 message里以备排查
+    short_code = _short_order_code(order.order_id)
+    title = method_settings["title"] or method_settings["title"] or "扫码"  # 防御 None
+    order.message = (
+        f"请用{title}扫码支付 {money_text(amount_cents)}" +
+        (f"（{order_desc}）" if plan_id else "") +
+        f"，付款时备注请填：{short_code}（订单号），方便管理员核账。"
+    )
+    # 同时把短码塞进 qr_code_text（客户端可在二维码旁显示），不破坏现有 db schema
+    if not order.qr_code_text:
+        order.qr_code_text = short_code
     return order
 
 
@@ -4312,6 +4332,7 @@ def token_usage_info(user: UserOut) -> TokenUsageInfo:
 
 
 def payment_method_settings(method: str) -> dict[str, str | None]:
+    """返回 dict：title 始终 str（支付方名字），其余字段允许 None（用户未配置时）。"""
     cfg = payments.resolve_payment_config()   # 单一来源：收款码/收款账号只读 DB
     if method == "wechat":
         return {
