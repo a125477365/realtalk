@@ -15,6 +15,8 @@ RealTalk 是一个基于真实对话的英语口语练习系统。它把日常�
 - **接口列表**：见 [`realtalkwork/README.md`](./realtalkwork/README.md)
 - **后端安装**：见 [`realtalkwork/INSTALL.md`](./realtalkwork/INSTALL.md)
 - **本地 speech / OpenAI 模型地址填写**：见 [`realtalkwork/speechserver/README.md`](./realtalkwork/speechserver/README.md#在-realtalk-中启用管理台--系统设置--模型中心)
+- **邮箱注册（默认，免企业资质）**：见 [`docs/email-login.md`](./docs/email-login.md)
+- **微信一键登录（可选，需企业号）**：见 [`docs/wechat-app-login.md`](./docs/wechat-app-login.md)
 
 ## 特性
 

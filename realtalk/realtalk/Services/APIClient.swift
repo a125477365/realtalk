@@ -67,12 +67,14 @@ final class APIClient {
         try await post("/auth/email/code", body: EmailCodeRequest(email: email), token: nil)
     }
 
-    func register(email: String, password: String, code: String) async throws -> AuthResponse {
-        try await post("/auth/register", body: EmailRegisterRequest(email: email, password: password, code: code), token: nil)
+    /// 邮箱验证码注册。注意后端该端点只下发令牌、不返回用户档案，注册成功后由 AuthStore 再拉 /auth/me。
+    func register(email: String, password: String, code: String) async throws -> AuthTokenResponse {
+        try await post("/auth/password/register", body: EmailRegisterRequest(email: email, password: password, code: code), token: nil)
     }
 
-    func login(email: String, password: String) async throws -> AuthResponse {
-        try await post("/auth/login", body: AuthRequest(email: email, password: password), token: nil)
+    /// 邮箱密码登录。同样只回令牌；登录后由 AuthStore 拉取用户档案。
+    func login(email: String, password: String, deviceId: String?) async throws -> AuthTokenResponse {
+        try await post("/auth/password/login", body: PasswordLoginRequest(email: email, password: password, deviceId: deviceId), token: nil)
     }
 
     func wechatLogin(code: String, nickname: String?, avatarUrl: String?, deviceId: String?) async throws -> AuthResponse {

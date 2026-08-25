@@ -279,18 +279,36 @@ def record_tts_cost(user_id: str | None, chars: int) -> None:
 
 
 def record_conv_voice_cost(user_id: str | None, seconds: float) -> None:
-    """d 类：实时通道按会话分钟整体计费——通道内已含 ASR/LLM/TTS，绝不再按 a/b/c 重复计。"""
+    """d 类：实时通道按会话分钟整体计费——通道内已含 ASR/LLM/TTS，绝不再按 a/b/c 重复计。
+
+    voice_conv 当前本地 speechserver 是测试用，生产会替换为远程 OpenAI Realtime 等外部 LLM，
+    所以**必须**占用每日 token 限额。按 OpenAI Realtime 官方换算：双向各 ≈ 12 tok/秒，
+    合计 ≈ 24 tok/秒，1 分钟 ≈ 1440 token（≈69 分钟/日在 100k 限额内）。
+    """
     if not user_id or seconds <= 0:
         return
     price = _voice_price("conv_voice_price_per_minute_cents", settings.conv_voice_price_per_minute_cents)
-    if price <= 0:
-        return
     import math
+
+    # 估算本轮的外部 LLM token 占用（双向音频流合计）——即便当前是本地测试也照样记，
+    # 后端切到远程 LLM 时无需任何代码变化。
+    estimated_tokens = int(seconds * 24)
+    prompt_toks = estimated_tokens // 2
+    completion_toks = estimated_tokens - prompt_toks
+
+    cost_cents = round(max(1, math.ceil(seconds / 60)) * price, 4) if price > 0 else 0.0
 
     from .storage import db
 
-    db.record_ai_usage(user_id=user_id, kind="voice_conv", model="realtime", prompt_tokens=0, completion_tokens=0,
-                       cost_cents=round(max(1, math.ceil(seconds / 60)) * price, 4), latency_ms=0)
+    db.record_ai_usage(
+        user_id=user_id,
+        kind="voice_conv",
+        model="realtime",
+        prompt_tokens=prompt_toks,
+        completion_tokens=completion_toks,
+        cost_cents=cost_cents,
+        latency_ms=0,
+    )
 
 
 def available_voices() -> list[str]:

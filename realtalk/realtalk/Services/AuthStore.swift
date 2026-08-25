@@ -123,14 +123,14 @@ final class AuthStore: ObservableObject {
     }
 
     func register(email: String, password: String, code: String) async {
-        await authenticate {
+        await authenticateWithTokens {
             try await api.register(email: email, password: password, code: code)
         }
     }
 
     func login(email: String, password: String) async {
-        await authenticate {
-            try await api.login(email: email, password: password)
+        await authenticateWithTokens {
+            try await api.login(email: email, password: password, deviceId: deviceID)
         }
     }
 
@@ -178,6 +178,23 @@ final class AuthStore: ObservableObject {
         UserDefaults.standard.removeObject(forKey: tokenKey)
         UserDefaults.standard.removeObject(forKey: refreshKey)
         statusMessage = message
+    }
+
+    /// 邮箱注册/登录走 /auth/password/*，只回令牌；先落令牌再拉 /auth/me 拿档案。
+    private func authenticateWithTokens(_ action: () async throws -> AuthTokenResponse) async {
+        isBusy = true
+        defer { isBusy = false }
+
+        do {
+            let response = try await action()
+            applyTokens(access: response.accessToken, refresh: response.refreshToken)
+            user = try await api.currentUser(token: response.accessToken)
+            phase = .signedIn
+            statusMessage = "登录成功"
+        } catch {
+            // 已落令牌但拉用户失败也要清掉，避免半截会话
+            clearSession(message: error.localizedDescription)
+        }
     }
 
     private func authenticate(_ action: () async throws -> AuthResponse) async {

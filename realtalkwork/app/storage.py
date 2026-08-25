@@ -867,6 +867,15 @@ class Database:
         return self.get_app_setting_int(f"daily_token_limit_{tier}", defaults.get(tier, settings.daily_token_limit_free))
 
     def tokens_used_today(self, user_id: str) -> int:
+        """今日已用的外部 LLM token 总量（用于每日免费额度兜底）。
+
+        计入所有真实消耗外部 LLM token 的调用：
+          - 文字链路：chat / scenario / preset_scenario / learning / evaluate（真实 token）
+          - 语音链路：voice_conv（生产走远程 OpenAI Realtime，token 按秒估算 ≈24 tok/秒）
+        排除两类不消耗外部 LLM 的：
+          - capture_input：用户中文采集原文（不进 LLM）
+          - asr / tts / asr_scenario：本地 faster-whisper / Qwen3-TTS（用户自己机器跑）
+        """
         today_start = _iso(_now().replace(hour=0, minute=0, second=0, microsecond=0))
         with self.engine.connect() as conn:
             value = conn.execute(
@@ -1387,6 +1396,7 @@ class Database:
             "daily_token_limit_free": s.daily_token_limit_free,
             "daily_token_limit_basic": s.daily_token_limit_basic,
             "daily_token_limit_premium": s.daily_token_limit_premium,
+            "free_daily_token_total": s.free_daily_token_total,
             "budget_ratio": s.budget_ratio,
             "nonmember_daily_chat_tokens": s.nonmember_daily_chat_tokens,
             "nonmember_daily_capture_tokens": s.nonmember_daily_capture_tokens,

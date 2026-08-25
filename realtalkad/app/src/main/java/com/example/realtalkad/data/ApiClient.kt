@@ -88,6 +88,18 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun wechatLogin(code: String, nickname: String?, deviceId: String? = null): AuthResponse =
         post("/auth/wechat/login", WeChatLoginRequest(code, nickname, deviceId = deviceId))
 
+    /** 发送邮箱验证码（注册用）。dev 模式下 dev_code 直接返回，便于联调。 */
+    suspend fun sendEmailCode(email: String): EmailCodeResponse =
+        post("/auth/email/code", EmailCodeRequest(email))
+
+    /** 邮箱 + 验证码注册 → 颁发令牌；随后调用方需拉 /auth/me 补全用户档案。 */
+    suspend fun registerPassword(email: String, password: String, code: String): AuthTokenResponse =
+        post("/auth/password/register", EmailRegisterRequest(email, password, code))
+
+    /** 邮箱 + 密码登录 → 颁发令牌；同样只回令牌。 */
+    suspend fun loginPassword(email: String, password: String, deviceId: String? = null): AuthTokenResponse =
+        post("/auth/password/login", PasswordLoginRequest(email, password, deviceId))
+
     suspend fun currentUser(token: String): AppUser = get("/auth/me", token)
 
     suspend fun refreshToken(refresh: String): AuthTokenResponse =

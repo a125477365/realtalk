@@ -237,9 +237,16 @@ struct ErrorResponse: Codable {
     let detail: String
 }
 
-struct AuthRequest: Codable {
+struct PasswordLoginRequest: Codable {
     let email: String
     let password: String
+    let deviceId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case email
+        case password
+        case deviceId = "device_id"
+    }
 }
 
 struct EmailCodeRequest: Codable {

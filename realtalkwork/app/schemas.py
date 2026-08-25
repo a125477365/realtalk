@@ -487,6 +487,8 @@ class QuotaSettingsRequest(BaseModel):
     daily_token_limit_free: int | None = Field(default=None, ge=0, le=100000000)
     daily_token_limit_basic: int | None = Field(default=None, ge=0, le=100000000)
     daily_token_limit_premium: int | None = Field(default=None, ge=0, le=100000000)
+    # 全员免费模式下的每日 token 总量上限（每人每天，0=不限制；默认 100000）
+    free_daily_token_total: int | None = Field(default=None, ge=0, le=100000000)
     # 月度 token 费用额度 = 购买会员时档位标准月费 × 该比例（0~1，默认 0.5）
     budget_ratio: float | None = Field(default=None, ge=0, le=1)
     # 非会员（免费）每日限额

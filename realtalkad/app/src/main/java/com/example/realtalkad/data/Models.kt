@@ -467,6 +467,28 @@ data class WeChatLoginRequest(
     @SerialName("device_id") val deviceId: String? = null,
 )
 
+// ---- 邮箱认证 ----
+
+@Serializable
+data class EmailCodeRequest(val email: String)
+
+@Serializable
+data class EmailCodeResponse(
+    val sent: Boolean,
+    @SerialName("expires_in_seconds") val expiresInSeconds: Int,
+    @SerialName("dev_code") val devCode: String? = null,
+)
+
+@Serializable
+data class EmailRegisterRequest(val email: String, val password: String, val code: String)
+
+@Serializable
+data class PasswordLoginRequest(
+    val email: String,
+    val password: String,
+    @SerialName("device_id") val deviceId: String? = null,
+)
+
 /** 主界面聊天消息（本地 UI 模型） */
 data class ChatMessage(
     val id: Long,

@@ -554,10 +554,11 @@ if $DEPLOY_BACKEND; then
   if [ "$REPLY_VALUE" = "yes" ]; then
     ask "配置邮件 SMTP？(yes/no)" "$(old_yes_if_set SMTP_HOST)"
     if [ "$REPLY_VALUE" = "yes" ]; then
-      ask_config SMTP_HOST "SMTP 主机" ""; SMTP_HOST="$REPLY_VALUE"
-      ask_config SMTP_USERNAME "SMTP 用户名" ""; SMTP_USER="$REPLY_VALUE"
-      ask_secret_config SMTP_PASSWORD "SMTP 密码"; SMTP_PW="$REPLY_VALUE"
-      ask_config SMTP_FROM "发件人" "RealTalk <noreply@realtalk.local>"; SMTP_FROM_VAL="$REPLY_VALUE"
+      note "QQ 邮箱：SMTP 主机 smtp.qq.com、端口 587；用户名=你的QQ邮箱地址，密码=邮箱设置里生成的「授权码」（非 QQ 密码）。"
+      ask_config SMTP_HOST "SMTP 主机" "smtp.qq.com"; SMTP_HOST="$REPLY_VALUE"
+      ask_config SMTP_USERNAME "SMTP 用户名（你的QQ邮箱地址）" ""; SMTP_USER="$REPLY_VALUE"
+      ask_secret_config SMTP_PASSWORD "SMTP 密码（QQ邮箱SMTP授权码）"; SMTP_PW="$REPLY_VALUE"
+      ask_config SMTP_FROM "发件人（一般与用户名一致）" "RealTalk <$SMTP_USER>"; SMTP_FROM_VAL="$REPLY_VALUE"
     fi
     ask "配置 Apple 内购服务端校验？(yes/no)" "$(old_yes_if_set APPLE_ISSUER_ID)"
     if [ "$REPLY_VALUE" = "yes" ]; then
@@ -584,8 +585,8 @@ if $DEPLOY_BACKEND; then
     "APPLE_IAP_DEV_BYPASS=$DEV"
     "APPLE_USE_SANDBOX=$DEV"
     "ALIPAY_SANDBOX=$DEV"
-    "# 邮箱注册默认关闭，仅微信认证；配了 SMTP 自动关开发模式以真正发信"
-    "EMAIL_AUTH_ENABLED=false"
+    "# 邮箱注册开放（QQ 邮箱等，SMTP 发验证码）；配了 SMTP 自动关开发模式以真正发信"
+    "EMAIL_AUTH_ENABLED=true"
     "EMAIL_DEV_MODE=$EMAIL_DEV"
     "PAYMENT_DEV_AUTO_CONFIRM=$PAY_DEV_CONFIRM"
     "# —— 多活共用值（装库时入库，DB 为唯一来源；运行期只读 DB，可在管理台维护）——"

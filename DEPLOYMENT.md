@@ -64,7 +64,8 @@ curl -s http://localhost:8000/ready    # 数据库连通
 PAYMENT_DEV_AUTO_CONFIRM=false   # 否则用户不付款也能确认到账
 WECHAT_AUTH_DEV_MODE=false       # 否则任意设备可直登，未校验真实身份
 APPLE_IAP_DEV_BYPASS=false       # 否则内购校验被绕过
-EMAIL_DEV_MODE=false             # 若启用邮箱注册
+EMAIL_AUTH_ENABLED=true          # 邮箱注册（QQ 邮箱等），默认开启
+EMAIL_DEV_MODE=false             # 配好 SMTP 后必须 false，否则验证码直接外泄
 JWT_SECRET=<长随机串>            # 多节点共享同一值
 ADMIN_PASSWORD=<强密码>          # 不要用默认值
 ```

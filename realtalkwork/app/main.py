@@ -803,6 +803,9 @@ def admin_get_quota(admin: dict = Depends(current_admin)) -> dict:
         "nonmember_daily_capture_seconds": db.get_app_setting_int(
             "nonmember_daily_capture_seconds", settings.nonmember_daily_capture_seconds
         ),
+        "free_daily_token_total": db.get_app_setting_int(
+            "free_daily_token_total", settings.free_daily_token_total
+        ),
     }
 
 
@@ -813,7 +816,7 @@ def admin_set_quota(
 ) -> dict:
     if admin["role"] not in ("superadmin", "admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
-    for key in ("daily_token_limit_free", "daily_token_limit_basic", "daily_token_limit_premium"):
+    for key in ("daily_token_limit_free", "daily_token_limit_basic", "daily_token_limit_premium", "free_daily_token_total"):
         value = getattr(request, key)
         if value is not None:
             db.set_app_setting(key, str(value))
@@ -4243,13 +4246,22 @@ def estimate_text_cost_cents(input_chars: int = 0) -> float:
 
 
 # ==== 收费模式已下线：全部功能对所有用户免费 ====
-# 下面几个门禁函数保留签名（几十处调用点不动），但一律放行、绝不再抛 402。
-# 用量记账（record_ai_usage 等）仍在别处照常进行，管理台可看成本，只是不再据此拦截。
+# 但为防止极个别人滥用薅光模型预算，保留「每日免费 token 总量」兜底：
+# 默认 100k/人/日，超出后当天 402，次日重置。管理台可调（free_daily_token_total）。
+# 用量记账（record_ai_usage 等）仍在别处照常进行，管理台可看成本。
 
 
 def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> None:
-    """全部免费：不再检查会员/额度，永远放行。"""
-    return
+    """免费但限量：当日 token 已达上限 → 402 次日再来。"""
+    limit = db.get_app_setting_int("free_daily_token_total", settings.free_daily_token_total)
+    if limit <= 0:   # 0 = 不限制
+        return
+    used = db.tokens_used_today(user.id)
+    if used >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"今日免费额度已用完（{used}/{limit} token），明天再来。",
+        )
 
 
 def require_premium(user: UserOut) -> None:

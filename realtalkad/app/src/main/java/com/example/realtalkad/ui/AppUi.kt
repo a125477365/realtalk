@@ -20,8 +20,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -32,6 +35,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,9 +58,12 @@ import androidx.compose.ui.graphics.Color
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import com.example.realtalkad.AppViewModel
 import com.example.realtalkad.data.ScenarioSummary
 
@@ -324,30 +333,169 @@ private fun FailureAlertDialog(model: AppViewModel) {
 fun LoginScreen(model: AppViewModel) {
     val isWorking by model.isWorking.collectAsState()
     val status by model.statusMessage.collectAsState()
+    var registerMode by remember { mutableStateOf(false) }
+    var email by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var countdown by remember { mutableStateOf(0) }
+    val scope = rememberCoroutineScope()
+    val scroll = rememberScrollState()
+
+    val emailValid = email.contains("@") && email.contains(".")
+    val canSend = emailValid && countdown == 0 && !sending && !isWorking
+    val canSubmit = if (registerMode) {
+        emailValid && code.length >= 4 && password.length >= 6 && password == confirm && !isWorking
+    } else {
+        emailValid && password.isNotEmpty() && !isWorking
+    }
+
+    LaunchedEffect(countdown) {
+        if (countdown > 0) {
+            kotlinx.coroutines.delay(1000)
+            countdown -= 1
+        }
+    }
+
     Column(
-        modifier = Modifier.fillMaxSize().background(RT.BrandBrush).padding(34.dp),
+        modifier = Modifier.fillMaxSize().background(RT.BrandBrush).verticalScroll(scroll).padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text("RealTalk", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(Modifier.height(8.dp))
         Text("用真实生活，进入英语环境", color = Color.White.copy(alpha = 0.9f))
-        Spacer(Modifier.height(36.dp))
-        Button(
-            onClick = { model.loginWithWeChat() },
-            enabled = !isWorking,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0DAE4D)),
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(14.dp),
-        ) {
-            Text(if (isWorking) "正在授权…" else "微信快速登录", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(28.dp))
+
+        OutlinedTextField(
+            value = email, onValueChange = { email = it },
+            label = { Text("QQ 邮箱") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth(),
+            colors = authFieldColors(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        if (registerMode) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = code, onValueChange = { code = it },
+                    label = { Text("验证码") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                    colors = authFieldColors(),
+                )
+                Button(
+                    onClick = {
+                        sending = true
+                        scope.launch {
+                            val dev = model.sendEmailCode(email).getOrNull()
+                            if (!dev.isNullOrBlank()) code = dev       // dev 模式直接回填
+                            if (model.statusMessage.value.contains("已发送")) countdown = 60
+                            sending = false
+                        }
+                    },
+                    enabled = canSend,
+                    modifier = Modifier.height(56.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text(when {
+                        sending -> "发送中…"
+                        countdown > 0 -> "${countdown}s"
+                        else -> "获取验证码"
+                    })
+                }
+            }
+            Spacer(Modifier.height(12.dp))
         }
+
+        OutlinedTextField(
+            value = password, onValueChange = { password = it },
+            label = { Text(if (registerMode) "设置密码（至少 6 位）" else "密码") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            colors = authFieldColors(),
+        )
+
+        if (registerMode) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = confirm, onValueChange = { confirm = it },
+                label = { Text("确认密码") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = authFieldColors(),
+            )
+            if (confirm.isNotEmpty() && password != confirm) {
+                Spacer(Modifier.height(6.dp))
+                Text("两次输入的密码不一致", color = Color(0xFFFFC107), fontSize = 12.sp, modifier = Modifier.fillMaxWidth())
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
+
+        Button(
+            onClick = {
+                if (registerMode) model.registerWithEmail(email, password, code)
+                else model.loginWithEmail(email, password)
+            },
+            enabled = canSubmit,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4C6BF5)),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Text(
+                when {
+                    isWorking -> "处理中…"
+                    registerMode -> "注册并登录"
+                    else -> "登录"
+                },
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        TextButton(onClick = { registerMode = !registerMode }) {
+            Text(
+                if (registerMode) "已有账号？直接登录" else "没有账号？邮箱注册",
+                color = Color.White.copy(alpha = 0.9f),
+            )
+        }
+
+        if (registerMode) {
+            Text(
+                "验证码会发到你的邮箱（10 分钟内有效）",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 12.sp,
+            )
+        }
+
         if (status.isNotBlank()) {
             Spacer(Modifier.height(16.dp))
             Text(status, color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp)
         }
     }
 }
+
+@Composable
+private fun authFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = Color.White,
+    unfocusedTextColor = Color.White,
+    focusedLabelColor = Color.White.copy(alpha = 0.9f),
+    unfocusedLabelColor = Color.White.copy(alpha = 0.7f),
+    focusedBorderColor = Color.White.copy(alpha = 0.9f),
+    unfocusedBorderColor = Color.White.copy(alpha = 0.35f),
+    cursorColor = Color.White,
+)
 
 /* ---------------- 主聊天界面 ---------------- */
 

@@ -4,7 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.realtalkad.data.ApiClient
+import com.example.realtalkad.data.ApiException
 import com.example.realtalkad.data.AppUser
+import com.example.realtalkad.data.AuthTokenResponse
 import com.example.realtalkad.data.AudioJob
 import com.example.realtalkad.data.AuthStore
 import com.example.realtalkad.data.BillingAccount
@@ -851,6 +853,54 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 .onFailure { statusMessage.value = it.message ?: "登录失败" }
             isWorking.value = false
         }
+    }
+
+    /** 邮箱验证码注册（注册即发令牌，注册成功即视为登录）。 */
+    fun registerWithEmail(email: String, password: String, code: String) {
+        val mail = email.trim()
+        if (mail.isEmpty() || password.length < 6 || code.isBlank()) {
+            statusMessage.value = "请填写完整：邮箱、验证码、密码（≥6位）"
+            return
+        }
+        viewModelScope.launch {
+            isWorking.value = true
+            runCatching { api.registerPassword(mail, password, code.trim()) }
+                .onSuccess { applyTokenAuth(it) }
+                .onFailure { statusMessage.value = it.message ?: "注册失败" }
+            isWorking.value = false
+        }
+    }
+
+    /** 邮箱 + 密码登录。 */
+    fun loginWithEmail(email: String, password: String) {
+        val mail = email.trim()
+        if (mail.isEmpty() || password.isEmpty()) { statusMessage.value = "请输入邮箱与密码"; return }
+        viewModelScope.launch {
+            isWorking.value = true
+            runCatching { api.loginPassword(mail, password, auth.deviceId) }
+                .onSuccess { applyTokenAuth(it) }
+                .onFailure { statusMessage.value = it.message ?: "登录失败" }
+            isWorking.value = false
+        }
+    }
+
+    /** 获取邮箱验证码；dev 模式下带 dev_code，便于本地联调。 */
+    suspend fun sendEmailCode(email: String): Result<String?> {
+        val mail = email.trim()
+        if (mail.isEmpty()) return Result.failure(ApiException("请输入邮箱"))
+        return runCatching { api.sendEmailCode(mail) }
+            .onSuccess { statusMessage.value = "验证码已发送" }
+            .onFailure { statusMessage.value = it.message ?: "发送失败" }
+            .map { it.devCode }
+    }
+
+    /** 邮箱密码系列接口只发令牌不返用户档案：落令牌后拉 /auth/me 一次性补齐（与 iOS AuthStore 同步）。 */
+    private suspend fun applyTokenAuth(tokens: AuthTokenResponse) {
+        auth.token = tokens.accessToken
+        auth.refreshToken = tokens.refreshToken
+        user.value = api.currentUser(tokens.accessToken)
+        statusMessage.value = "登录成功"
+        refreshBilling(); loadTodayScenarios(); loadPlans()
     }
 
     fun logout() {
