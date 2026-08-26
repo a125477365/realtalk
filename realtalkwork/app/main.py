@@ -133,6 +133,11 @@ from .schemas import (
     WeChatLoginRequest,
 )
 from .schemas import (
+    AdminCreateRedeemCodesRequest,
+    AdminRedeemCodeItem,
+    RedeemCodeRequest,
+)
+from .schemas import (
     AsrSettingsRequest,
     AudioJobListResponse,
     AudioJobOut,
@@ -172,7 +177,7 @@ from . import voice_pipeline
 from . import voice_io
 from . import payments
 from .settings import is_production, settings
-from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db
+from .storage import DatabaseIntegrityError, InsufficientBalanceError, clean_transcript_items, db, redeem_codes
 
 app = FastAPI(title="RealTalk API", version="1.0.0")
 security = HTTPBearer(auto_error=False)
@@ -1308,6 +1313,73 @@ def admin_mark_order_paid(
     return {"order": order.model_dump(), "user_balance_cents": user.balance_cents}
 
 
+# ---- 闲鱼卡密（兑换码）管理 ----
+
+@app.get("/admin/api/redeem-codes")
+def admin_list_redeem_codes(
+    status_filter: str | None = Query(default=None, alias="status"),
+    q: str | None = Query(default=None, max_length=60),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin: dict = Depends(current_admin),
+) -> dict:
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    result = db.admin_list_redeem_codes(limit=limit, status=status_filter, query=q)
+    return {
+        "items": [AdminRedeemCodeItem(**item).model_dump() for item in result["items"]],
+        "total": result["total"],
+    }
+
+
+@app.post("/admin/api/redeem-codes")
+def admin_create_redeem_codes(
+    request: AdminCreateRedeemCodesRequest,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    """批量生成兑换码。kind=plan 时 plan_id 必填且必须存在；kind=balance 时 balance_cents 必填。"""
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    plan = None
+    if request.kind == "plan":
+        if not request.plan_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="kind=plan 时必须指定套餐")
+        plan = db._plan_by_id(request.plan_id)
+        if plan is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="套餐不存在")
+    elif request.balance_cents is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="kind=balance 时必须指定面额（分）")
+    codes = db.create_redeem_codes(
+        count=request.count,
+        kind=request.kind,
+        plan_id=request.plan_id,
+        balance_cents=request.balance_cents,
+        batch_tag=request.batch_tag,
+        created_by_admin=str(admin.get("username") or ""),
+    )
+    label = (f"套餐「{plan['title']}」" if plan else f"余额 ¥{request.balance_cents / 100:.2f}")
+    return {"codes": codes, "label": label, "count": len(codes)}
+
+
+@app.post("/admin/api/redeem-codes/{code}/disable")
+def admin_disable_redeem_code(
+    code: str,
+    admin: dict = Depends(current_admin),
+) -> dict:
+    """作废未使用的兑换码（如闲鱼退款场景）。"""
+    if admin["role"] not in ("superadmin", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="权限不足")
+    from sqlalchemy import select as _sa_select, update as _sa_update
+
+    with db.engine.begin() as conn:
+        row = conn.execute(_sa_select(redeem_codes.c.status).where(redeem_codes.c.code == code)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="兑换码不存在")
+        if row[0] == "used":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该码已被使用，无法作废")
+        conn.execute(_sa_update(redeem_codes).where(redeem_codes.c.code == code).values(status="disabled"))
+    return {"ok": True}
+
+
 # ---- Admin CRUD ----
 
 @app.get("/admin/api/admins", response_model=AdminListResponse)
@@ -1746,6 +1818,22 @@ def billing_plans() -> PlanCatalogResponse:
         trial_days=0,  # 已取消试用，保留字段兼容旧客户端
     )
 
+
+@app.post("/billing/redeem", response_model=BillingAccountResponse)
+def billing_redeem(request: RedeemCodeRequest, user: UserOut = Depends(current_user)) -> BillingAccountResponse:
+    """闲鱼卡密兑换：用户在 App 输入 12 位数字码，立即开通会员或加余额。"""
+    try:
+        result = db.redeem_code(user.id, request.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    updated = result["user"] or user
+    return BillingAccountResponse(
+        user=updated,
+        ledger=db.list_billing_ledger(user.id),
+        usage=token_usage_info(updated),
+        nonmember_limits=nonmember_limits_info(),
+        message=result["message"],
+    )
 
 @app.post("/billing/subscribe", response_model=BillingAccountResponse)
 def billing_subscribe(

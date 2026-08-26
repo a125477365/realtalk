@@ -347,6 +347,23 @@ payment_webhooks = Table(
 )
 Index("idx_payment_webhooks_order", payment_webhooks.c.order_id, payment_webhooks.c.provider)
 
+# 闲鱼卡密（兑换码）：管理员批量生成 → 闲鱼自动发货 → 用户 App 内输入即到账
+redeem_codes = Table(
+    "redeem_codes",
+    metadata,
+    Column("code", Text, primary_key=True),           # 兑换码本身（数字串）
+    Column("kind", Text, nullable=False),             # plan=会员套餐 / balance=余额
+    Column("plan_id", Text),                          # kind=plan 时对应的套餐 id
+    Column("balance_cents", Integer),                 # kind=balance 时充值的余额（分）
+    Column("status", Text, nullable=False, default="unused"),  # unused / used / disabled
+    Column("batch_tag", Text),                        # 批次备注（如「闲鱼202608」），方便对账
+    Column("used_by_user_id", Text, ForeignKey("users.id", ondelete="SET NULL")),
+    Column("used_at", Text),
+    Column("created_by_admin", Text),                 # 哪个管理员生成的
+    Column("created_at", Text, nullable=False),
+)
+Index("idx_redeem_codes_status_created", redeem_codes.c.status, redeem_codes.c.created_at)
+
 app_settings = Table(
     "app_settings",
     metadata,
@@ -3064,6 +3081,144 @@ class Database:
         with self.engine.connect() as conn:
             rows = conn.execute(stmt).mappings().fetchall()
         return [_admin_user_from_row(row) for row in rows]
+
+    # ---- 闲鱼卡密（兑换码）----
+
+    def create_redeem_codes(
+        self,
+        count: int,
+        kind: str,
+        plan_id: str | None,
+        balance_cents: int | None,
+        batch_tag: str | None,
+        created_by_admin: str | None,
+    ) -> list[dict[str, Any]]:
+        """批量生成兑换码。码格式：12 位纯数字（用户好输入），带 2 位内部校验位防手滑。"""
+        import secrets
+
+        now = _iso(_now())
+        codes: list[dict[str, Any]] = []
+        with self.engine.begin() as conn:
+            for _ in range(count):
+                while True:
+                    # 前 10 位随机 + 后 2 位校验 = 12 位数字
+                    body = "".join(str(secrets.randbelow(10)) for _ in range(10))
+                    check = str(sum(int(c) * (i % 4 + 1) for i, c in enumerate(body)) % 100).zfill(2)
+                    code = body + check
+                    exists = conn.execute(select(redeem_codes.c.code).where(redeem_codes.c.code == code)).fetchone()
+                    if exists is None:
+                        break
+                conn.execute(
+                    insert(redeem_codes).values(
+                        code=code,
+                        kind=kind,
+                        plan_id=plan_id if kind == "plan" else None,
+                        balance_cents=balance_cents if kind == "balance" else None,
+                        status="unused",
+                        batch_tag=batch_tag,
+                        created_by_admin=created_by_admin,
+                        created_at=now,
+                    )
+                )
+                codes.append({"code": code, "kind": kind, "plan_id": plan_id, "balance_cents": balance_cents})
+        return codes
+
+    def admin_list_redeem_codes(
+        self, limit: int = 100, status: str | None = None, query: str | None = None
+    ) -> dict[str, Any]:
+        """列出兑换码（管理台）。query 匹配 code 前缀或批次。"""
+        stmt = select(
+            redeem_codes,
+            users.c.login_identifier.label("used_by_login"),
+        ).join(users, users.c.id == redeem_codes.c.used_by_user_id, isouter=True)
+        count_stmt = (
+            select(func.count())
+            .select_from(redeem_codes)
+            .join(users, users.c.id == redeem_codes.c.used_by_user_id, isouter=True)
+        )
+        if status:
+            stmt = stmt.where(redeem_codes.c.status == status)
+            count_stmt = count_stmt.where(redeem_codes.c.status == status)
+        if query:
+            pattern = f"%{query.strip()}%"
+            cond = or_(redeem_codes.c.code.like(pattern), redeem_codes.c.batch_tag.like(pattern))
+            stmt = stmt.where(cond)
+            count_stmt = count_stmt.where(cond)
+        stmt = stmt.order_by(redeem_codes.c.created_at.desc()).limit(limit)
+        with self.engine.connect() as conn:
+            total = int(conn.execute(count_stmt).scalar_one() or 0)
+            rows = conn.execute(stmt).mappings().fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            items.append(item)
+        return {"items": items, "total": total}
+
+    def redeem_code(self, user_id: str, raw_code: str) -> dict[str, Any]:
+        """用户输入兑换码 → 校验 → 立即入账（会员或余额），事务保证一次性使用。
+        返回 {"ok": True, "message": ..., "plan": {...}|None, "user": UserOut}
+        抛 ValueError(中文提示) 表示失败原因。"""
+        code = (raw_code or "").replace(" ", "").replace("-", "")
+        if not code.isdigit() or len(code) != 12:
+            raise ValueError("兑换码格式不对：应为 12 位数字")
+        body, check = code[:10], code[10:]
+        expect = str(sum(int(c) * (i % 4 + 1) for i, c in enumerate(body)) % 100).zfill(2)
+        if check != expect:
+            raise ValueError("兑换码校验失败，请检查是否输错")
+
+        now = _now()
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(redeem_codes).where(redeem_codes.c.code == code).with_for_update()
+            ).mappings().fetchone()
+            if row is None:
+                raise ValueError("兑换码不存在，请检查后重试")
+            if row["status"] == "used":
+                raise ValueError("该兑换码已被使用")
+            if row["status"] == "disabled":
+                raise ValueError("该兑换码已作废，请联系卖家")
+
+            plan = self._plan_by_id(row["plan_id"]) if row["kind"] == "plan" and row["plan_id"] else None
+            if row["kind"] == "plan" and plan is None:
+                raise ValueError("该兑换码对应的套餐已下架，请联系卖家")
+
+            # 先标记 used 再入账——同一事务内原子完成
+            conn.execute(
+                update(redeem_codes)
+                .where(redeem_codes.c.code == code, redeem_codes.c.status == "unused")
+                .values(status="used", used_by_user_id=user_id, used_at=_iso(now))
+            )
+            updated_rows = conn.execute(
+                select(redeem_codes.c.status).where(redeem_codes.c.code == code)
+            ).scalar_one()
+            if updated_rows != "used":
+                raise ValueError("兑换码状态异常，请稍后再试")
+
+            if row["kind"] == "plan":
+                assert plan is not None
+                self._grant_plan_in_conn(conn, user_id, plan, now)
+                message = f"兑换成功！已为你开通「{plan.get('title', plan['tier'])}」（{plan['months']} 个月）"
+            else:
+                amount = int(row["balance_cents"] or 0)
+                if amount <= 0:
+                    raise ValueError("该兑换码面额异常，请联系卖家")
+                conn.execute(update(users).where(users.c.id == user_id).values(balance_cents=users.c.balance_cents + amount))
+                balance_after = int(conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one())
+                conn.execute(
+                    insert(billing_ledger).values(
+                        id=str(uuid.uuid4()),
+                        user_id=user_id,
+                        type="recharge",
+                        title=f"闲鱼卡密充值 ¥{amount / 100:.0f}",
+                        amount_cents=amount,
+                        balance_after_cents=balance_after,
+                        created_at=_iso(now),
+                    )
+                )
+                message = f"兑换成功！余额已到账 ¥{amount / 100:.2f}"
+
+        user = self.get_user(user_id)
+        return {"message": message, "kind": row["kind"], "plan": plan, "user": user}
 
     def admin_get_user_detail(self, user_id: str) -> dict[str, Any] | None:
         row = self.get_user_row(user_id)

@@ -563,9 +563,10 @@ struct BillingAccountResponse: Codable, Equatable {
     let ledger: [BillingLedgerItem]
     let usage: TokenUsageInfo?
     let nonmemberLimits: NonmemberLimits?
+    var message: String?
 
     enum CodingKeys: String, CodingKey {
-        case user, ledger, usage
+        case user, ledger, usage, message
         case nonmemberLimits = "nonmember_limits"
     }
 }
@@ -616,6 +617,10 @@ struct RechargeConfirmRequest: Codable {
     enum CodingKeys: String, CodingKey {
         case orderId = "order_id"
     }
+}
+
+struct RedeemCodeRequest: Codable {
+    let code: String
 }
 
 struct CaptureQuotaResponse: Codable {

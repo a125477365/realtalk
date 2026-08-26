@@ -171,6 +171,7 @@ function navigate(tab) {
   state.userDetailId = null;
   state.userPage = 1;
   renderApp();
+  if (tab === "redeem") { loadRedeemPlanOptions(); loadRedeemCodes(); }
 }
 
 function resetAdminState() {
@@ -298,6 +299,7 @@ function renderSidebar() {
     nav("overview", "\u6570\u636e\u6982\u89c8", "\ud83d\udcca"),
     nav("users", "\u7528\u6237\u7ba1\u7406", "\ud83d\udc65"),
     nav("orders", "\u5145\u503c\u8ba2\u5355", "\ud83d\udcb3"),
+    nav("redeem", "\u5151\u6362\u7801", "\ud83c\udf9f\ufe0f"),
     nav("tickets", "\u5ba2\u670d\u5de5\u5355", "\ud83c\udfab"),
     nav("presets", "\u901a\u7528\u573a\u666f", "\ud83d\uddc2\ufe0f"),
     nav("admins", "\u7ba1\u7406\u5458\u7ba1\u7406", "\ud83d\udc64"),
@@ -803,6 +805,125 @@ function markOrderPaid(orderId) {
 // ============================================================
 function ticketCatLabel(c) { return { refund: "退款", feedback: "反馈", bug: "问题", other: "其他" }[c] || c; }
 function ticketStatusLabel(s) { return { open: "待处理", processing: "处理中", resolved: "已解决", closed: "已关闭", rejected: "不采纳" }[s] || s; }
+
+// ============================================================
+// Redeem Codes Page (闲鱼卡密)
+// ============================================================
+function renderRedeemPage() {
+  return [
+    '<div class="page-header"><h1>兑换码（闲鱼卡密）</h1><div class="actions">',
+    '<button class="btn btn-secondary" onclick="loadRedeemCodes()">刷新</button>',
+    "</div></div>",
+    '<div class="card">',
+    "  <h3>批量生成</h3>",
+    '  <p class="hint">生成后把码复制到闲鱼「自动发货」商品库存。用户在 App「账户 → 兑换」输入即可到账，无需对账。</p>',
+    '  <div class="form-grid">',
+    '    <div class="form-group"><label>数量</label><input type="number" id="rc-count" value="10" min="1" max="500" /></div>',
+    '    <div class="form-group"><label>类型</label><select id="rc-kind" onchange="rcKindChanged()">',
+    '      <option value="plan">会员套餐</option><option value="balance">余额充值</option></select></div>',
+    '    <div class="form-group" id="rc-plan-wrap"><label>套餐</label><select id="rc-plan"></select></div>',
+    '    <div class="form-group" id="rc-balance-wrap" style="display:none"><label>余额（元）</label><input type="number" id="rc-balance-yuan" value="30" min="1" /></div>',
+    '    <div class="form-group"><label>批次备注（可选）</label><input type="text" id="rc-tag" placeholder="如：闲鱼202609" /></div>',
+    "  </div>",
+    '  <button class="btn btn-primary" onclick="createRedeemCodes()">生成</button>',
+    '  <div id="rc-result" style="margin-top:12px"></div>',
+    "</div>",
+    '<div class="card">',
+    '  <div class="search-bar">',
+    '    <input type="text" id="rc-search" placeholder="搜索码/批次..." onkeydown="if(event.key===\'Enter\')loadRedeemCodes()" />',
+    '    <select id="rc-status-filter" onchange="loadRedeemCodes()">',
+    '      <option value="">全部状态</option><option value="unused">未使用</option><option value="used">已使用</option><option value="disabled">已作废</option>',
+    "    </select>",
+    '    <button class="btn btn-primary" onclick="loadRedeemCodes()">搜索</button>',
+    "  </div>",
+    '  <div id="rc-list-container">' + loadingHTML() + "</div>",
+    "</div>",
+  ].join("");
+}
+
+function rcKindChanged() {
+  var kind = getEl("rc-kind").value;
+  getEl("rc-plan-wrap").style.display = kind === "plan" ? "" : "none";
+  getEl("rc-balance-wrap").style.display = kind === "balance" ? "" : "none";
+}
+
+function loadRedeemPlanOptions() {
+  apiGet("/billing/plans").then(function(r) {
+    if (!r || !r.ok) return;
+    var sel = getEl("rc-plan");
+    if (!sel) return;
+    sel.innerHTML = (r.data.items || []).map(function(p) {
+      return '<option value="' + p.id + '">' + p.title + "（¥" + (p.price_cents / 100) + "/" + p.months + "个月）</option>";
+    }).join("") || '<option value="">无可用套餐</option>';
+  });
+}
+
+function createRedeemCodes() {
+  var kind = getEl("rc-kind").value;
+  var body = {
+    count: parseInt(getEl("rc-count").value, 10) || 0,
+    kind: kind,
+    batch_tag: getEl("rc-tag").value.trim() || null
+  };
+  if (kind === "plan") body.plan_id = getEl("rc-plan").value;
+  else body.balance_cents = Math.round(parseFloat(getEl("rc-balance-yuan").value) * 100);
+  apiPost("/admin/api/redeem-codes", body).then(function(r) {
+    if (!r) return;
+    if (!r.ok) { handleApiError(r); return; }
+    var codes = (r.data.codes || []).map(function(c) { return c.code; });
+    getEl("rc-result").innerHTML =
+      '<div class="alert alert-success">已生成 <b>' + r.data.count + "</b> 个「" + r.data.label + "」兑换码：" +
+      '<textarea rows="6" style="width:100%;font-family:monospace;margin-top:8px" readonly onclick="this.select()">' +
+      codes.join("\n") + "</textarea>" +
+      '<button class="btn btn-secondary" style="margin-top:6px" onclick="copyRedeemCodes(this)">复制全部</button></div>';
+    loadRedeemCodes();
+  });
+}
+
+function copyRedeemCodes(btn) {
+  var ta = btn.parentElement.querySelector("textarea");
+  ta.select();
+  document.execCommand("copy");
+  btn.textContent = "已复制 ✓";
+  setTimeout(function() { btn.textContent = "复制全部"; }, 1500);
+}
+
+function loadRedeemCodes() {
+  var container = getEl("rc-list-container");
+  if (!container) return;
+  container.innerHTML = loadingHTML();
+  var q = getEl("rc-search") ? getEl("rc-search").value.trim() : "";
+  var st = getEl("rc-status-filter") ? getEl("rc-status-filter").value : "";
+  var url = "/admin/api/redeem-codes?limit=200" + (q ? "&q=" + encodeURIComponent(q) : "") + (st ? "&status=" + st : "");
+  apiGet(url).then(function(r) {
+    if (!container) return;
+    if (!r || !r.ok) { container.innerHTML = emptyHTML("加载失败，请刷新重试"); return; }
+    var items = r.data.items || [];
+    if (!items.length) { container.innerHTML = emptyHTML("暂无兑换码"); return; }
+    var stLabel = {
+      unused: '<span class="badge badge-warning">未使用</span>',
+      used: '<span class="badge badge-success">已使用</span>',
+      disabled: '<span class="badge badge-muted">已作废</span>'
+    };
+    container.innerHTML = "<table><thead><tr><th>码</th><th>类型</th><th>状态</th><th>使用者</th><th>批次</th><th>创建时间</th><th></th></tr></thead><tbody>" +
+      items.map(function(c) {
+        var type = c.kind === "plan" ? "套餐:" + (c.plan_id || "") : "余额¥" + ((c.balance_cents || 0) / 100);
+        return "<tr><td><code>" + c.code + "</code></td><td>" + type + "</td><td>" + (stLabel[c.status] || c.status) +
+          "</td><td>" + (c.used_by_login || "-") + "</td><td>" + (c.batch_tag || "-") + "</td><td>" + fmtDT(c.created_at) +
+          '</td><td>' + (c.status === "unused" ? '<button class="btn btn-sm btn-danger" onclick="disableRedeemCode(\'' + c.code + '\')">作废</button>' : "") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  });
+}
+
+function disableRedeemCode(code) {
+  confirmDialog("作废兑换码", "确认作废 " + code + "？作废后无法被兑换。", function() {
+    apiPost("/admin/api/redeem-codes/" + encodeURIComponent(code) + "/disable").then(function(r) {
+      if (!r) return;
+      if (!r.ok) { handleApiError(r); return; }
+      loadRedeemCodes();
+    });
+  });
+}
 
 function renderTicketsPage() {
   return [
@@ -2198,6 +2319,7 @@ function renderApp(loginOpts) {
   else if (state.currentTab === "users") pageContent = renderUsersPage();
   else if (state.currentTab === "user_detail") pageContent = renderUserDetailPage();
   else if (state.currentTab === "orders") pageContent = renderOrdersPage();
+  else if (state.currentTab === "redeem") pageContent = renderRedeemPage();
   else if (state.currentTab === "tickets") pageContent = renderTicketsPage();
   else if (state.currentTab === "presets") pageContent = renderPresetsPage();
   else if (state.currentTab === "usage") pageContent = renderUsagePage();

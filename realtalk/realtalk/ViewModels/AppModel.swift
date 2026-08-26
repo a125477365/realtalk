@@ -2164,6 +2164,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 闲鱼卡密兑换：成功返回结果文案（同时刷新账户缓存），失败抛错。
+    @discardableResult
+    func redeemCode(_ code: String) async throws -> String {
+        guard let token = auth.token else { throw APIClientError.unauthorized }
+        let account = try await api.redeemCode(code, token: token)
+        billingAccount = account
+        auth.applyBillingUser(account.user)
+        return account.message ?? "兑换成功！"
+    }
+
     func loadPlanCatalog() async {
         do {
             planCatalog = try await api.planCatalog().items

@@ -76,6 +76,7 @@ fun AccountSheet(model: AppViewModel) {
     var showMembership by remember { mutableStateOf(false) }
     var showMembershipPremiumOnly by remember { mutableStateOf(false) }
     var showTickets by remember { mutableStateOf(false) }
+    var showRedeem by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { model.refreshBilling(); model.loadPlans() }
 
@@ -93,6 +94,10 @@ fun AccountSheet(model: AppViewModel) {
     }
     if (showTickets) {
         TicketsSheetContent(model) { showTickets = false }
+        return
+    }
+    if (showRedeem) {
+        RedeemSheetContent(model) { showRedeem = false }
         return
     }
 
@@ -151,6 +156,25 @@ fun AccountSheet(model: AppViewModel) {
                     Text("客服工单", fontWeight = FontWeight.SemiBold,
                         fontSize = (15 * fontScale).sp, color = RT.TextPrimary)
                     Text("反馈问题、提交建议", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
+                }
+                Text("›", color = RT.TextSecondary, fontSize = 18.sp)
+            }
+        }
+
+        // 兑换码（闲鱼购买后输入卡密立即到账）
+        item {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(14.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(14.dp))
+                    .clickable { showRedeem = true }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("兑换码", fontWeight = FontWeight.SemiBold,
+                        fontSize = (15 * fontScale).sp, color = RT.TextPrimary)
+                    Text("在闲鱼购买后，输入卡密立即到账", fontSize = (11 * fontScale).sp, color = RT.TextSecondary)
                 }
                 Text("›", color = RT.TextSecondary, fontSize = 18.sp)
             }
@@ -313,6 +337,50 @@ private fun MembershipSheetContent(model: AppViewModel, premiumOnly: Boolean = f
             },
             dismissButton = { TextButton(onClick = { selectedPlan = null }) { Text("取消") } },
         )
+    }
+}
+
+/** 闲鱼卡密兑换：输入12位数字码立即到账。 */
+@Composable
+private fun RedeemSheetContent(model: AppViewModel, onBack: () -> Unit) {
+    val fontScale by model.fontScale.collectAsState()
+    val status by model.statusMessage.collectAsState()
+    var code by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack) { Text("‹ 返回") }
+            Text("兑换码", fontWeight = FontWeight.SemiBold)
+        }
+        Text(
+            "在闲鱼购买对应套餐的虚拟服务后，卖家会自动发送一串 12 位数字。输入即可立即到账。",
+            fontSize = (12 * fontScale).sp, color = RT.TextSecondary,
+        )
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it.filter(Char::isDigit).take(12) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("请输入12位数字") },
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = (20 * fontScale).sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 3.sp,
+            ),
+        )
+        Button(
+            onClick = {
+                busy = true
+                model.redeemCode(code)
+            },
+            enabled = code.length == 12 && !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (busy) "兑换中..." else "立即兑换", fontSize = (15 * fontScale).sp) }
+        if (status.isNotBlank()) Text(status, fontSize = (12 * fontScale).sp, color = RT.TextSecondary)
     }
 }
 

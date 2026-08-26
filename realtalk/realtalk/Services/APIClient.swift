@@ -491,6 +491,10 @@ final class APIClient {
         try await get("/billing/plans", token: nil, queryItems: [])
     }
 
+    func redeemCode(_ code: String, token: String) async throws -> BillingAccountResponse {
+        try await post("/billing/redeem", body: RedeemCodeRequest(code: code), token: token)
+    }
+
     func createSupportTicket(category: String, subject: String, body: String, images: [String], token: String) async throws -> SupportTicket {
         try await post("/support/tickets", body: SupportTicketCreateRequest(category: category, subject: subject, body: body, images: images), token: token)
     }

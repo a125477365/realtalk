@@ -350,6 +350,7 @@ data class BillingAccount(
     val ledger: List<LedgerItem> = emptyList(),
     val usage: TokenUsageInfo? = null,
     @SerialName("nonmember_limits") val nonmemberLimits: NonmemberLimits? = null,
+    val message: String? = null,
 )
 
 @Serializable
@@ -407,6 +408,10 @@ data class RechargeOrder(
 
 @Serializable
 data class RechargeConfirmRequest(@SerialName("order_id") val orderId: String)
+
+/** 闲鱼卡密兑换请求：12 位数字码。 */
+@Serializable
+data class RedeemCodeRequest(val code: String)
 
 @Serializable
 data class AudioJob(

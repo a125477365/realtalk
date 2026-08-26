@@ -1783,6 +1783,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 闲鱼卡密兑换：成功后刷新账户并提示到账结果。 */
+    fun redeemCode(code: String) {
+        viewModelScope.launch {
+            val token = auth.token ?: return@launch
+            runCatching { api.redeemCode(code.trim(), token) }
+                .onSuccess {
+                    billing.value = it; user.value = it.user
+                    statusMessage.value = it.message ?: "兑换成功！"
+                }
+                .onFailure { presentFailure(it.message, title = "兑换失败") }
+        }
+    }
+
     // ---- 高级会员音频上传 ----
 
     fun loadAudioJobs() {

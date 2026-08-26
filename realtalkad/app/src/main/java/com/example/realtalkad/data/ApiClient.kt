@@ -273,6 +273,10 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun confirmRecharge(orderId: String, token: String): BillingAccount =
         post("/billing/recharge/confirm", RechargeConfirmRequest(orderId), token)
 
+    /** 闲鱼卡密兑换：12 位数字码，立即开通会员/加余额。 */
+    suspend fun redeemCode(code: String, token: String): BillingAccount =
+        post("/billing/redeem", RedeemCodeRequest(code), token)
+
     // ---- 高级会员音频上传 ----
     suspend fun audioJobs(token: String): AudioJobList = get("/audio/jobs", token)
 

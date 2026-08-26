@@ -387,6 +387,7 @@ class BillingAccountResponse(BaseModel):
     ledger: list[BillingLedgerItem]
     usage: TokenUsageInfo | None = None
     nonmember_limits: NonmemberLimits | None = None
+    message: str | None = None  # 兑换码等操作的结果提示（成功文案），普通查询为空
 
 
 class PlanItem(BaseModel):
@@ -636,6 +637,32 @@ class RechargeOrderResponse(BaseModel):
 
 class RechargeConfirmRequest(BaseModel):
     order_id: str
+
+
+class RedeemCodeRequest(BaseModel):
+    """用户输入闲鱼卡密兑换。"""
+    code: str = Field(min_length=12, max_length=20)
+
+
+class AdminCreateRedeemCodesRequest(BaseModel):
+    """管理台批量生成兑换码。"""
+    count: int = Field(ge=1, le=500)
+    kind: str = Field(pattern="^(plan|balance)$")
+    plan_id: str | None = None
+    balance_cents: int | None = Field(default=None, ge=1, le=100000000)
+    batch_tag: str | None = Field(default=None, max_length=50)
+
+
+class AdminRedeemCodeItem(BaseModel):
+    code: str
+    kind: str
+    status: str
+    plan_id: str | None = None
+    balance_cents: int | None = None
+    batch_tag: str | None = None
+    used_by_login: str | None = None
+    used_at: str | None = None
+    created_at: str
 
 
 class PriceResponse(BaseModel):

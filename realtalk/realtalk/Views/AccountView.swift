@@ -20,6 +20,7 @@ struct AccountPanelView: View {
     @State private var showingMembership = false
     @State private var membershipPremiumOnly = false
     @State private var showingTickets = false
+    @State private var showingRedeem = false
 
     private var isPremium: Bool { auth.user?.effectiveTier == "premium" }
 
@@ -29,6 +30,7 @@ struct AccountPanelView: View {
                 // 全部功能免费：不再有会员卡/升级/高级专属/账单
                 VStack(alignment: .leading, spacing: 16) {
                     profileCard
+                    redeemEntry
                     supportEntry
                     accountInfoCard
                     StatusBanner(text: model.statusMessage)
@@ -48,6 +50,7 @@ struct AccountPanelView: View {
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $showingTickets) { SupportTicketsView() }
+            .sheet(isPresented: $showingRedeem) { RedeemCodeView() }
         }
     }
 
@@ -257,6 +260,33 @@ struct AccountPanelView: View {
                         .font(.system(size: 15 * model.fontScale, weight: .semibold))
                         .foregroundStyle(RTTheme.textPrimary)
                     Text("反馈问题、申请退款等")
+                        .font(.system(size: 12 * model.fontScale))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .background(RTTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(RTTheme.hairline))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: 兑换码入口（闲鱼购买后在此输入卡密）
+
+    private var redeemEntry: some View {
+        Button {
+            showingRedeem = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "ticket.fill")
+                    .font(.title3).foregroundStyle(RTTheme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("兑换码")
+                        .font(.system(size: 15 * model.fontScale, weight: .semibold))
+                        .foregroundStyle(RTTheme.textPrimary)
+                    Text("在闲鱼购买后，输入卡密立即到账")
                         .font(.system(size: 12 * model.fontScale))
                         .foregroundStyle(.secondary)
                 }
