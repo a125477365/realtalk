@@ -1905,17 +1905,19 @@ async def create_recharge(
         receiver_account=method_settings["receiver_account"],
         plan_id=plan_id,
     )
-    # 短码方便用户付款备注。同时保留 uuid 放在 message里以备排查
+    # 短码 + 邮箱前缀：管理员一眼能识别「是哪个用户付的款」，后台搜索「邮箱前缀」即可定位
     short_code = _short_order_code(order.order_id)
-    title = method_settings["title"] or method_settings["title"] or "扫码"  # 防御 None
+    email_prefix = (user.login_identifier or "").split("@")[0][:12]  # 邮箱 @ 前 12 字符
+    memo_text = f"{short_code}-{email_prefix}" if email_prefix else short_code
+    title = method_settings["title"] or "扫码"
     order.message = (
-        f"请用{title}扫码支付 {money_text(amount_cents)}" +
-        (f"（{order_desc}）" if plan_id else "") +
-        f"，付款时备注请填：{short_code}（订单号），方便管理员核账。"
+        f"请用{title}扫码支付 {money_text(amount_cents)}"
+        + (f"（{order_desc}）" if plan_id else "")
+        + f"，付款时备注请填：{memo_text}，方便管理员核账。"
     )
     # 同时把短码塞进 qr_code_text（客户端可在二维码旁显示），不破坏现有 db schema
     if not order.qr_code_text:
-        order.qr_code_text = short_code
+        order.qr_code_text = memo_text
     return order
 
 

@@ -3016,7 +3016,11 @@ class Database:
             .join(users, users.c.id == payment_orders.c.user_id, isouter=True)
             .order_by(payment_orders.c.created_at.desc())
         )
-        count_stmt = select(func.count()).select_from(payment_orders)
+        count_stmt = (
+            select(func.count())
+            .select_from(payment_orders)
+            .join(users, users.c.id == payment_orders.c.user_id, isouter=True)
+        )
         if status:
             stmt = stmt.where(payment_orders.c.status == status)
             count_stmt = count_stmt.where(payment_orders.c.status == status)
@@ -3028,6 +3032,8 @@ class Database:
             cond = or_(
                 payment_orders.c.order_id.like(pattern),
                 payment_orders.c.user_id.like(pattern),
+                users.c.login_identifier.like(pattern),   # 短码+邮箱前缀场景：用「前半段」也能搜到
+                users.c.display_name.like(pattern),
             )
             stmt = stmt.where(cond)
             count_stmt = count_stmt.where(cond)
