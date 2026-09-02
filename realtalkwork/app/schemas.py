@@ -15,6 +15,7 @@ class UserOut(BaseModel):
     plan_tier: str = "free"  # 生效套餐：free / basic / premium（按到期时间折算）
     plan_expires_at: datetime | None = None
     balance_cents: int = 0
+    token_balance: int = 0  # 用户 token 余额（注册送 100万，兑换码充值，AI 超额扣费）
     is_banned: bool = False
     admin_notes: str | None = None
     last_seen_at: datetime | None = None

@@ -80,6 +80,8 @@ class Settings:
     daily_token_limit_premium: int = int(os.getenv("DAILY_TOKEN_LIMIT_PREMIUM", "400000"))
     # 全员免费模式下的每日 token 总量上限（0 = 不限制；管理台可改）
     free_daily_token_total: int = int(os.getenv("FREE_DAILY_TOKEN_TOTAL", "100000"))
+    # Token 兑换率：1 元人民币 = token_per_cny 个 token（默认 1 元 = 5000 token；管理台可改）
+    token_per_cny: int = int(os.getenv("TOKEN_PER_CNY", "5000"))
 
     # 音频上传（高级会员）
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", "./uploads"))

@@ -646,10 +646,26 @@ if $DEPLOY_SPEECH; then
   ENV_LINES+=("SPEECH_LLAMA_CPU_PORTABLE=true")
   note "CPU 模式默认源码构建最保守 llama.cpp（关闭 AVX/F16C/AVX2/FMA），兼容旧 Xeon/NAS；构建会慢一些，但避免首次推理 exit 132。"
   ask_config SPEECH_ASR_MODEL "共享 faster-whisper ASR 模型大小（REST 与 S2S 使用同一份模型文件）(tiny/base/small/medium/large-v3)" "small"; ENV_LINES+=("SPEECH_ASR_MODEL=$REPLY_VALUE")
-  note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
-  note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
-  ask_config SPEECH_LLM_REPO "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
-  ask_config SPEECH_LLM_FILE "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+  # LLM 二选一：本地 GGUF（默认）或远程 OpenAI 兼容接口（OneAPI 等）——远程模式不下载/加载本地 GGUF
+  ask "LLM 用什么方式跑？(local=本地 Qwen GGUF / remote=远程 OpenAI 兼容接口，如 OneAPI)" "local"
+  if [ "$REPLY_VALUE" = "remote" ]; then
+    note "远程模式：ASR/TTS 仍在本容器，LLM 转发给你指定的 OpenAI 兼容接口；模型下载目录省去 GGUF。"
+    ask_config SPEECH_LLM_BASE_URL "远程 LLM Base URL（如 https://your-oneapi/v1）" ""; ENV_LINES+=("SPEECH_LLM_BASE_URL=$REPLY_VALUE")
+    [ -n "$REPLY_VALUE" ] || { say "远程模式必须填 Base URL"; exit 1; }
+    ask_config SPEECH_LLM_API_KEY "远程 LLM API Key" ""; ENV_LINES+=("SPEECH_LLM_API_KEY=$REPLY_VALUE")
+    ask_config SPEECH_LLM_MODEL "远程 LLM 模型名（如 openrouter/free、qwen-max）" ""; SPEECH_LLM_MODEL_VAL="$REPLY_VALUE"; ENV_LINES+=("SPEECH_LLM_MODEL=$REPLY_VALUE")
+    [ -n "$REPLY_VALUE" ] || { say "远程模式必须填模型名"; exit 1; }
+    ENV_LINES+=("SPEECH_LLM_REPO=")
+    ENV_LINES+=("SPEECH_LLM_FILE=")
+  else
+    note "LLM 用 GGUF 量化模型（默认 Qwen2.5-1.5B-Instruct Q4：CPU 可跑、指令遵循明显好于 0.5B；"
+    note "机器很弱可换 0.5b 求快，机器强可换 3B/7B 求质量）。"
+    ask_config SPEECH_LLM_REPO "共享 LLM GGUF 仓库（REST 与 S2S 共用同一 llama.cpp 实例）" "Qwen/Qwen2.5-1.5B-Instruct-GGUF"; ENV_LINES+=("SPEECH_LLM_REPO=$REPLY_VALUE")
+    ask_config SPEECH_LLM_FILE "共享 LLM GGUF 文件名(或绝对路径)" "qwen2.5-1.5b-instruct-q4_k_m.gguf"; ENV_LINES+=("SPEECH_LLM_FILE=$REPLY_VALUE")
+    ENV_LINES+=("SPEECH_LLM_BASE_URL=")
+    ENV_LINES+=("SPEECH_LLM_API_KEY=")
+    ENV_LINES+=("SPEECH_LLM_MODEL=")
+  fi
   ask_config SPEECH_REALTIME_ENGINE "实时 WS 引擎 (s2s=原生 speech-to-speech / legacy=旧实现回退)" "s2s"; SPEECH_RT_ENGINE="$REPLY_VALUE"; ENV_LINES+=("SPEECH_REALTIME_ENGINE=$REPLY_VALUE")
   if [ "$SPEECH_RT_ENGINE" = "s2s" ]; then
     note "全双工并发路数 = 同时几个用户进行「私教沉浸式」实时通话（每路常驻约 +1.5GB 内存，"
@@ -745,13 +761,16 @@ if [ "$REPLY_VALUE" = "yes" ]; then
       sleep 2
     done
     if curl -fs "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/health" >/dev/null 2>&1; then
-      say "${GREEN}✔ 统一 speech 容器及原生 /v1/realtime 已就绪，正在验证共享 LLM 首次推理…${RESET}"
+      say "${GREEN}✔ 统一 speech 容器及原生 /v1/realtime 已就绪，正在验证 LLM 首次推理…${RESET}"
+      # 远程模式由引擎转发到 SPEECH_LLM_MODEL；本地模式固定传 GGUF "local"
+      LLM_PROBE_MODEL="${SPEECH_LLM_MODEL_VAL:-local}"
+      [ -z "$LLM_PROBE_MODEL" ] && LLM_PROBE_MODEL=local
       if curl -fsS --max-time 300 -H 'Content-Type: application/json' \
-        -d '{"model":"local","messages":[{"role":"user","content":"Reply OK"}],"max_tokens":8}' \
+        -d "{\"model\":\"$LLM_PROBE_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":8}" \
         "http://127.0.0.1:${SPEECH_PORT_VAL:-9100}/v1/chat/completions" >/dev/null; then
-        say "${GREEN}✔ Whisper / Qwen LLM / Qwen3-TTS 服务及 LLM 推理验证通过${RESET}"
+        say "${GREEN}✔ Whisper / LLM($LLM_PROBE_MODEL) / Qwen3-TTS 服务及 LLM 推理验证通过${RESET}"
       else
-        say "本地 LLM 推理验证失败：docker compose logs --tail=200 speech"
+        say "LLM 推理验证失败：docker compose logs --tail=200 speech"
       fi
     else
       say "本地语音模型尚未就绪：docker compose logs -f speech"

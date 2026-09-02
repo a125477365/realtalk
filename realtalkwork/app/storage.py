@@ -104,6 +104,7 @@ users = Table(
     Column("plan_monthly_price_cents", Integer),  # 购买会员时锁定的档位标准月费（分），用于月度额度计算
     Column("plan_purchased_at", Text),  # 当前连续会员期的起始购买日，作为每月额度重置的锚点
     Column("tts_voice", Text),  # 用户选择的 AI 朗读音色（练习时朗读 AI 台词用）
+    Column("token_balance", Integer, nullable=False, default=0),  # 用户 token 余额（注册送 100万，兑换码充值，AI 超额时扣费）
 )
 Index("idx_users_login_identifier", users.c.login_identifier, unique=True)
 Index("idx_users_wechat_openid", users.c.wechat_openid, unique=True)
@@ -523,6 +524,7 @@ class Database:
             self._ensure_column(conn, "users", "tts_voice", "TEXT")
             self._ensure_column(conn, "users", "plan_monthly_price_cents", "INTEGER")
             self._ensure_column(conn, "users", "plan_purchased_at", "TEXT")
+            self._ensure_column(conn, "users", "token_balance", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "scenarios", "source_hash", "TEXT")
             self._ensure_column(conn, "scenarios", "ephemeral", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "scenarios", "is_preset", "INTEGER NOT NULL DEFAULT 0")
@@ -577,6 +579,7 @@ class Database:
                     plan_expires_at=None,
                     plan_monthly_price_cents=None,
                     balance_cents=0,
+                    token_balance=1000000,
                     created_at=_iso(created_at),
                 )
             )
@@ -2432,6 +2435,52 @@ class Database:
                     created_at=_iso(now),
                 )
             )
+            # 当日免费额度外的部分按 token 实际成本折算成金额，从用户余额直接扣除
+            if not user_id or kind == "capture_input":
+                return
+            free_limit = self.get_app_setting_int("free_daily_token_total", settings.free_daily_token_total)
+            if free_limit <= 0:
+                return
+            total_tokens = prompt_tokens + completion_tokens
+            # 计算本日此前已用（不含本次）：减去刚插入的这条
+            today_start = _iso(now.replace(hour=0, minute=0, second=0, microsecond=0))
+            used_before = int(
+                conn.execute(
+                    select(func.coalesce(func.sum(ai_usage.c.total_tokens), 0)).where(
+                        ai_usage.c.user_id == user_id,
+                        ai_usage.c.kind != "capture_input",
+                        ai_usage.c.created_at >= today_start,
+                    )
+                ).scalar_one()
+                or 0
+            ) - total_tokens
+            over_after = max(0, (used_before + total_tokens) - free_limit)
+            over_before = max(0, used_before - free_limit)
+            charged_tokens = over_after - over_before
+            if charged_tokens <= 0:
+                return
+            # 超出免费额度部分直接扣 token_balance（1 token = 1 token，不涉及货币）
+            token_balance = int(
+                conn.execute(select(users.c.token_balance).where(users.c.id == user_id)).scalar_one() or 0
+            )
+            if token_balance < charged_tokens:
+                charged_tokens = max(0, token_balance)
+            if charged_tokens <= 0:
+                return
+            conn.execute(
+                update(users).where(users.c.id == user_id).values(token_balance=users.c.token_balance - charged_tokens)
+            )
+            conn.execute(
+                insert(billing_ledger).values(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    type="token_spend",
+                    title=f"AI 调用-{kind}：超额 {charged_tokens} token",
+                    amount_cents=0,
+                    balance_after_cents=token_balance - charged_tokens,
+                    created_at=_iso(now),
+                )
+            )
 
     def create_roleplay_session(
         self,
@@ -3154,6 +3203,21 @@ class Database:
             items.append(item)
         return {"items": items, "total": total}
 
+    def _money_cents_to_tokens(self, cents: int) -> int:
+        if cents is None or cents <= 0:
+            return 0
+        token_per_cny = self.get_app_setting_int("token_per_cny", settings.token_per_cny)
+        return int(int(cents) * token_per_cny / 100)
+
+    def _ensure_token_balance(self, user_id: str) -> int:
+        # 确保用户有 token_balance 列数据（老用户可能为 NULL）
+        with self.engine.begin() as conn:
+            row = conn.execute(select(users.c.token_balance).where(users.c.id == user_id)).scalar_one_or_none()
+            if row is None:
+                conn.execute(update(users).where(users.c.id == user_id).values(token_balance=0))
+                return 0
+            return int(row)
+
     def redeem_code(self, user_id: str, raw_code: str) -> dict[str, Any]:
         """用户输入兑换码 → 校验 → 立即入账（会员或余额），事务保证一次性使用。
         返回 {"ok": True, "message": ..., "plan": {...}|None, "user": UserOut}
@@ -3196,26 +3260,49 @@ class Database:
 
             if row["kind"] == "plan":
                 assert plan is not None
-                self._grant_plan_in_conn(conn, user_id, plan, now)
-                message = f"兑换成功！已为你开通「{plan.get('title', plan['tier'])}」（{plan['months']} 个月）"
-            else:
-                amount = int(row["balance_cents"] or 0)
-                if amount <= 0:
-                    raise ValueError("该兑换码面额异常，请联系卖家")
-                conn.execute(update(users).where(users.c.id == user_id).values(balance_cents=users.c.balance_cents + amount))
-                balance_after = int(conn.execute(select(users.c.balance_cents).where(users.c.id == user_id)).scalar_one())
+                price = int(plan.get("price_cents", 0) or 0)
+                tokens = self._money_cents_to_tokens(price)
+                if tokens <= 0:
+                    raise ValueError("该兑换码对应的套餐不可用，请联系卖家")
+                conn.execute(
+                    update(users).where(users.c.id == user_id).values(token_balance=users.c.token_balance + tokens)
+                )
+                balance_after = int(conn.execute(select(users.c.token_balance).where(users.c.id == user_id)).scalar_one())
                 conn.execute(
                     insert(billing_ledger).values(
                         id=str(uuid.uuid4()),
                         user_id=user_id,
-                        type="recharge",
-                        title=f"闲鱼卡密充值 ¥{amount / 100:.0f}",
+                        type="token_recharge",
+                        title=f"卡密充值 {tokens} token（随套餐折算）",
+                        amount_cents=price,
+                        balance_after_cents=balance_after,
+                        created_at=_iso(now),
+                    )
+                )
+                message = f"兑换成功！已到账 {tokens} token"
+            else:
+                amount = int(row["balance_cents"] or 0)
+                if amount <= 0:
+                    raise ValueError("该兑换码面额异常，请联系卖家")
+                tokens = self._money_cents_to_tokens(amount)
+                if tokens <= 0:
+                    raise ValueError("该兑换码异常，请联系卖家")
+                conn.execute(
+                    update(users).where(users.c.id == user_id).values(token_balance=users.c.token_balance + tokens)
+                )
+                balance_after = int(conn.execute(select(users.c.token_balance).where(users.c.id == user_id)).scalar_one())
+                conn.execute(
+                    insert(billing_ledger).values(
+                        id=str(uuid.uuid4()),
+                        user_id=user_id,
+                        type="token_recharge",
+                        title=f"闲鱼卡密充值 {tokens} token",
                         amount_cents=amount,
                         balance_after_cents=balance_after,
                         created_at=_iso(now),
                     )
                 )
-                message = f"兑换成功！余额已到账 ¥{amount / 100:.2f}"
+                message = f"兑换成功！已到账 {tokens} token"
 
         user = self.get_user(user_id)
         return {"message": message, "kind": row["kind"], "plan": plan, "user": user}
@@ -3693,6 +3780,7 @@ def _user_from_row(row: Mapping[str, Any]) -> UserOut:
         plan_expires_at=plan_expires_at,
         plan_tier=effective_plan_tier(row["plan"], plan_expires_at),
         balance_cents=int(row.get("balance_cents") or 0),
+        token_balance=int(row.get("token_balance") or 0),
         is_banned=bool(row.get("is_banned") or 0),
         admin_notes=row.get("admin_notes"),
         last_seen_at=_parse_dt(row["last_seen_at"]) if row.get("last_seen_at") else None,

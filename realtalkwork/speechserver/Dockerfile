@@ -2,6 +2,10 @@
 # CPU 开箱即用；GPU：构建时 --build-arg DEVICE=cuda（llama-cpp 走 cu124 预编译轮子，宿主需 nvidia 运行时）
 FROM python:3.12-slim
 
+# 国内源加速：debian/pypi 海外源太慢，构建时切阿里云镜像
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g; s|http://security.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ PIP_TRUSTED_HOST=mirrors.aliyun.com
+
 ARG DEVICE=cpu
 ARG LLAMA_CPU_PORTABLE=true
 ARG QWENTTS_CPU_PORTABLE=true

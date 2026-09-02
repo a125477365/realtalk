@@ -19,7 +19,7 @@ struct RedeemCodeView: View {
                         Label("如何获取兑换码", systemImage: "info.circle.fill")
                             .font(.system(size: 15 * model.fontScale, weight: .semibold))
                             .foregroundStyle(RTTheme.accent)
-                        Text("在闲鱼搜索并购买对应套餐的虚拟服务后，卖家会自动发送一串 12 位数字。把它输入到下方即可立即到账。")
+                        Text("在闲鱼搜索 RealTalk，卖家会自动发送一串 12 位数字。输入后即可兑换 token。")
                             .font(.system(size: 13 * model.fontScale))
                             .foregroundStyle(.secondary)
                     }

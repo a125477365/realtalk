@@ -1540,6 +1540,11 @@ async def wechat_login(request: WeChatLoginRequest) -> AuthResponse:
 
 # ---- Email/Password Auth for App Users ----
 
+def _is_supported_email_domain(email: str) -> bool:
+    """用户注册/验证码发送仅允许 QQ 邮箱（@qq.com）——防其他域名上发邮件被拒浪费用户。"""
+    return (email or "").strip().lower().endswith("@qq.com")
+
+
 @app.post("/auth/password/register", response_model=AuthTokenResponse)
 def register_password(
     request: PasswordRegisterRequest,
@@ -1547,6 +1552,8 @@ def register_password(
     if not settings.email_auth_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="邮箱注册未开放，请使用微信登录")
     normalized = normalize_email(request.email)
+    if not _is_supported_email_domain(normalized):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目前仅支持使用 QQ 邮箱注册（xxx@qq.com）")
     existing = db.get_user_by_login_identifier(normalized)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该邮箱已注册")
@@ -1715,6 +1722,8 @@ def send_register_code(
     if not settings.email_auth_enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="邮箱注册未开放，请使用微信登录")
     email = normalize_email(request.email)
+    if not _is_supported_email_domain(email):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="目前仅支持使用 QQ 邮箱注册（xxx@qq.com）")
     existing = db.get_user_by_login_identifier(email)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该邮箱已注册，请直接登录或使用找回密码")
@@ -4168,6 +4177,20 @@ async def translate_stream(websocket: WebSocket, token: str | None = Query(defau
                     await upstream.send({"type": "input_audio_buffer.clear"})
                 except Exception:  # noqa: BLE001
                     pass
+                continue
+            if data.get("type") in ("input_audio_buffer.commit", "commit"):
+                # 客户端手动结束说话：转发给上游实时通道强制转写（live VAD 可能因停顿不足未触发）
+                print("[translate] forwarding commit to upstream", flush=True)
+                try:
+                    await upstream.send({
+                        "type": "input_audio_buffer.commit",
+                        "format": "pcm16",
+                        "sample_rate": 16000,
+                    })
+                    print("[translate] commit forwarded ok", flush=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[translate] commit forward failed: {exc}", flush=True)
+                continue
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # noqa: BLE001
@@ -4362,15 +4385,19 @@ def estimate_text_cost_cents(input_chars: int = 0) -> float:
 
 
 def require_ai_access(user: UserOut, estimated_cents: float | None = None) -> None:
-    """免费但限量：当日 token 已达上限 → 402 次日再来。"""
+    """免费但有日额上限：超出免费额度后，只要 token_balance 够就继续用（AI 完成后按实际 token 即时扣费）；不足则 402。"""
     limit = db.get_app_setting_int("free_daily_token_total", settings.free_daily_token_total)
     if limit <= 0:   # 0 = 不限制
         return
     used = db.tokens_used_today(user.id)
-    if used >= limit:
+    if used < limit:
+        return
+    # 超出当日免费额度 -> 检查 token_balance（估算 1000 token 足够大部分调用）
+    estimate_tokens = 1000
+    if (user.token_balance or 0) < estimate_tokens:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"今日免费额度已用完（{used}/{limit} token），明天再来。",
+            detail=f"今日免费额度已用完（{used}/{limit} token），token 余额不足。请先兑换卡密充值后重试。",
         )
 
 

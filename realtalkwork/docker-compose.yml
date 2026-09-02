@@ -89,6 +89,10 @@ services:
       SPEECH_ASR_MODEL: ${SPEECH_ASR_MODEL:-small}
       SPEECH_LLM_REPO: ${SPEECH_LLM_REPO:-Qwen/Qwen2.5-1.5B-Instruct-GGUF}
       SPEECH_LLM_FILE: ${SPEECH_LLM_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      # 远程 LLM 代理（OneAPI/OpenAI 兼容）：设置后容器不加载本地 GGUF，/v1/chat/completions 与 responses 转发过去
+      SPEECH_LLM_BASE_URL: ${SPEECH_LLM_BASE_URL:-}
+      SPEECH_LLM_API_KEY: ${SPEECH_LLM_API_KEY:-}
+      SPEECH_LLM_MODEL: ${SPEECH_LLM_MODEL:-local}
       SPEECH_LLM_CONCURRENCY: ${SPEECH_LLM_CONCURRENCY:-1}
       SPEECH_REALTIME_ENGINE: ${SPEECH_REALTIME_ENGINE:-s2s}
       SPEECH_S2S_REALTIME_URL: ${SPEECH_S2S_REALTIME_URL:-ws://127.0.0.1:8765/v1/realtime}

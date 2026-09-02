@@ -209,6 +209,8 @@ async def handle_session(ws: WebSocket) -> None:
         heard_speech = False
         voiced_ms = 0.0
         silent_ms = 0.0
+        if not audio:
+            return   # commit 已抢先转写（或纯噪音），避免空转写
         await _sj({"type": "input_audio_buffer.speech_stopped"})
         text, words, duration = await engine.transcribe_verbose(_pcm16_to_wav(audio, live_rate), asr_language)
         await _sj({"type": "conversation.item.input_audio_transcription.completed",
@@ -264,6 +266,7 @@ async def handle_session(ws: WebSocket) -> None:
                     voiced_ms = 0.0
                     silent_ms = 0.0
 
+
     restored = bool(ctx.get("history")) or bool(ctx.get("instructions"))
     await _sj({"type": "session.created", "session": {"id": session, "restored": restored}})
     try:
@@ -314,14 +317,22 @@ async def handle_session(ws: WebSocket) -> None:
                     continue
                 if live:
                     await _live_feed(chunk)   # 全双工：VAD/轮次/打断全在服务端
+                    print("[rt] append live chunk len=%d noise=%.2f silence=%.0f heard=%s voiced=%.0f" % (len(chunk), noise_floor, silent_ms, heard_speech, voiced_ms), flush=True)
                 else:
                     audio_buf.extend(chunk)
+                    print("[rt] append non-live chunk len=%d" % len(chunk), flush=True)
             elif kind == "input_audio_buffer.commit":
+                print(f"[rt] commit received kind={ev.get('type')} buf_len={len(audio_buf)} heard={heard_speech} voiced={voiced_ms} silent={silent_ms}", flush=True)
                 _cancel_response()
                 audio = bytes(audio_buf)
                 audio_buf.clear()
+                heard_speech = False
+                voiced_ms = 0.0
+                silent_ms = 0.0
+                preroll.clear()
                 if not audio:
                     continue
+                print("[rt] commit transcribe bytes=%d" % len(audio), flush=True)
                 if (ev.get("format") or "").lstrip(".") in ("pcm16", "pcm"):
                     audio = _pcm16_to_wav(audio, int(ev.get("sample_rate") or 16000))
                 text, words, duration = await engine.transcribe_verbose(audio, asr_language)

@@ -9,6 +9,7 @@ struct AppUser: Codable, Equatable {
     let planTier: String?
     let planExpiresAt: Date?
     let balanceCents: Int
+    let tokenBalance: Int
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
@@ -20,6 +21,7 @@ struct AppUser: Codable, Equatable {
         case planTier = "plan_tier"
         case planExpiresAt = "plan_expires_at"
         case balanceCents = "balance_cents"
+        case tokenBalance = "token_balance"
         case createdAt = "created_at"
     }
 

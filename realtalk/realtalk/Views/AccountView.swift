@@ -69,7 +69,7 @@ struct AccountPanelView: View {
                 Text(auth.user?.displayName ?? "微信用户")
                     .font(.system(size: 17 * model.fontScale, weight: .semibold))
                     .foregroundStyle(.white)
-                Text("全部功能免费使用")
+                Text("Token \(auth.user?.tokenBalance ?? 0)")
                     .font(.system(size: 12 * model.fontScale))
                     .foregroundStyle(.white.opacity(0.85))
             }

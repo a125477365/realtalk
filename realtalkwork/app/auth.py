@@ -46,10 +46,20 @@ def send_email_code(email: str, code: str) -> None:
         f"验证码 {cfg['code_ttl_minutes']} 分钟内有效。"
     )
 
-    with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as smtp:
-        smtp.starttls()
-        smtp.login(cfg["username"], cfg["password"])
-        smtp.send_message(message)
+    try:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as smtp:
+            smtp.starttls()
+            smtp.login(cfg["username"], cfg["password"])
+            smtp.send_message(message)
+    except smtplib.SMTPRecipientsRefused as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱地址不存在，请检查邮箱后重试") from exc
+    except smtplib.SMTPDataError as exc:
+        # QQ 邮箱等对「疑似不存在的收件人」返回 550 DataError，视为收件人不可用
+        if exc.smtp_code == 550:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱地址不存在或无法投递，请检查邮箱后重试") from exc
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="邮件服务暂时不可用，请稍后重试") from exc
+    except smtplib.SMTPException as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="邮件服务暂时不可用，请稍后重试") from exc
 
 
 def send_password_reset_email(email: str, token: str, base_url: str = "https://realtalk.app") -> None:

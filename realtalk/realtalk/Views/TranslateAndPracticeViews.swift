@@ -30,10 +30,6 @@ struct TranslateCallView: View {
                 // 字幕区占满中间剩余空间（此前固定高度 + Spacer 会把新句挤到可视区之外，
                 // 表现为「界面只显示上边一部分」）；内部自动滚到最新一句。
                 subtitles.frame(maxHeight: .infinity).clipped()   // 裁剪：滚动内容不许盖到状态行上
-                // 「+」内联面板：与手动触发式同款（深色配色），在麦克风上方展开
-                if showVoicePanel {
-                    InlineVoiceSpeedPanel(dark: true).transition(.move(edge: .bottom))
-                }
                 // 麦克风一排：左「+」(音色/语速) + 中间大麦克风；右侧等宽占位保证麦克风居中。
                 // 整行高度固定(140)，不随音量变化，字幕才不会被顶。
                 HStack(spacing: 22) {
@@ -46,6 +42,15 @@ struct TranslateCallView: View {
                 Text("翻译内容会自动整理成英文场景，可回主界面练习")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
+            }
+            // 音色/语速面板：从底部弹出，覆盖麦克风行，内容全部显示
+            if showVoicePanel {
+                VStack {
+                    Spacer()
+                    InlineVoiceSpeedPanel(dark: true, onDismiss: { showVoicePanel = false })
+                }
+                .transition(.move(edge: .bottom))
+                .zIndex(1)
             }
         }
         .onAppear { model.startTutor() }
@@ -265,8 +270,16 @@ struct ScenePracticeView: View {
                         .padding(.vertical, 6)
                 }
                 stream
-                if showVoicePanel { InlineVoiceSpeedPanel().transition(.move(edge: .bottom)) }
                 footer
+            }
+            // 音色/语速面板：从底部弹出，覆盖底部区域，内容全部显示
+            if showVoicePanel {
+                VStack {
+                    Spacer()
+                    InlineVoiceSpeedPanel(onDismiss: { showVoicePanel = false })
+                }
+                .transition(.move(edge: .bottom))
+                .zIndex(1)
             }
         }
         .sheet(item: $guidanceItem) { GuidanceDetailSheet(item: $0) }
@@ -614,10 +627,6 @@ struct ImmersivePracticeView: View {
                 // 状态行紧贴顶栏，与下方字幕拉开距离
                 statusLine.padding(.top, 6).padding(.bottom, 16)
                 subtitles.frame(maxHeight: .infinity).clipped()   // 占满中间并裁剪，不盖住状态行
-                // 「+」内联面板：与手动触发式同款（深色配色）
-                if showVoicePanel {
-                    InlineVoiceSpeedPanel(dark: true).transition(.move(edge: .bottom))
-                }
                 // 左「+」(音色/语速) + 中间大麦克风；整行固定高度，字幕不会被脉冲顶动
                 HStack(spacing: 22) {
                     DarkPlusButton(rotated: showVoicePanel) {
@@ -631,6 +640,15 @@ struct ImmersivePracticeView: View {
                 Text("严格按真实对话练 · 说错会当场纠正")
                     .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
                     .padding(.bottom, 10)
+            }
+            // 音色/语速面板：从底部弹出，覆盖麦克风行，内容全部显示
+            if showVoicePanel {
+                VStack {
+                    Spacer()
+                    InlineVoiceSpeedPanel(dark: true, onDismiss: { showVoicePanel = false })
+                }
+                .transition(.move(edge: .bottom))
+                .zIndex(1)
             }
         }
     }
@@ -774,6 +792,8 @@ struct InlineVoiceSpeedPanel: View {
     @EnvironmentObject private var model: AppModel
     /// dark=true：深色语音界面（实时翻译/沉浸式）用的配色；false=手动触发式浅色界面。
     var dark = false
+    /// 收起回调：面板展开后可能把麦克风行挤出屏幕，用户点不到「+」，需要面板内提供关闭按钮。
+    var onDismiss: (() -> Void)?
 
     private let speeds: [(String, Double)] = [("正常", 1.0), ("慢 0.5×", 0.5), ("快 1.5×", 1.5), ("快 2×", 2.0)]
 
@@ -784,6 +804,18 @@ struct InlineVoiceSpeedPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // 标题行：左侧「音色与语速」+ 右侧「完成」收起按钮
+            HStack {
+                Text("音色与语速")
+                    .font(.system(size: 14 * model.fontScale, weight: .semibold))
+                    .foregroundStyle(labelColor)
+                Spacer()
+                if let onDismiss {
+                    Button("完成") { withAnimation(.easeOut(duration: 0.2)) { onDismiss() } }
+                        .font(.system(size: 13 * model.fontScale, weight: .medium))
+                        .foregroundStyle(RTTheme.accent)
+                }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("语速").font(.system(size: 13 * model.fontScale, weight: .semibold))
                     .foregroundStyle(labelColor)
@@ -805,7 +837,6 @@ struct InlineVoiceSpeedPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("音色").font(.system(size: 13 * model.fontScale, weight: .semibold))
                     .foregroundStyle(labelColor)
-                // 换行平铺：所有音色一眼看全，不用左右滑
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], alignment: .leading, spacing: 8) {
                     ForEach(model.ttsVoices, id: \.self) { v in
                         let selected = model.ttsCurrentVoice == v
@@ -829,8 +860,16 @@ struct InlineVoiceSpeedPanel: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(dark ? AnyShapeStyle(Color.white.opacity(0.06)) : AnyShapeStyle(RTTheme.surface))
+        .background {
+            UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20, style: .continuous)
+                .fill(dark ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(.regularMaterial))
+                .overlay {
+                    UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20, style: .continuous)
+                        .fill(dark ? Color(red: 0.09, green: 0.10, blue: 0.13).opacity(0.55) : RTTheme.surface.opacity(0.35))
+                }
+        }
         .overlay(Rectangle().frame(height: 1).foregroundStyle(chipStroke), alignment: .top)
+        .ignoresSafeArea(edges: .bottom)
         .task { await model.loadTtsVoices() }
     }
 }

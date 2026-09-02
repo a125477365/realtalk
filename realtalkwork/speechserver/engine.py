@@ -243,7 +243,7 @@ async def _chat_proxy(messages, temperature, max_tokens, stream_cb) -> str:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
             resp = await client.post(
                 LLM_BASE_URL.rstrip("/") + "/chat/completions",
-                json={"model": "local", "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
+                json={"model": os.getenv("SPEECH_LLM_MODEL", "local"), "messages": messages, "temperature": temperature, "max_tokens": max_tokens},
                 headers={"Authorization": f"Bearer {os.getenv('SPEECH_LLM_API_KEY', 'none')}"},
             )
             resp.raise_for_status()
