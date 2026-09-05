@@ -14,10 +14,10 @@ struct TranslateCallView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.07, green: 0.08, blue: 0.10).ignoresSafeArea()
+            RTTheme.background.ignoresSafeArea()
             RadialGradient(
-                colors: [Color(red: 0.25, green: 0.47, blue: 0.85).opacity(0.28 + 0.5 * liveLevel),
-                         Color(red: 0.16, green: 0.30, blue: 0.62).opacity(0.10 + 0.25 * liveLevel), .clear],
+                colors: [RTTheme.accent.opacity(0.14 + 0.22 * liveLevel),
+                         RTTheme.accent.opacity(0.05 + 0.10 * liveLevel), .clear],
                 center: UnitPoint(x: 0.5, y: 1.12), startRadius: 10, endRadius: 330 + 260 * liveLevel
             )
             .ignoresSafeArea().allowsHitTesting(false)
@@ -40,14 +40,14 @@ struct TranslateCallView: View {
                 .frame(height: 140)
                 .padding(.bottom, 18)
                 Text("翻译内容会自动整理成英文场景，可回主界面练习")
-                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
+                    .font(.system(size: 11)).foregroundStyle(RTTheme.textSecondary)
                     .padding(.bottom, 10)
             }
             // 音色/语速面板：从底部弹出，覆盖麦克风行，内容全部显示
             if showVoicePanel {
                 VStack {
                     Spacer()
-                    InlineVoiceSpeedPanel(dark: true, onDismiss: { showVoicePanel = false })
+                    InlineVoiceSpeedPanel(dark: false, onDismiss: { showVoicePanel = false })
                 }
                 .transition(.move(edge: .bottom))
                 .zIndex(1)
@@ -58,7 +58,7 @@ struct TranslateCallView: View {
 
     /// 音色/语速入口：与其它对话界面统一用「+」，点击内联展开（与手动触发式同款面板）。
     private var voiceButton: some View {
-        DarkPlusButton(rotated: showVoicePanel) {
+        DarkPlusButton(rotated: showVoicePanel, dark: false) {
             withAnimation(.easeOut(duration: 0.2)) { showVoicePanel.toggle() }
         }
     }
@@ -67,16 +67,16 @@ struct TranslateCallView: View {
         HStack {
             HStack(spacing: 5) {
                 Circle().fill(model.homeConnected ? RTTheme.success : .red).frame(width: 7, height: 7)
-                Text("实时翻译").font(.system(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                Text("实时翻译").font(.system(size: 13, weight: .medium)).foregroundStyle(RTTheme.textPrimary)
             }
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(.white.opacity(0.10), in: Capsule())
+            .background(RTTheme.surface, in: Capsule())
             Spacer()
-            SpeakerToggle(dark: true)
+            SpeakerToggle(dark: false)
             Button { model.exitTranslate() } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
-                    .padding(10).background(.white.opacity(0.12), in: Circle())
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(RTTheme.textPrimary)
+                    .padding(10).background(RTTheme.surface, in: Circle())
             }
             .accessibilityLabel("结束翻译")
         }
@@ -87,7 +87,7 @@ struct TranslateCallView: View {
         Text(model.homeConnected == false ? "连接中…"
              : (model.homeStatus.isEmpty ? "直接开口说话，中英自动互译" : model.homeStatus))
             .font(.system(size: 15 * model.fontScale, weight: .medium))
-            .foregroundStyle(.white.opacity(0.7))
+            .foregroundStyle(RTTheme.textSecondary)
             .frame(maxWidth: .infinity)
     }
 
@@ -105,13 +105,13 @@ struct TranslateCallView: View {
                     VStack(alignment: cn ? .trailing : .leading, spacing: 5) {
                         Text(item.text)
                             .font(.system(size: 17 * model.fontScale, weight: .medium))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(RTTheme.textPrimary)
                             .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
                         if item.translating || item.translation.isEmpty {
                             HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini).tint(.white)
+                                ProgressView().controlSize(.mini).tint(RTTheme.accent)
                                 Text("正在翻译…").font(.system(size: 13 * model.fontScale))
-                                    .foregroundStyle(.white.opacity(0.6))
+                                    .foregroundStyle(RTTheme.textSecondary)
                             }
                             .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
                         } else {
@@ -119,7 +119,7 @@ struct TranslateCallView: View {
                                 if cn == false { replay(item.translation) }
                                 Text(item.translation)
                                     .font(.system(size: 16 * model.fontScale, weight: .semibold))
-                                    .foregroundStyle(Color(red: 0.36, green: 0.66, blue: 1.0))
+                                    .foregroundStyle(RTTheme.accent)
                                 if cn { replay(item.translation) }
                             }
                             .frame(maxWidth: .infinity, alignment: cn ? .trailing : .leading)
@@ -144,7 +144,7 @@ struct TranslateCallView: View {
     private func replay(_ text: String) -> some View {
         Button { model.speakText(text) } label: {
             Image(systemName: "waveform").font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(RTTheme.accent)
         }
         .accessibilityLabel("重播译文")
     }
@@ -176,7 +176,8 @@ struct TranslateCallView: View {
             Button { stream.togglePause() } label: {
                 PulsingMic(level: liveLevel,
                            symbol: stream.isPaused ? "mic.slash.fill" : "mic.fill",
-                           ringColor: RTTheme.accent)
+                           ringColor: RTTheme.accent,
+                           dark: false)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(stream.isPaused ? "开启麦克风" : "关闭麦克风")
@@ -192,39 +193,49 @@ struct PulsingMic: View {
     let level: Double
     let symbol: String
     var ringColor: Color = RTTheme.accent
+    var dark = true
 
     var body: some View {
         ZStack {
             Circle()
                 .stroke(ringColor.opacity(0.35 + 0.4 * level), lineWidth: 2)
                 .frame(width: 96 + 34 * level, height: 96 + 34 * level)
-            Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
-                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
-            Image(systemName: symbol)
-                .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
-                .scaleEffect(1 + 0.18 * level)
+            if dark {
+                Circle().fill(.white.opacity(0.10)).frame(width: 84, height: 84)
+                    .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                Image(systemName: symbol)
+                    .font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
+                    .scaleEffect(1 + 0.18 * level)
+            } else {
+                Circle().fill(RTTheme.surface).frame(width: 84, height: 84)
+                    .overlay(Circle().stroke(RTTheme.hairline, lineWidth: 1))
+                Image(systemName: symbol)
+                    .font(.system(size: 30, weight: .medium)).foregroundStyle(RTTheme.accent)
+                    .scaleEffect(1 + 0.18 * level)
+            }
         }
         .animation(.easeOut(duration: 0.1), value: level)
         .frame(width: 140, height: 140)   // 固定占位：脉冲不外扩、不影响布局
     }
 }
 
-/// 深色语音界面的「+」按钮（音色/语速入口）：固定大小，不随音量跳动；
+/// 语音界面的「+」按钮（音色/语速入口）：固定大小，不随音量跳动；
 /// 面板展开时旋转 45° 变「×」（与手动触发式的 +/× 切换一致）。
 struct DarkPlusButton: View {
     var rotated = false
+    var dark = true
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "plus")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
+                .foregroundStyle(dark ? Color.white.opacity(0.9) : RTTheme.textPrimary)
                 .rotationEffect(.degrees(rotated ? 45 : 0))
                 .animation(.easeOut(duration: 0.2), value: rotated)
                 .frame(width: 48, height: 48)
-                .background(.white.opacity(0.10), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
+                .background(dark ? AnyShapeStyle(Color.white.opacity(0.10)) : AnyShapeStyle(RTTheme.surface), in: Circle())
+                .overlay(Circle().stroke(dark ? Color.white.opacity(0.18) : RTTheme.hairline, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(rotated ? "收起音色与语速" : "音色与语速")
