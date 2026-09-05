@@ -912,6 +912,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         statusMessage.value = "已退出登录"
     }
 
+    /** 清除账号对应的全部聊天/私教/自由对话历史。 */
+    fun clearChatHistory() {
+        val token = auth.token ?: run { statusMessage.value = "请先登录"; return }
+        viewModelScope.launch {
+            statusMessage.value = "正在清除聊天记录…"
+            runCatching { 
+                api.clearFreetalkHistory(token)
+                user.value = api.currentUser(token)
+            }
+            .onSuccess { statusMessage.value = "聊天记录已清除，下次对话是全新开始" }
+            .onFailure { statusMessage.value = "清除失败：${it.message ?: "请重试"}" }
+        }
+    }
+
+    /** TTS 语音缓存统计( rt-tts-/rt-utt- 文件 ). */
+    fun voiceCacheSummary(): Pair<Int, Long> {
+        val dir = getApplication<android.app.Application>().cacheDir
+        val files = dir.listFiles { f -> f.isFile && (f.name.startsWith("rt-tts-") || f.name.startsWith("rt-utt-")) }.orEmpty()
+        val bytes = files.sumOf { it.length() }
+        return Pair(files.size, bytes)
+    }
+
+    fun voiceCacheSizeText(): String {
+        val (count, bytes) = voiceCacheSummary()
+        if (bytes <= 0) return if (count > 0) "$count 个文件（${bytes}B）" else "无缓存"
+        return if (bytes < 1024 * 1024) "%d 个文件（%.1f KB）".format(count, bytes / 1024.0)
+        else "%.1f MB（%d 个文件）".format(bytes / (1024.0 * 1024.0), count)
+    }
+
+    /** 清除 TTS/utterance 语音缓存。 */
+    fun clearVoiceCache(): String {
+        val dir = getApplication<android.app.Application>().cacheDir
+        val files = dir.listFiles { f -> f.isFile && (f.name.startsWith("rt-tts-") || f.name.startsWith("rt-utt-")) }.orEmpty()
+        files.forEach { it.delete() }
+        return "已清除语音缓存"
+    }
+
     /** access 过期：用 refresh 令牌换新 access；并发调用合并为一次刷新，失败则强制登出。 */
     private suspend fun refreshAccessToken(oldAccess: String?): String? = refreshMutex.withLock {
         val current = auth.token

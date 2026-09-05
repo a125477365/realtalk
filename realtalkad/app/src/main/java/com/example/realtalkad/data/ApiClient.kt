@@ -154,6 +154,13 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun scenarioDetail(sceneId: String, token: String): Scenario = get("/scenario/$sceneId", token)
 
     /** 删除用户自己的场景（预置通用场景不可删）。 */
+    /** 清空全部私教/自由对话的历史记录。 */
+    suspend fun clearFreetalkHistory(token: String) {
+        val req = Request.Builder().url(url("/freetalk/history")).delete()
+            .header("Authorization", "Bearer $token").build()
+        execute(req)
+    }
+
     suspend fun deleteScenario(sceneId: String, token: String) {
         val req = Request.Builder().url(url("/scenario/$sceneId")).delete()
             .header("Authorization", "Bearer $token").build()

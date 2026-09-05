@@ -125,8 +125,7 @@ fun AccountSheet(model: AppViewModel) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 32.dp),
     ) {
-        // 会员卡：品牌渐变 Hero，白色文字
-        // 个人卡（全部功能免费：不再有会员等级/额度/升级/账单）
+        // 个人卡：品牌渐变背景 + 白色头像圆 + Token 余额（与 iOS 一致）
         item {
             Row(
                 Modifier.fillMaxWidth()
@@ -134,11 +133,29 @@ fun AccountSheet(model: AppViewModel) {
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(user?.displayName ?: "微信用户", color = Color.White,
-                        fontWeight = FontWeight.SemiBold, fontSize = (17 * fontScale).sp)
-                    Text("全部功能免费使用", color = Color.White.copy(alpha = 0.85f),
-                        fontSize = (12 * fontScale).sp)
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape)
+                        .background(Color(0x40FFFFFF)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        (user?.displayName ?: "我").take(1),
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        user?.displayName ?: "微信用户", color = Color.White,
+                        fontWeight = FontWeight.SemiBold, fontSize = 17.sp,
+                    )
+                    Text(
+                        "Token %,d".format(user?.tokenBalance ?: 0),
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 12.sp,
+                    )
                 }
             }
         }
@@ -581,6 +598,63 @@ private fun SettingsSheetContent(model: AppViewModel, onBack: () -> Unit) {
         item {
             Text("字体大小 ${"%.0f".format(fontScale * 100)}%", fontWeight = FontWeight.SemiBold)
             Slider(value = fontScale, onValueChange = { model.setFontScale(it) }, valueRange = 0.85f..1.35f, steps = 9)
+        }
+
+        // ---------- 存储管理（与 iOS 设置页对齐） ----------
+        item {
+            Text("存储管理", fontWeight = FontWeight.SemiBold, color = RT.TextSecondary)
+            Spacer(Modifier.height(4.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(12.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("语音缓存", fontSize = 14.sp, color = RT.TextPrimary)
+                    Spacer(Modifier.weight(1f))
+                    Text(model.voiceCacheSizeText(), fontSize = 12.sp, color = RT.TextSecondary)
+                }
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(12.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp))
+                        .clickable { model.clearVoiceCache() }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("清除语音缓存", fontSize = 14.sp, color = Color(0xFFE03131))
+                    Spacer(Modifier.weight(1f))
+                }
+                Row(
+                    Modifier.fillMaxWidth()
+                        .background(RT.Surface, RoundedCornerShape(12.dp))
+                        .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp))
+                        .clickable { model.clearChatHistory() }
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("清除聊天记录", fontSize = 14.sp, color = Color(0xFFE03131))
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+        // ---------- 关于 ----------
+        item {
+            Text("关于", fontWeight = FontWeight.SemiBold, color = RT.TextSecondary)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(RT.Surface, RoundedCornerShape(12.dp))
+                    .border(1.dp, RT.Hairline, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("版本", fontSize = 14.sp, color = RT.TextPrimary)
+                Spacer(Modifier.weight(1f))
+                Text("1.0 (1)", fontSize = 13.sp, color = RT.TextSecondary)
+            }
         }
     }
 }

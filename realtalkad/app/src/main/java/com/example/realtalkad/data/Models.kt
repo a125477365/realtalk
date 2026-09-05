@@ -15,6 +15,10 @@ data class AppUser(
     @SerialName("plan_tier") val planTier: String = "free",
     @SerialName("plan_expires_at") val planExpiresAt: String? = null,
     @SerialName("balance_cents") val balanceCents: Int = 0,
+    @SerialName("token_balance") val tokenBalance: Int = 0,
+    @SerialName("is_banned") val isBanned: Boolean = false,
+    @SerialName("admin_notes") val adminNotes: String? = null,
+    @SerialName("last_seen_at") val lastSeenAt: String? = null,
     @SerialName("created_at") val createdAt: String = "",
 ) {
     val tierName: String
