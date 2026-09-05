@@ -20,10 +20,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import RedirectResponse, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 
 from .ark_client import (
@@ -1665,6 +1664,63 @@ def confirm_password_reset(
         refresh_token=refresh,
         expires_in=db.get_access_token_ttl_minutes() * 60,
     )
+
+
+# ---- 密码重置落地页（邮件链接指向这里，纯静态表单 POST 到 /auth/password/reset/confirm） ----
+_RESET_PASSWORD_PAGE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RealTalk 密码重置</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+  background:linear-gradient(160deg,#eef4ff,#fbf6ff);color:#151a26}
+.card{background:#fff;border-radius:18px;padding:34px 28px;width:88%;
+  max-width:380px;box-shadow:0 16px 48px rgba(40,70,160,.14)}
+h1{font-size:20px;margin:0 0 6px}
+.sub{font-size:13px;color:#667085;margin:0 0 18px}
+label{display:block;font-size:13px;color:#475467;margin:14px 0 6px}
+input{width:100%;box-sizing:border-box;padding:13px;border:1px solid #d0d5dd;border-radius:11px;font-size:15px;outline:none}
+input:focus{border-color:#2f62f6;box-shadow:0 0 0 3px rgba(47,98,246,.12)}
+button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:11px;
+  background:#2f62f6;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:disabled{background:#a3adf0;cursor:default}
+.err{color:#d92d20;font-size:13px;margin-top:12px;min-height:18px}
+.ok{color:#12805c;font-size:14px;margin-top:12px;font-weight:500}
+</style></head><body>
+<div class="card">
+  <h1>重置密码</h1>
+  <p class="sub">设置新密码（至少 6 位）。重置后所有已登录设备需要重新登录。</p>
+  <label>新密码</label><input id="p1" type="password" placeholder="至少 6 位">
+  <label>确认新密码</label><input id="p2" type="password" placeholder="再输入一次">
+  <div class="err" id="err"></div>
+  <button id="btn" onclick="go()">确认重置</button>
+  <div class="ok" id="ok"></div>
+</div>
+<script>
+const token = new URLSearchParams(location.search).get("token") || "";
+if (!token) document.getElementById("err").textContent = "链接不完整，请从重置邮件重新进入";
+async function go(){
+  const p1=document.getElementById("p1").value, p2=document.getElementById("p2").value;
+  const err=document.getElementById("err"), ok=document.getElementById("ok");
+  err.textContent=""; ok.textContent="";
+  if(p1.length<6){err.textContent="密码至少 6 位";return}
+  if(p1!==p2){err.textContent="两次输入不一致";return}
+  const btn=document.getElementById("btn"); btn.disabled=true; btn.textContent="提交中…";
+  try{
+    const r=await fetch("/auth/password/reset/confirm",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({token,new_password:p1})});
+    if(r.ok){ok.textContent="✅ 密码已重置，请回 App 用新密码登录";btn.textContent="完成";}
+    else{const d=await r.json().catch(()=>({}));err.textContent=d.detail||"重置失败，链接可能已过期";btn.disabled=false;btn.textContent="确认重置"}
+  }catch(e){err.textContent="网络错误，请重试";btn.disabled=false;btn.textContent="确认重置"}
+}
+</script></body></html>"""
+
+
+@app.get("/auth/reset-password", response_class=HTMLResponse)
+def reset_password_page() -> HTMLResponse:
+    return HTMLResponse(_RESET_PASSWORD_PAGE)
 
 
 @app.post("/auth/token/refresh", response_model=AuthTokenResponse)

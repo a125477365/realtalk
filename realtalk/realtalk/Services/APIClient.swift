@@ -98,6 +98,11 @@ final class APIClient {
         _ = try? await post("/auth/logout", body: EmptyBody(), token: token) as OKResponse
     }
 
+    /// 发送密码重置邮件（密码邮箱上会有唯一链接）。后端同邮箱频率限流。
+    func sendPasswordResetEmail(_ email: String) async throws -> MessageResponse {
+        try await post("/auth/password/reset/send", body: EmailCodeRequest(email: email), token: nil)
+    }
+
     func aiChat(
         message: String,
         history: [AIChatWireMessage],

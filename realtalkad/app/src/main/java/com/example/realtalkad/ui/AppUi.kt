@@ -340,6 +340,8 @@ fun LoginScreen(model: AppViewModel) {
     var confirm by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var countdown by remember { mutableStateOf(0) }
+    var forgotEmail by remember { mutableStateOf<String?>(null) }
+    var forgotSending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
 
@@ -464,11 +466,18 @@ fun LoginScreen(model: AppViewModel) {
 
         Spacer(Modifier.height(14.dp))
 
-        TextButton(onClick = { registerMode = !registerMode }) {
-            Text(
-                if (registerMode) "已有账号？直接登录" else "没有账号？邮箱注册",
-                color = Color.White.copy(alpha = 0.9f),
-            )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = { registerMode = !registerMode }) {
+                Text(
+                    if (registerMode) "已有账号？直接登录" else "没有账号？邮箱注册",
+                    color = Color.White.copy(alpha = 0.9f),
+                )
+            }
+            if (!registerMode) {
+                TextButton(onClick = { forgotEmail = email }) {
+                    Text("忘记密码？", color = Color.White.copy(alpha = 0.9f))
+                }
+            }
         }
 
         if (registerMode) {
@@ -483,6 +492,40 @@ fun LoginScreen(model: AppViewModel) {
             Spacer(Modifier.height(16.dp))
             Text(status, color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp)
         }
+    }
+
+    // 忘记密码弹窗：输入注册邮箱 → 发送 SMTP 改密邮件
+    forgotEmail?.let { preset ->
+        var dlgEmail by remember(preset) { mutableStateOf(preset) }
+        AlertDialog(
+            onDismissRequest = { if (!forgotSending) forgotEmail = null },
+            title = { Text("重置密码") },
+            text = {
+                Column {
+                    Text("把改密链接发到你的注册邮箱：", fontSize = 13.sp, color = RT.TextSecondary)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = dlgEmail, onValueChange = { dlgEmail = it },
+                        label = { Text("邮箱") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (dlgEmail.isNotBlank()) {
+                        forgotSending = true
+                        model.sendPasswordResetEmail(dlgEmail) { 
+                            forgotSending = false
+                            forgotEmail = null
+                        }
+                    }
+                }) { Text(if (forgotSending) "发送中…" else "发送重置邮件", color = RT.Accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { forgotEmail = null; }, enabled = !forgotSending) { Text("取消") }
+            },
+        )
     }
 }
 

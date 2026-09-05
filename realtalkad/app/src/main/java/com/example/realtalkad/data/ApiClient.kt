@@ -92,6 +92,10 @@ class ApiClient(private val baseUrlProvider: () -> String) {
     suspend fun sendEmailCode(email: String): EmailCodeResponse =
         post("/auth/email/code", EmailCodeRequest(email))
 
+    /** 发送密码重置邮件（唯一链接 + token）。如果邮箱不存在，返回同样格式的防枚举响应。 */
+    suspend fun sendPasswordResetEmail(email: String): MessageResponse =
+        post("/auth/password/reset/send", EmailCodeRequest(email))
+
     /** 邮箱 + 验证码注册 → 颁发令牌；随后调用方需拉 /auth/me 补全用户档案。 */
     suspend fun registerPassword(email: String, password: String, code: String): AuthTokenResponse =
         post("/auth/password/register", EmailRegisterRequest(email, password, code))

@@ -1377,6 +1377,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         auth.fontScale = normalized
     }
 
+    /** 发密码重置邮件。onDone 无论成败都调用，弹窗可收尾。 */
+    fun sendPasswordResetEmail(email: String, onDone: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            runCatching { api.sendPasswordResetEmail(email.trim()) }
+                .onSuccess { statusMessage.value = it.message }
+                .onFailure { statusMessage.value = "发送失败：${it.message ?: "请重试"}" }
+            onDone?.invoke()
+        }
+    }
+
     fun setAutoCaptureEnabled(value: Boolean) {
         autoCaptureEnabled.value = value
         auth.autoCaptureEnabled = value

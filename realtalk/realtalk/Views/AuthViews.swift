@@ -33,6 +33,9 @@ struct LoginView: View {
                         RegisterForm()
                     } else {
                         LoginForm()
+
+                        // 忘记密码：通过唯一邮箱链接到网页端完成修改
+                        ForgotPasswordLink()
                     }
 
                     Button {
@@ -100,6 +103,57 @@ private struct LoginForm: View {
             .buttonStyle(.plain)
             .disabled(!canSubmit)
         }
+    }
+}
+
+// MARK: - 忘记密码（邮件链接复位）
+
+private struct ForgotPasswordLink: View {
+    @EnvironmentObject private var auth: AuthStore
+    @State private var showSheet = false
+    @State private var resetEmail = ""
+    @State private var sending = false
+    @State private var tip = ""
+
+    var body: some View {
+        Button("忘记密码？") { showSheet = true }
+            .font(.subheadline)
+            .foregroundStyle(.white.opacity(0.85))
+            .padding(.top, 2)
+            .sheet(isPresented: $showSheet) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            TextField("注册时使用的邮箱", text: $resetEmail)
+                                .keyboardType(.emailAddress)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        } footer: {
+                            Text("我们会把改密链接发到你的邮箱，点击后按提示完成重置。")
+                        }
+                        if tip.isEmpty == false {
+                            Section { Text(tip).foregroundStyle(.secondary) }
+                        }
+                    }
+                    .navigationTitle("重置密码")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) { Button("取消") { showSheet = false } }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(sending ? "发送中…" : "发送重置邮件") {
+                                sending = true
+                                Task {
+                                    await auth.sendPasswordReset(email: resetEmail.trimmingCharacters(in: .whitespaces))
+                                    tip = auth.statusMessage
+                                    sending = false
+                                }
+                            }
+                            .disabled(!resetEmail.contains("@") || sending)
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
+            }
     }
 }
 

@@ -122,6 +122,19 @@ final class AuthStore: ObservableObject {
         }
     }
 
+    /// 走密码重置邮箱链路：SMTP 到注册邮箱里发一封带唯一 token 的链接，
+    /// 点开后在浏览器里设新密码。这里只负责发。
+    func sendPasswordReset(email: String) async {
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let response = try await api.sendPasswordResetEmail(email)
+            statusMessage = response.message
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
     func register(email: String, password: String, code: String) async {
         await authenticateWithTokens {
             try await api.register(email: email, password: password, code: code)
