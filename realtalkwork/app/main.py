@@ -1630,6 +1630,7 @@ def change_password(
 @app.post("/auth/password/reset/send")
 def send_password_reset(
     request: PasswordResetSendRequest,
+    http_request: Request,
 ) -> MessageResponse:
     normalized = normalize_email(request.email)
     user = db.get_user_by_login_identifier(normalized)
@@ -1638,7 +1639,9 @@ def send_password_reset(
         ttl_minutes = db.get_app_setting_int("email_code_ttl_minutes", settings.email_code_ttl_minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes * 6)
         db.create_email_reset_token(user.id, normalized, token_hash, expires_at)
-        send_password_reset_email(normalized, raw_token, settings.app_base_url)
+        # 用当前请求的 scheme+host，跟上用户点击邮件链接后要走的真实地址（不含 https:// 占位域名）
+        base_url = f"{http_request.url.scheme}://{http_request.headers.get('host', http_request.url.netloc)}"
+        send_password_reset_email(normalized, raw_token, base_url)
     
     return MessageResponse(message="如果该邮箱已注册，重置邮件已发送")
 
