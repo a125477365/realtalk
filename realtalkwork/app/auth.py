@@ -78,10 +78,9 @@ def send_password_reset_email(email: str, token: str, base_url: str = "http://19
     message["To"] = email
     message.set_content(
         f"您请求重置 RealTalk 账号的密码。\n\n"
-        f"请点击以下链接重置密码（链接 {cfg['code_ttl_minutes'] * 6} 分钟内有效）：\n"
+        f"请点击以下链接重置密码（链接 3 分钟内有效，只能使用一次）：\n"
         f"{reset_url}\n\n"
         f"如果您没有请求重置密码，请忽略此邮件。\n"
-        f"此链接只能使用一次。\n"
     )
     with smtplib.SMTP(cfg["host"], cfg["port"], timeout=15) as smtp:
         smtp.starttls()

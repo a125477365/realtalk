@@ -1636,8 +1636,9 @@ def send_password_reset(
     user = db.get_user_by_login_identifier(normalized)
     if user is not None:
         raw_token, token_hash = create_password_reset_token()
-        ttl_minutes = db.get_app_setting_int("email_code_ttl_minutes", settings.email_code_ttl_minutes)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes * 6)
+        # 改密链接 3 分钟有效（不再跟邮箱验证码共用 TTL，单独配置）
+        password_reset_ttl = db.get_app_setting_int("password_reset_ttl_minutes", 3)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=password_reset_ttl)
         db.create_email_reset_token(user.id, normalized, token_hash, expires_at)
         # 用当前请求的 scheme+host，跟上用户点击邮件链接后要走的真实地址（不含 https:// 占位域名）
         base_url = f"{http_request.url.scheme}://{http_request.headers.get('host', http_request.url.netloc)}"
