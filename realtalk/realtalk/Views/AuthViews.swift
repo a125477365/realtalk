@@ -7,6 +7,7 @@ struct LoginView: View {
     @EnvironmentObject private var model: AppModel
 
     @State private var isRegisterMode = false
+    @State private var isResetMode = false
 
     var body: some View {
         ZStack {
@@ -29,22 +30,34 @@ struct LoginView: View {
                             .foregroundStyle(.white.opacity(0.86))
                     }
 
-                    if isRegisterMode {
+                    if isResetMode {
+                        ResetPasswordForm {
+                            withAnimation { isResetMode = false }
+                        }
+                    } else if isRegisterMode {
                         RegisterForm()
                     } else {
                         LoginForm()
 
-                        // 忘记密码：通过唯一邮箱链接到网页端完成修改
-                        ForgotPasswordLink()
+                        // 与登录/注册同一层级（不进 sheet），样式与上方一致
+                        Button("忘记密码？") {
+                            withAnimation(.easeInOut(duration: 0.2)) { isResetMode = true }
+                            auth.statusMessage = ""
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .padding(.top, 2)
                     }
 
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { isRegisterMode.toggle() }
-                        auth.statusMessage = ""
-                    } label: {
-                        Text(isRegisterMode ? "已有账号？直接登录" : "没有账号？邮箱注册")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.9))
+                    if !isResetMode {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { isRegisterMode.toggle() }
+                            auth.statusMessage = ""
+                        } label: {
+                            Text(isRegisterMode ? "已有账号？直接登录" : "没有账号？邮箱注册")
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
                     }
 
                     StatusBanner(text: auth.statusMessage)
@@ -106,54 +119,72 @@ private struct LoginForm: View {
     }
 }
 
-// MARK: - 忘记密码（邮件链接复位）
+// MARK: - 重置密码（与登录/注册同一层级，不再是弹窗）
 
-private struct ForgotPasswordLink: View {
+private struct ResetPasswordForm: View {
     @EnvironmentObject private var auth: AuthStore
-    @State private var showSheet = false
-    @State private var resetEmail = ""
+    var onBack: () -> Void
+
+    @State private var email = ""
     @State private var sending = false
-    @State private var tip = ""
+    @State private var sent = false
+
+    private var emailValid: Bool { email.contains("@") && email.contains(".") }
 
     var body: some View {
-        Button("忘记密码？") { showSheet = true }
-            .font(.subheadline)
-            .foregroundStyle(.white.opacity(0.85))
-            .padding(.top, 2)
-            .sheet(isPresented: $showSheet) {
-                NavigationStack {
-                    Form {
-                        Section {
-                            TextField("注册时使用的邮箱", text: $resetEmail)
-                                .keyboardType(.emailAddress)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                        } footer: {
-                            Text("我们会把改密链接发到你的邮箱，点击后按提示完成重置。")
-                        }
-                        if tip.isEmpty == false {
-                            Section { Text(tip).foregroundStyle(.secondary) }
-                        }
+        VStack(spacing: 14) {
+            if sent {
+                // 成功状态：和注册一样等高度的徽标+说明
+                Image(systemName: "envelope.circle")
+                    .font(.system(size: 56))
+                    .foregroundStyle(.white)
+                Text("重置邮件已发送")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("请点击 3 分钟内发到 \(email) 的链接完成设置。此链接只能使用一次。")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("返回登录", action: onBack)
+                    .foregroundStyle(.white.opacity(0.9))
+            } else {
+                TextField("邮箱", text: $email)
+                    .textContentType(.emailAddress)
+                    .keyboardType(.emailAddress)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .authFieldStyle()
+
+                Text("我们会发送一封包含唯一链接的邮件，点开后 3 分钟内能改密码。")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    sending = true
+                    Task {
+                        await auth.sendPasswordReset(email: email.trimmingCharacters(in: .whitespaces))
+                        sending = false
+                        if auth.statusMessage.contains("已发送") { sent = true }
                     }
-                    .navigationTitle("重置密码")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) { Button("取消") { showSheet = false } }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button(sending ? "发送中…" : "发送重置邮件") {
-                                sending = true
-                                Task {
-                                    await auth.sendPasswordReset(email: resetEmail.trimmingCharacters(in: .whitespaces))
-                                    tip = auth.statusMessage
-                                    sending = false
-                                }
-                            }
-                            .disabled(!resetEmail.contains("@") || sending)
-                        }
-                    }
+                } label: {
+                    Text(sending ? "发送中…" : "发送重置邮件")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 15)
+                        .background(emailValid && !sending ? Color(red: 0.30, green: 0.42, blue: 0.96) : .white.opacity(0.25),
+                                    in: RoundedRectangle(cornerRadius: 10))
                 }
-                .presentationDetents([.medium])
+                .buttonStyle(.plain)
+                .disabled(!emailValid || sending)
+
+                Button("返回登录", action: onBack)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.9))
             }
+        }
     }
 }
 
