@@ -50,6 +50,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,6 +63,7 @@ import androidx.compose.ui.graphics.Color
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import kotlin.math.sin
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -381,9 +387,11 @@ fun LoginScreen(model: AppViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        VoicePulseGlyph(isActive = true, tint = Color.White)
+        Spacer(Modifier.height(12.dp))
         Text("RealTalk", fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Color.White)
         Spacer(Modifier.height(8.dp))
-        Text("用真实生活，进入英语环境", color = Color.White.copy(alpha = 0.9f))
+        Text("用真实生活，进入英语环境", color = Color.White.copy(alpha = 0.9f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(28.dp))
 
         OutlinedTextField(
@@ -507,6 +515,34 @@ fun LoginScreen(model: AppViewModel) {
         if (status.isNotBlank()) {
             Spacer(Modifier.height(16.dp))
             Text(status, color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
+private fun VoicePulseGlyph(isActive: Boolean = true, tint: Color = RT.Accent) {
+    val transition = rememberInfiniteTransition(label = "pulse")
+    val bars = listOf(0.22, 0.53, 0.75, 0.53, 0.22)
+    val moving = transition.animateFloat(
+        initialValue = 0f, targetValue = 6.2831f,
+        animationSpec = infiniteRepeatable(animation = tween(1100), repeatMode = RepeatMode.Restart),
+        label = "pulse-t",
+    ).value
+    Row(
+        Modifier.size(40.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        bars.forEachIndexed { i, baseRatio ->
+            val wave: Double = if (isActive) (sin(moving + i * 0.78) + 1.0) / 2.0 else 0.0
+            val ratio: Double = baseRatio + wave * 0.45
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height((8 + ratio * 26).dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(tint.copy(alpha = if (i == 2) 1f else 0.78f))
+            )
         }
     }
 }

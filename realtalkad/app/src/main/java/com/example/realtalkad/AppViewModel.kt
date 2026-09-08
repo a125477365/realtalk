@@ -809,7 +809,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // access 过期时用 refresh 续期（单飞）
         api.onNeedsRefresh = { oldAccess -> refreshAccessToken(oldAccess) }
 
-        appendChat(ChatMessage.Sender.ASSISTANT, "今天想练哪段真实对话？选上方场景，或用底部按钮采集。")
         bootstrap()
         startCaptureScheduleLoop()
     }
@@ -848,6 +847,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     auth.refreshToken = it.refreshToken
                     user.value = it.user
                     statusMessage.value = "登录成功"
+
                     refreshBilling(); loadTodayScenarios(); loadPlans()
                 }
                 .onFailure { statusMessage.value = it.message ?: "登录失败" }
